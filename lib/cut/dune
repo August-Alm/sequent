@@ -1,0 +1,4 @@
+(library
+ (name cut)
+ (public_name sequent.cut)
+ (libraries utility core))

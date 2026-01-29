@@ -1,0 +1,248 @@
+(**
+  Module: Cut.Terms
+  Description: Term syntax of the intermediate language Cut.
+  
+  This module defines the abstract syntax of the
+  intermediate language Cut.
+*)
+
+
+type symbol = MkSymbol of string
+
+type variable = string
+
+type label = MkLabel of string
+
+type typ =
+  | Prd of symbol
+  | Cns of symbol
+  | Ext of symbol
+
+type typ_env = (variable * typ) list
+
+type label_env = (label * typ_env) list
+
+type signature_env = (symbol * (symbol * typ_env) list) list
+
+type import_env = (symbol * (typ list * (typ list) list)) list
+
+type statement =
+  | Jump of label
+  | Substitute of ((variable * variable) list) * statement
+  | Let of variable * symbol * (variable list) * statement
+  | New of variable * symbol * (variable list) * branches * statement
+  | Switch of variable * branches
+  | Invoke of variable * symbol
+  | Extern of symbol * variable list * (((variable list) * statement) list)
+
+and branches = (symbol * (variable list) * statement) list
+
+module Label = struct
+  let to_string (MkLabel l) = l
+end
+
+module Symbol = struct
+  let to_string (MkSymbol s) = s
+end
+
+type typed_statement = MkTyped of (typ_env * typed_node)
+
+and clauses = (symbol * variable list * typed_statement) list
+
+and typed_node =
+  | Jump of label
+  | Substitute of ((variable * variable) list) * typed_statement
+  | Let of variable * symbol * (variable list) * typed_statement
+  | New of variable * symbol * (variable list) * clauses * typed_statement
+  | Switch of variable * clauses
+  | Invoke of variable * symbol
+  | Extern of symbol * variable list * (((variable list) * typed_statement) list)
+
+module Check = struct
+
+  exception Error of string
+  let error s = raise (Error s)
+
+  (** Looks up the type of a variable in the type environment *)
+  let get_type (v: variable) (gamma: typ_env) =
+    match List.assoc_opt v gamma with
+    | Some t -> t
+    | None -> error ("unknown variable: " ^ v)
+
+  (** Looks up the type environment associated with a label *)
+  let get_type_env (l: label) (theta: label_env) =
+    match List.assoc_opt l theta with
+    | Some g -> g
+    | None -> error ("unknown label: " ^ (Label.to_string l))
+
+  (** Looks up the signature associated with a type symbol *)
+  let get_signature (tty: symbol) (sigma: signature_env) =
+    match List.assoc_opt tty sigma with
+    | Some mg -> mg
+    | None -> error ("unknown type symbol: " ^ (Symbol.to_string tty))
+
+  (** Looks up the declaration associated with a constructor (method): its
+      declaring type and the declared typing of its arguments. *)
+  let get_declaration (ctor: symbol) (sigma: signature_env) =
+    sigma
+    |> List.find_opt (fun (_, mg) -> List.exists (fun (m, _) -> m = ctor) mg)
+    |> function
+      | Some (t, mg) -> (t, snd (List.find (fun (m, _) -> m = ctor) mg))
+      | None -> error ("no matching signature for method: " ^ (Symbol.to_string ctor))
+
+  (** Gets the interface of the imported term. *)
+  let get_interface (ext: symbol) (iota: import_env) =
+    match List.assoc_opt ext iota with
+    | Some (ins, outs) -> (ins, outs)
+    | None -> error ("unknown external: " ^ (Symbol.to_string ext))
+
+  (** Skips the initial part of a type environment g that matches vs,
+      returning the matching and remaining part of g. Raises an error
+      if vs is not a prefix of g. *)
+  let skip (vs: variable list) (g: typ_env) =
+    let rec loop vs g0 g1 =
+      match vs, g1 with
+      | [], g1 -> (List.rev g0), g1
+      | v :: vs, (v', t) :: g1 when v = v' -> loop vs ((v', t) :: g0) g1
+      | _ -> error "type environment mismatch in let"
+    in loop vs [] g
+  
+  let arguments (expected: typ_env) (vs: variable list) (gamma: typ_env) =
+    let given = List.map (fun v -> (v, get_type v gamma)) vs in
+    if List.length expected <> List.length given then
+      error "argument length mismatch";
+    List.iter2
+      (fun (v1, t1) (v2, t2) ->
+        if v1 <> v2 then error "argument name mismatch";
+        if t1 <> t2 then error "argument type mismatch")
+      expected given
+  
+  let symbols (expected: symbol) (given: symbol) =
+    if expected <> given then error "symbol mismatch"
+  
+  let rec statement
+      (sigma: signature_env) (theta: label_env) (iota: import_env) (gamma: typ_env)
+      (s: statement) =
+    match s with
+    | Jump l ->
+      let g = get_type_env l theta in
+      if gamma <> g then error "type environment mismatch in jump"
+      else MkTyped (g, Jump l)
+    
+    | Substitute (subs, s) ->
+      let g = List.map (fun (v', v) -> (v', get_type v gamma)) subs in
+      let st = statement sigma theta iota g s in
+      MkTyped (gamma, Substitute (subs, st))
+    
+    | Let (v, m, vs, s) ->
+      let g0, g1 = skip vs gamma in
+      let (m_ty, m_g) = get_declaration m sigma in
+      arguments m_g vs g0;
+      let st = statement sigma theta iota ((v, Prd m_ty) :: g1) s in
+      MkTyped (gamma, Let (v, m, vs, st))
+    
+    | New (v, tty, vs, bs, s) ->
+      let g0, g1 = skip vs gamma in
+      let sgn = get_signature tty sigma in
+      let cs = List.map2
+        (fun (m1, g1) (m', vs', s1) ->
+          symbols m1 m';
+          arguments g1 vs' g0;
+          let st1 = statement sigma theta iota (g0 @ g1) s1 in
+          (m', vs', st1))
+        sgn bs
+      in
+      let st = statement sigma theta iota ((v, Cns tty) :: g1) s in
+      MkTyped (gamma, New (v, tty, vs, cs, st))
+    
+    | Switch (v, bs) ->
+      (match gamma with
+      | (v', Prd tty) :: g when v' = v ->
+        let sgn = get_signature tty sigma in
+        let cs = List.map2
+          (fun (m1, g1) (m1', vs', s1) ->
+            symbols m1 m1';
+            arguments g1 vs' gamma;
+            let st1 = statement sigma theta iota (g1 @ g) s1 in
+            (m1', vs', st1))
+          sgn bs
+        in
+        MkTyped (gamma, Switch (v, cs))
+      | _ -> error "incorrect producer type")
+    
+    | Invoke (v, m) ->
+      (match gamma with
+      | (v', Cns tty) :: g when v' = v ->
+        let sgn = get_signature tty sigma in
+        (match List.assoc_opt m sgn with
+        | Some m_g ->
+          arguments m_g (List.map fst g) g;
+          MkTyped (gamma, Invoke (v, m))
+        | None -> error "unknown method in invoke")
+      | _ -> error "incorrect consumer type")
+    
+    | Extern (m, vs, ss) ->
+      let (ins, outs) = get_interface m iota in
+      List.iter2
+        (fun t v ->
+          let v_ty = get_type v gamma in
+          if t <> v_ty then error "argument type mismatch in extern")
+        ins vs;
+      let sts = List.map2
+        (fun ts (ys, s1) ->
+          let g1 = List.combine ys ts in
+          let st1 = statement sigma theta iota (g1 @ gamma) s1 in
+          (ys, st1))
+        outs ss
+      in
+      MkTyped (gamma, Extern (m, vs, sts))
+end
+
+type definition =
+  { name: label
+  ; args: typ_env
+  ; body: statement
+  } 
+
+type program =
+  { imports: import_env
+  ; signatures: signature_env
+  ; definitions: definition list
+  }
+
+type typed_definition =
+  { name: label
+  ; args: typ_env
+  ; body: typed_statement
+  }
+
+type typed_program =
+  { imports: import_env
+  ; signatures: signature_env
+  ; definitions: typed_definition list
+  }
+
+let mk_typed (prog: program) =
+  let labels =
+    List.map
+      (fun (def: definition) -> (def.name, def.args))
+      prog.definitions
+  in
+  { imports = prog.imports;
+    signatures = prog.signatures;
+    definitions =
+      List.map
+        (fun (def: definition) ->
+          let typed_body =
+            Check.statement
+              prog.signatures
+              labels
+              prog.imports
+              def.args
+              def.body
+          in
+          { name = def.name
+          ; args = def.args
+          ; body = typed_body
+          })
+        prog.definitions }

@@ -1,0 +1,6 @@
+(executables
+ (names main test_parser test_mutual)
+ (public_names sequent test_parser test_mutual)
+ (libraries sequent lang)
+ (flags (:standard -w -27)))
+

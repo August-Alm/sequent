@@ -1,0 +1,9 @@
+(library
+ (name lang)
+ (libraries utility common sedlex menhirLib)
+ (public_name sequent.lang)
+ (flags (:standard -warn-error -27-26))
+ (preprocess (pps sedlex.ppx)))
+
+(menhir
+ (modules parser))

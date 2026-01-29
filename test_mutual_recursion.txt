@@ -1,0 +1,13 @@
+data nat: type where { zero: nat; succ: nat -> nat }
+
+let is_even (n: nat): nat = 
+  match n with
+  { zero => zero
+  ; succ(m) => is_odd(m)
+  }
+
+let is_odd (n: nat): nat =
+  match n with
+  { zero => succ(zero)
+  ; succ(m) => is_even(m)
+  }

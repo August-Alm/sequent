@@ -1,0 +1,39 @@
+# Dune build directory
+_build/
+
+# Opam directory
+_opam/
+
+# OCaml compiled files
+*.cmi
+*.cmo
+*.cmx
+*.cma
+*.cmxa
+*.cmxs
+*.o
+*.a
+*.so
+*.dylib
+
+# Generated files
+*.ml-gen
+*.mli-gen
+
+# Merlin
+.merlin-conf/
+.merlin
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+__azurite_db_table__.json
+AzuriteConfig
