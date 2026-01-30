@@ -37,6 +37,39 @@ and clause =
   (* xtor{ai's}(ti's) => t; type and term arguments, and return *)
   ty_xtor * (Ident.t list) * (Ident.t list) * term
 
+(* Typed terms: AST with type annotations *)
+type typed_term =
+  | TyTmInt of int * typ
+  | TyTmVar of Ident.t * typ
+  | TyTmSym of Path.t * typ
+  | TyTmApp of typed_term * typed_term * typ
+  | TyTmIns of typed_term * typ * typ  (* term, type arg, result type *)
+  | TyTmLam of Ident.t * typ * typed_term * typ  (* x, arg type, body, function type *)
+  | TyTmAll of (Ident.t * kind) * typed_term * typ
+  | TyTmLet of Ident.t * typed_term * typed_term * typ
+  | TyTmMatch of typed_term * typed_clause list * typ
+  | TyTmNew of typ option * typed_clause list * typ
+  | TyTmCtor of ty_xtor * typ list * typed_term list * typ
+  | TyTmDtor of ty_xtor * typ list * typed_term list * typ
+
+and typed_clause =
+  ty_xtor * Ident.t list * Ident.t list * typed_term
+
+let get_type (tm: typed_term) : typ =
+  match tm with
+  | TyTmInt (_, ty) -> ty
+  | TyTmVar (_, ty) -> ty
+  | TyTmSym (_, ty) -> ty
+  | TyTmApp (_, _, ty) -> ty
+  | TyTmIns (_, _, ty) -> ty
+  | TyTmLam (_, _, _, ty) -> ty
+  | TyTmAll (_, _, ty) -> ty
+  | TyTmLet (_, _, _, ty) -> ty
+  | TyTmMatch (_, _, ty) -> ty
+  | TyTmNew (_, _, ty) -> ty
+  | TyTmCtor (_, _, _, ty) -> ty
+  | TyTmDtor (_, _, _, ty) -> ty
+
 type term_def =
   { name: Path.t
   ; type_args: (Ident.t * kind) list
@@ -45,9 +78,22 @@ type term_def =
   ; body: term
   }
 
+type typed_term_def =
+  { name: Path.t
+  ; type_args: (Ident.t * kind) list
+  ; term_args: (Ident.t * typ) list
+  ; return_type: typ
+  ; body: typed_term
+  }
+
 type definitions =
   { type_defs: ty_defs
   ; term_defs: (Path.t * term_def) list
+  }
+
+type typed_definitions =
+  { type_defs: ty_defs
+  ; term_defs: (Path.t * typed_term_def) list
   }
 
 type context =
@@ -55,12 +101,15 @@ type context =
   ; types: typ Ident.tbl
   }
 
-let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
+let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ * typed_term =
   match tm with
-  | TmInt _ -> Prim.int_typ
+  | TmInt n -> 
+    let ty = Prim.int_typ in
+    (ty, TyTmInt (n, ty))
+    
   | TmVar x ->
     (match Ident.find_opt x ctx.types with
-    | Some ty -> ty
+    | Some ty -> (ty, TyTmVar (x, ty))
     | None -> failwith ("unbound variable: " ^ Ident.name x))
 
   | TmSym path ->
@@ -73,20 +122,21 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
         TyFun (arg_ty, ret_ty)
       ) td.term_args td.return_type in
       (* Wrap with universal quantifiers for type arguments *)
-      List.fold_right (fun (type_var, kind) body_ty ->
+      let ty = List.fold_right (fun (type_var, kind) body_ty ->
         TyAll ((type_var, kind), body_ty)
-      ) td.type_args func_ty)
+      ) td.type_args func_ty in
+      (ty, TyTmSym (path, ty)))
 
   | TmApp (t, u) ->
     (* Infer the type of the function *)
-    let t_ty = infer_typ defs ctx t in
+    let t_ty, t_typed = infer_typ defs ctx t in
     (* Reduce to check if it's a function type *)
     (match reduce defs.type_defs t_ty with
     | TyFun (ty_arg, ty_ret) ->
       (* Check the argument has the expected type *)
-      check_typ defs ctx u ty_arg;
+      let u_typed = check_typ defs ctx u ty_arg in
       (* Return the result type *)
-      ty_ret
+      (ty_ret, TyTmApp (t_typed, u_typed, ty_ret))
     | _ -> failwith "application expects a function type")
 
   | TmCtor (ctor, ty_args, tm_args) ->
@@ -144,7 +194,7 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
     in
     
     (* Check each provided term argument against its corresponding source type *)
-    List.iter2 (check_typ defs ctx) tm_args provided_sources;
+    let tm_args_typed = List.map2 (check_typ defs ctx) tm_args provided_sources in
     
     (* Build the base result type by applying parent to instantiated arguments *)
     let inst_arguments = List.map (subst ty_subst) ctor.arguments in
@@ -165,7 +215,7 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
         remaining_quantified result_with_remaining_args
     in
     
-    final_result
+    (final_result, TyTmCtor (ctor, ty_args, tm_args_typed, final_result))
 
   | TmDtor (dtor, ty_args, tm_args) ->
     (* Allow partial application: verify we have at most the expected number of arguments *)
@@ -231,7 +281,7 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
     in
     
     (* Check each provided term argument against its corresponding source type *)
-    List.iter2 (check_typ defs ctx) tm_args provided_arg_sources;
+    let tm_args_typed = List.map2 (check_typ defs ctx) tm_args provided_arg_sources in
     
     (* Build function type for remaining term arguments, ending with return type *)
     let result_with_remaining_args = 
@@ -245,27 +295,29 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
         remaining_quantified result_with_remaining_args
     in
     
-    final_result
+    (final_result, TyTmDtor (dtor, ty_args, tm_args_typed, final_result))
 
   | TmLam (x, ty_opt, body) ->
     (match ty_opt with
     | None -> failwith "cannot infer type of unannotated lambda"
     | Some ty_arg ->
         let ctx' = {ctx with types = Ident.add x ty_arg ctx.types} in
-        let ty_body = infer_typ defs ctx' body in
-        TyFun (ty_arg, ty_body))
+        let ty_body, body_typed = infer_typ defs ctx' body in
+        let ty = TyFun (ty_arg, ty_body) in
+        (ty, TyTmLam (x, ty_arg, body_typed, ty)))
 
   | TmAll ((a, k), body) ->
     (* Extend kind context with the bound type variable *)
     let ctx' = {ctx with kinds = Ident.add a k ctx.kinds} in
     (* Infer type of body (which may mention type variable a) *)
-    let ty_body = infer_typ defs ctx' body in
+    let ty_body, body_typed = infer_typ defs ctx' body in
     (* Return universal type *)
-    TyAll ((a, k), ty_body)
+    let ty = TyAll ((a, k), ty_body) in
+    (ty, TyTmAll ((a, k), body_typed, ty))
 
   | TmIns (t, ty_arg) ->
     (* Infer the type of t *)
-    let t_ty = infer_typ defs ctx t in
+    let t_ty, t_typed = infer_typ defs ctx t in
     (* Reduce to see if it's a universal type *)
     (match reduce defs.type_defs t_ty with
     | TyAll ((a, k), ty_body) ->
@@ -273,27 +325,29 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ =
         check_kind defs.type_defs ctx.kinds ty_arg k;
         (* Instantiate ty_body with ty_arg substituted for a *)
         let subst_env = Ident.add a ty_arg Ident.emptytbl in
-        subst subst_env ty_body
+        let result_ty = subst subst_env ty_body in
+        (result_ty, TyTmIns (t_typed, ty_arg, result_ty))
     | _ -> failwith "type instantiation expects a polymorphic type")
 
   | TmLet (x, t, u) ->
     (* Infer the type of the bound expression *)
-    let t_ty = infer_typ defs ctx t in
+    let t_ty, t_typed = infer_typ defs ctx t in
     (* Extend context with x:t_ty and infer type of body *)
     let ctx' = {ctx with types = Ident.add x t_ty ctx.types} in
-    infer_typ defs ctx' u
+    let u_ty, u_typed = infer_typ defs ctx' u in
+    (u_ty, TyTmLet (x, t_typed, u_typed, u_ty))
 
   | _ ->
     failwith ("cannot infer type of: ")
 
-and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
+and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) : typed_term =
   match tm with
   | TmMatch (t, cs) ->
-    let t_ty = infer_typ defs ctx t in
+    let t_ty, t_typed = infer_typ defs ctx t in
     (match reduce defs.type_defs t_ty with
     | TyDef (Data (td : ty_dec)) ->
       (* Check each clause against its corresponding constructor *)
-      List.iter (fun ((clause_xtor, type_binders, term_binders, body) : clause) ->
+      let cs_typed = List.map (fun ((clause_xtor, type_binders, term_binders, body) : clause) ->
         (* 1. Find the matching constructor in the normalized GADT *)
         let xtor : ty_xtor = 
           match List.find_opt (fun (x : ty_xtor) -> 
@@ -338,11 +392,12 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
         } in
         
         (* 7. Check the body has the expected type in the extended context *)
-        check_typ defs ctx' body ty
-      ) cs;
+        let body_typed = check_typ defs ctx' body ty in
+        (clause_xtor, type_binders, term_binders, body_typed)
+      ) cs in
       
       (* 8. Verify all td.xtors covered and no duplicate clauses *)
-      let covered = List.map (fun ((clause_xtor, _, _, _) : clause) -> clause_xtor.symbol) cs in
+      let covered = List.map (fun ((clause_xtor, _, _, _) : typed_clause) -> clause_xtor.symbol) cs_typed in
       List.iter (fun (expected_xtor : ty_xtor) ->
         if not (List.exists (Path.equal expected_xtor.symbol) covered) then
           failwith ("missing case for constructor" ^ Path.name expected_xtor.symbol)
@@ -351,13 +406,15 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
       (* Check no duplicate clauses *)
       let rec check_duplicates seen = function
         | [] -> ()
-        | ((clause_xtor, _, _, _) : clause) :: rest ->
+        | ((clause_xtor, _, _, _) : typed_clause) :: rest ->
           if List.exists (Path.equal clause_xtor.symbol) seen then
             failwith ("duplicate case for constructor " ^ Path.name clause_xtor.symbol)
           else
             check_duplicates (clause_xtor.symbol :: seen) rest
       in
-      check_duplicates [] cs
+      check_duplicates [] cs_typed;
+      
+      TyTmMatch (t_typed, cs_typed, ty)
       
     | _ -> failwith "expected data type in match")
 
@@ -372,7 +429,7 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
     (match reduce defs.type_defs ty with
     | TyDef (Code td) ->
       (* Check each clause against its corresponding destructor *)
-      List.iter (fun ((clause_dtor, type_binders, term_binders, body) : clause) ->
+      let cs_typed = List.map (fun ((clause_dtor, type_binders, term_binders, body) : clause) ->
         (* 1. Find the matching destructor in the normalized codata *)
         let dtor : ty_xtor = 
           match List.find_opt (fun (x : ty_xtor) -> 
@@ -447,11 +504,12 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
         ) ctx'.types arg_vars arg_sources} in
         
         (* 9. Check the body has the return type in the extended context *)
-        check_typ defs ctx'' body return_ty
-      ) cs;
+        let body_typed = check_typ defs ctx'' body return_ty in
+        (clause_dtor, type_binders, term_binders, body_typed)
+      ) cs in
       
       (* 10. Verify all td.xtors covered and no duplicate clauses *)
-      let covered = List.map (fun ((clause_dtor, _, _, _) : clause) -> clause_dtor.symbol) cs in
+      let covered = List.map (fun ((clause_dtor, _, _, _) : typed_clause) -> clause_dtor.symbol) cs_typed in
       List.iter (fun (expected_dtor : ty_xtor) ->
         if not (List.exists (Path.equal expected_dtor.symbol) covered) then
           failwith ("missing case for destructor " ^ Path.name expected_dtor.symbol)
@@ -460,13 +518,15 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
       (* Check no duplicate clauses *)
       let rec check_duplicates seen = function
         | [] -> ()
-        | ((clause_dtor, _, _, _) : clause) :: rest ->
+        | ((clause_dtor, _, _, _) : typed_clause) :: rest ->
           if List.exists (Path.equal clause_dtor.symbol) seen then
             failwith ("duplicate case for destructor " ^ Path.name clause_dtor.symbol)
           else
             check_duplicates (clause_dtor.symbol :: seen) rest
       in
-      check_duplicates [] cs
+      check_duplicates [] cs_typed;
+      
+      TyTmNew (Some ty_annot, cs_typed, ty)
     | _ -> failwith "expected codata type in new")
 
   | TmNew (None, cs) ->
@@ -475,7 +535,7 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
     | TyDef (Code td) ->
       (* Reuse the same logic as TmNew (Some _, cs) above *)
       (* Check each clause against its corresponding destructor *)
-      List.iter (fun ((clause_dtor, type_binders, term_binders, body) : clause) ->
+      let cs_typed = List.map (fun ((clause_dtor, type_binders, term_binders, body) : clause) ->
         (* 1. Find the matching destructor in the normalized codata *)
         let dtor : ty_xtor = 
           match List.find_opt (fun (x : ty_xtor) -> 
@@ -550,11 +610,12 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
         ) ctx'.types arg_vars arg_sources} in
         
         (* 9. Check the body has the return type in the extended context *)
-        check_typ defs ctx'' body return_ty
-      ) cs;
+        let body_typed = check_typ defs ctx'' body return_ty in
+        (clause_dtor, type_binders, term_binders, body_typed)
+      ) cs in
       
       (* 10. Verify all td.xtors covered and no duplicate clauses *)
-      let covered = List.map (fun ((clause_dtor, _, _, _) : clause) -> clause_dtor.symbol) cs in
+      let covered = List.map (fun ((clause_dtor, _, _, _) : typed_clause) -> clause_dtor.symbol) cs_typed in
       List.iter (fun (expected_dtor : ty_xtor) ->
         if not (List.exists (Path.equal expected_dtor.symbol) covered) then
           failwith ("missing case for destructor " ^ Path.name expected_dtor.symbol)
@@ -563,13 +624,15 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
       (* Check no duplicate clauses *)
       let rec check_duplicates seen = function
         | [] -> ()
-        | ((clause_dtor, _, _, _) : clause) :: rest ->
+        | ((clause_dtor, _, _, _) : typed_clause) :: rest ->
           if List.exists (Path.equal clause_dtor.symbol) seen then
             failwith ("duplicate case for destructor " ^ Path.name clause_dtor.symbol)
           else
             check_duplicates (clause_dtor.symbol :: seen) rest
       in
-      check_duplicates [] cs
+      check_duplicates [] cs_typed;
+      
+      TyTmNew (None, cs_typed, ty)
     | _ -> failwith "expected codata type in new")
 
   | TmLam (x, ty_opt, body) ->
@@ -585,7 +648,8 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
       | None -> ());
       (* Check body in extended context *)
       let ctx' = {ctx with types = Ident.add x ty_arg ctx.types} in
-      check_typ defs ctx' body ty_body
+      let body_typed = check_typ defs ctx' body ty_body in
+      TyTmLam (x, ty_arg, body_typed, ty)
     | _ -> failwith "expected function type for lambda")
 
   | TmAll ((a, k), body) ->
@@ -600,7 +664,8 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
         let ty_body = subst rename_subst ty_body' in
         (* Check body has the renamed type in extended kind context *)
         let ctx' = {ctx with kinds = Ident.add a k ctx.kinds} in
-        check_typ defs ctx' body ty_body
+        let body_typed = check_typ defs ctx' body ty_body in
+        TyTmAll ((a, k), body_typed, ty)
     | _ -> failwith "expected universal type for polymorphic term")
 
   | TmIns (t, ty_arg) ->
@@ -609,24 +674,28 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
     (* Create a fresh type variable for checking *)
     let a = Ident.mk "a" in
     (* Check t against the polymorphic type TyAll((a, k), ty) *)
-    check_typ defs ctx t (TyAll ((a, k), ty))
+    let t_typed = check_typ defs ctx t (TyAll ((a, k), ty)) in
+    TyTmIns (t_typed, ty_arg, ty)
 
   | TmLet (x, t, u) ->
     (* Infer the type of the bound expression *)
-    let t_ty = infer_typ defs ctx t in
+    let t_ty, t_typed = infer_typ defs ctx t in
     (* Extend context with x:t_ty and check body against expected type *)
     let ctx' = {ctx with types = Ident.add x t_ty ctx.types} in
-    check_typ defs ctx' u ty
+    let u_typed = check_typ defs ctx' u ty in
+    TyTmLet (x, t_typed, u_typed, ty)
 
   | _ ->
-    let inferred = infer_typ defs ctx tm in
-    if not (equivalent defs.type_defs inferred ty) then
+    let inferred_ty, tm_typed = infer_typ defs ctx tm in
+    if not (equivalent defs.type_defs inferred_ty ty) then
       failwith ("type mismatch: expected " ^ typ_to_string false ty ^ 
-                " but got " ^ typ_to_string false inferred)
+                " but got " ^ typ_to_string false inferred_ty)
+    else
+      tm_typed
         
 (* checking a collection of mutually recursive definitions *)
-let check_all (defs: definitions) : unit =
-  List.iter (fun (_path, (td : term_def)) ->
+let check_all (defs: definitions) : typed_definitions =
+  let typed_term_defs = List.map (fun (path, (td : term_def)) ->
     (* Build context from type and term parameters *)
     let ctx = {
       kinds = List.fold_left (fun acc (type_var, k) ->
@@ -637,79 +706,19 @@ let check_all (defs: definitions) : unit =
       ) Ident.emptytbl td.term_args
     } in
     (* Check body against declared return type *)
-    check_typ defs ctx td.body td.return_type
-  ) defs.term_defs
+    let body_typed = check_typ defs ctx td.body td.return_type in
+    let typed_td : typed_term_def = {
+      name = td.name;
+      type_args = td.type_args;
+      term_args = td.term_args;
+      return_type = td.return_type;
+      body = body_typed
+    } in
+    (path, typed_td)
+  ) defs.term_defs in
+  { type_defs = defs.type_defs
+  ; term_defs = typed_term_defs
+  }
 
 
-(*
-Conversion of Lang terms to Core term. First in pseudo-code:
-
-let rec conv (tm: term) : producer =
-  match tm with
-  | TmInt n -> Int n
-  | TmVar x -> Var x
-  | TmSym sym ->
-    (* Not sure what to do! If the symbol references a top-level
-      function definition, and that definition is applied, we want
-      to convert to a function call. *)
-
-  | TmApp (t, u) ->
-    match infer_typ t with
-    | TyFun(a, b) ->
-      let x = Ident.fresh () in
-      (* Use the $apply destructor of the primitive $fun codata type *)
-      μx.< conv t | $apply{a}{b}(x, conv u) >
-    |  _ -> error
-
-  | TmIns (t, ty) ->
-    match infer_typ t with
-    | TyAll((a, k), body) ->
-      let a = Ident.fresh () in
-      (* Use the $inst destructor of the primitive $forall codata type *)
-      μa.< conv t | $inst{Convert.type body}{ty}(a) >
-    | _ -> error
-
-  | TmLam (x, Some a, t) ->
-    let b = infer_typ t in
-    let y = Ident.fresh () in
-    new $fun{a}{b} { $apply{a}{b}(x, y) => < conv t | y >) }
-
-  | TmAll ((a, k), t) ->
-    let b = infer_typ t in
-    let y = Ident.fresh () in
-    new $forall {k} { $inst{a: k}(y) => < conv t | y > }
-
-  (* let x = t in u *)
-  | TmLet (x, t, u) ->
-    let y = Ident.fresh () in
-    μy.< conv t | μ̃x.< conv u | y > >
-
-  (* match t with { clauses } *)
-  | TmMatch (t, clauses) ->
-    (* if clauses = { ctor_i{yj's}(tk's) => r_i };
-      using that data type convert to essentially
-      the same with Convert.type *)
-    let y = Ident.fresh () in
-    μy.< conv t | ctor_i{yj's}(tk's)(y) => < conv r_i | y >
-
-  | TmNew clauses ->
-    (* if clauses = { dtor_i{yj's}(tk's) => r_i };
-      using that the codata type convert with Convert.type
-      to get an extra consumer argument *)
-    let y_i's = Ident.fresh ()'s in
-    cocase { dtor_i{yj's}(tk's)(y_i) => < conv r_i | y_i > }
-
-  (* ctor{ai's}(ti's); type and term arguments *)
-  | TmCtor (ctor, ai's, ti's) ->
-    (* data types convert to essentially themselves *)
-    ctor{(Convert.type ai)'s}((conv ti)'s)
-
-  (* dtor{ai's}(ti's); type and term arguments *)
-  | TmDtor (ai's, ti's) ->
-    (* using how codata types convert *)
-    let self = head ti's in
-    let ti's = tail ti's in
-    let y = Ident.fresh () in
-    μy.< conv self | dtor{(Convert.type ai)'s}((conv ti)'s)(y) > 
-
-*)
+(* Conversion to Core terms is now in the Convert module at the top level *)

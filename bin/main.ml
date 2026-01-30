@@ -6,23 +6,23 @@ let test_case name input =
     let ast_defs = Parse.parse_defs_string input in
     let defs = Syntax.to_definitions ast_defs in
     print_endline (Printf.sprintf "Parsed %d type definitions and %d term definitions" 
-      (List.length defs.Terms.type_defs) (List.length defs.Terms.term_defs));
+      (List.length defs.type_defs) (List.length defs.term_defs));
     
     (* Debug: Show what definitions we have *)
     if name = "Test 4: Codata" then begin
       print_endline "\nType definitions:";
       List.iter (fun (path, _) -> 
         print_endline ("  " ^ Common.Identifiers.Path.name path)
-      ) defs.Terms.type_defs;
+      ) defs.type_defs;
       print_endline "\nTerm definitions:";
-      List.iter (fun (path, td) -> 
+      List.iter (fun (path, (td : Terms.term_def)) -> 
         print_endline ("  " ^ Common.Identifiers.Path.name path ^ " : " ^ 
-          Types.typ_to_string false td.Terms.return_type)
-      ) defs.Terms.term_defs;
+          Types.typ_to_string false td.return_type)
+      ) defs.term_defs;
       print_endline ""
     end;
     
-    Terms.check_all defs;
+    let _typed_defs : Terms.typed_definitions = Terms.check_all defs in
     print_endline "✓ All definitions type check successfully!\n"
   with
   | Failure msg -> 

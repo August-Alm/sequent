@@ -100,6 +100,144 @@ let error msg = raise (Error msg)
 
 module CT = Common.Types
 
+(** Pretty-printing for Core terms *)
+
+(* Helper for indentation *)
+let indent (n: int) : string = String.make (n * 2) ' '
+
+(* Pretty-print type arguments *)
+let type_args_to_string (tys: Type.t list) : string =
+  if tys = [] then ""
+  else "{" ^ String.concat ", " (List.map Type.to_string tys) ^ "}"
+
+(* Pretty-print identifiers *)
+let idents_to_string (ids: Ident.t list) : string =
+  String.concat ", " (List.map Ident.name ids)
+
+(* Pretty-print xtor arguments *)
+let xtor_args_to_string (ty_args, prods, cons: xtor_args) : string =
+  let parts = [] in
+  let parts = if ty_args <> [] then 
+    (type_args_to_string ty_args) :: parts 
+  else parts in
+  let parts = if prods <> [] then
+    ("(" ^ String.concat ", " (List.map (fun _ -> "_") prods) ^ ")") :: parts
+  else parts in
+  let parts = if cons <> [] then
+    ("(" ^ String.concat ", " (List.map (fun _ -> "_") cons) ^ ")") :: parts
+  else parts in
+  String.concat "" (List.rev parts)
+
+(* Pretty-print statement *)
+let rec statement_to_string ?(depth=0) (s: statement) : string =
+  match s with
+  | Cut (p, c) ->
+    "⟨" ^ producer_to_string ~depth p ^ " | " ^ 
+    consumer_to_string ~depth c ^ "⟩"
+
+(* Pretty-print producer *)
+and producer_to_string ?(depth=0) (p: producer) : string =
+  match p with
+  | Int n -> string_of_int n
+  
+  | Var x -> Ident.name x
+  
+  | Mu (x, s) ->
+    let s_str = statement_to_string ~depth:(depth+1) s in
+    "μ" ^ Ident.name x ^ "." ^ s_str
+  
+  | Constructor (xtor, (ty_args, prods, cons)) ->
+    let xtor_name = Path.name xtor in
+    let ty_str = type_args_to_string ty_args in
+    let prod_strs = List.map (producer_to_string ~depth) prods in
+    let cons_strs = List.map (consumer_to_string ~depth) cons in
+    let args = prod_strs @ cons_strs in
+    let args_str = if args = [] then "()" else "(" ^ String.concat ", " args ^ ")" in
+    xtor_name ^ ty_str ^ args_str
+  
+  | Cocase patterns ->
+    if patterns = [] then "new {}"
+    else
+      let pattern_strs = List.map (fun pat ->
+        pattern_to_string ~depth pat
+      ) patterns in
+      if List.length patterns = 1 then
+        "new { " ^ List.hd pattern_strs ^ " }"
+      else
+        "new {\n" ^ 
+        String.concat "\n" (List.map (fun s -> indent (depth+1) ^ s) pattern_strs) ^
+        "\n" ^ indent depth ^ "}"
+
+(* Pretty-print consumer *)
+and consumer_to_string ?(depth=0) (c: consumer) : string =
+  match c with
+  | Covar x -> Ident.name x
+  
+  | MuTilde (x, s) ->
+    let s_str = statement_to_string ~depth:(depth+1) s in
+    "μ̃" ^ Ident.name x ^ "." ^ s_str
+  
+  | Destructor (xtor, (ty_args, prods, cons)) ->
+    let xtor_name = Path.name xtor in
+    let ty_str = type_args_to_string ty_args in
+    let prod_strs = List.map (producer_to_string ~depth) prods in
+    let cons_strs = List.map (consumer_to_string ~depth) cons in
+    let args = prod_strs @ cons_strs in
+    let args_str = if args = [] then "()" else "(" ^ String.concat ", " args ^ ")" in
+    xtor_name ^ ty_str ^ args_str
+  
+  | Case patterns ->
+    if patterns = [] then "case {}"
+    else
+      let pattern_strs = List.map (fun pat ->
+        pattern_to_string ~depth pat
+      ) patterns in
+      if List.length patterns = 1 then
+        "case { " ^ List.hd pattern_strs ^ " }"
+      else
+        "case {\n" ^ 
+        String.concat "\n" (List.map (fun s -> indent (depth+1) ^ s) pattern_strs) ^
+        "\n" ^ indent depth ^ "}"
+
+(* Pretty-print pattern *)
+and pattern_to_string ?(depth=0) (pat: pattern) : string =
+  let xtor_name = Path.name pat.xtor in
+  let ty_str = if pat.type_vars = [] then "" 
+    else "{" ^ idents_to_string pat.type_vars ^ "}" in
+  let var_str = if pat.variables = [] then ""
+    else "(" ^ idents_to_string pat.variables ^ ")" in
+  let covar_str = if pat.covariables = [] then ""
+    else "(" ^ idents_to_string pat.covariables ^ ")" in
+  let args_str = ty_str ^ var_str ^ covar_str in
+  let stmt_str = statement_to_string ~depth:(depth+1) pat.statement in
+  xtor_name ^ args_str ^ " => " ^ stmt_str
+
+(* Pretty-print expression *)
+let expression_to_string ?(depth=0) (e: expression) : string =
+  match e with
+  | Pro p -> producer_to_string ~depth p
+  | Con c -> consumer_to_string ~depth c
+
+(* Pretty-print term definition *)
+let term_def_to_string (td: term_def) : string =
+  let name = Path.name td.name in
+  let ty_args_str = if td.type_args = [] then ""
+    else "{" ^ String.concat ", " (List.map (fun (x, k) ->
+      Ident.name x ^ ": " ^ Kind.to_string k
+    ) td.type_args) ^ "}" in
+  let prod_args_str = if td.prod_args = [] then ""
+    else "(" ^ String.concat ", " (List.map (fun (x, ty) ->
+      Ident.name x ^ ": " ^ Type.to_string ty
+    ) td.prod_args) ^ ")" in
+  let cons_args_str = if td.cons_args = [] then ""
+    else "(" ^ String.concat ", " (List.map (fun (x, ty) ->
+      Ident.name x ^ ": " ^ Type.to_string ty
+    ) td.cons_args) ^ ")" in
+  let args_str = ty_args_str ^ prod_args_str ^ cons_args_str in
+  let ret_str = Type.to_string td.return_type in
+  let body_str = statement_to_string ~depth:1 td.body in
+  name ^ args_str ^ ": " ^ ret_str ^ " =\n  " ^ body_str
+
 (* Helper functions to look up type definitions and xtors *)
 let get_type_def (defs: definitions) (xtor: Path.t) : (ty_def * kind) =
   match List.assoc_opt xtor defs.type_defs with

@@ -352,3 +352,77 @@ term ::=
   | fun var_decs -> term
   | (term terms)
   |
+
+Conversion of Lang terms to Core term. First in pseudo-code:
+
+let rec conv (tm: term) : producer =
+  match tm with
+  | TmInt n -> Int n
+  | TmVar x -> Var x
+  | TmSym sym ->
+    (* Not sure what to do! If the symbol references a top-level
+      function definition, and that definition is applied, we want
+      to convert to a function call. *)
+
+  | TmApp (t, u) ->
+    match infer_typ t with
+    | TyFun(a, b) ->
+      let x = Ident.fresh () in
+      (* Use the $apply destructor of the primitive $fun codata type *)
+      μx.< conv t | $apply{a}{b}(x, conv u) >
+    |  _ -> error
+
+  | TmIns (t, ty) ->
+    match infer_typ t with
+    | TyAll((a, k), body) ->
+      let a = Ident.fresh () in
+      (* Use the $inst destructor of the primitive $forall codata type *)
+      μa.< conv t | $inst{Convert.type body}{ty}(a) >
+    | _ -> error
+
+  | TmLam (x, Some a, t) ->
+    let b = infer_typ t in
+    let y = Ident.fresh () in
+    new $fun{a}{b} { $apply{a}{b}(x, y) => < conv t | y >) }
+
+  | TmAll ((a, k), t) ->
+    let b = infer_typ t in
+    let y = Ident.fresh () in
+    new $forall {k} { $inst{a: k}(y) => < conv t | y > }
+
+  (* let x = t in u *)
+  | TmLet (x, t, u) ->
+    let y = Ident.fresh () in
+    μy.< conv t | μ̃x.< conv u | y > >
+
+  (* match t with { clauses } *)
+  | TmMatch (t, clauses) ->
+    (* if clauses = { ctor_i{yj's}(tk's) => r_i };
+      using that data type convert to essentially
+      the same with Convert.type *)
+    let y = Ident.fresh () in
+    μy.< conv t | ctor_i{yj's}(tk's)(y) => < conv r_i | y >
+
+  | TmNew clauses ->
+    (* if clauses = { dtor_i{yj's}(tk's) => r_i };
+      using that the codata type convert with Convert.type
+      to get an extra consumer argument *)
+    let y_i's = Ident.fresh ()'s in
+    cocase { dtor_i{yj's}(tk's)(y_i) => < conv r_i | y_i > }
+
+  (* ctor{ai's}(ti's); type and term arguments *)
+  | TmCtor (ctor, ai's, ti's) ->
+    (* data types convert to essentially themselves *)
+    ctor{(Convert.type ai)'s}((conv ti)'s)
+
+  (* dtor{ai's}(ti's); type and term arguments *)
+  | TmDtor (ai's, ti's) ->
+    (* using how codata types convert *)
+    let self = head ti's in
+    let ti's = tail ti's in
+    let y = Ident.fresh () in
+    μy.< conv self | dtor{(Convert.type ai)'s}((conv ti)'s)(y) > 
+
+
+
+ μx.⟨t|μ̃y.⟨u|x⟩⟩
