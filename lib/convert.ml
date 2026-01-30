@@ -36,22 +36,11 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
   | Lang.Terms.TyTmVar (x, _ty) ->
     CT.Var x
 
-  | Lang.Terms.TyTmSym (sym, ty) ->
-    (* Check if this is a top-level constant (no arguments) *)
-    let arity = count_fun_arrows ty in
-    if arity = 0 then
-      (* Top-level constant - treat as variable for now *)
-      (* TODO: Could inline the body here if we had access to definitions *)
-      (match Path.as_ident sym with
-      | Some id -> CT.Var id
-      | None -> CT.Var (Ident.mk (Path.name sym))
-      )
-    else
-      (* Function symbol without application - treat as variable *)
-      (match Path.as_ident sym with
-      | Some id -> CT.Var id
-      | None -> CT.Var (Ident.mk (Path.name sym))
-      )
+  | Lang.Terms.TyTmSym (sym, _ty) ->
+    (* Top-level symbol reference - always use Call *)
+    let alpha = Ident.fresh () in
+    let ty_args = [] in (* TODO: extract actual type instantiations *)
+    CT.Mu (alpha, CT.Call (sym, ty_args, [], [CT.Covar alpha]))
 
   | Lang.Terms.TyTmApp (t, u, ty_ret) ->
     (* Collect all arguments from nested applications *)
@@ -97,6 +86,10 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
               CT.covariables = [y];
               CT.statement = CT.Cut (
                 make_lambdas rest_tys (provided_args @ [Lang.Terms.TyTmVar (x, arg_ty)]),
+                (* The result type after applying remaining arguments *)
+                List.fold_right (fun arg_ty acc -> 
+                  Common.Types.TyApp (Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.fun_sym, Common.Types.KArrow (Common.Types.KStar, Common.Types.KArrow (Common.Types.KStar, Common.Types.KStar)))), Lang.Types.Convert.typ arg_ty), acc)
+                ) rest_tys (Lang.Types.Convert.typ ty_ret),
                 CT.Covar y
               )
             }]
@@ -113,10 +106,12 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
       (* μx.< conv t | $apply{ty_arg}{ty_ret}(x, conv u) > *)
       CT.Mu (x, CT.Cut (
         convert t,
+        (* Function type: ty_arg -> ty_ret *)
+        Common.Types.TyApp (Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.fun_sym, Common.Types.KArrow (Common.Types.KStar, Common.Types.KArrow (Common.Types.KStar, Common.Types.KStar)))), Lang.Types.Convert.typ ty_arg), Lang.Types.Convert.typ ty_ret),
         CT.Destructor (Common.Types.Prim.app_dtor_sym, (
           [Lang.Types.Convert.typ ty_arg; Lang.Types.Convert.typ ty_ret],
           [CT.Var x],
-          [CT.MuTilde (x, CT.Cut (convert u, CT.Covar x))]
+          [CT.MuTilde (x, CT.Cut (convert u, Lang.Types.Convert.typ ty_arg, CT.Covar x))]
         ))
       ))
     )
@@ -127,6 +122,8 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     (* μx.< conv t | $inst{ty_result}{ty_arg}(x) > *)
     CT.Mu (x, CT.Cut (
       convert t,
+      (* Forall type: $forall{k}(ty_result) *)
+      Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.all_sym k, Common.Types.KArrow (Common.Types.KArrow (k, Common.Types.KStar), Common.Types.KStar))), Lang.Types.Convert.typ ty_result),
       CT.Destructor (Common.Types.Prim.ins_dtor_sym k, (
         [Lang.Types.Convert.typ ty_result; Lang.Types.Convert.typ ty_arg],
         [],
@@ -135,7 +132,7 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     ))
 
   | Lang.Terms.TyTmLam (x, _a, body, _ty) ->
-    let _b = Lang.Terms.get_type body in
+    let b = Lang.Terms.get_type body in
     let y = Ident.fresh () in
     let ta = Ident.fresh () in
     let tb = Ident.fresh () in
@@ -145,11 +142,11 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
       CT.type_vars = [ta; tb];
       CT.variables = [x];
       CT.covariables = [y];
-      CT.statement = CT.Cut (convert body, CT.Covar y)
+      CT.statement = CT.Cut (convert body, Lang.Types.Convert.typ b, CT.Covar y)
     }]
 
   | Lang.Terms.TyTmAll ((a, k), body, _ty) ->
-    let _b = Lang.Terms.get_type body in
+    let b = Lang.Terms.get_type body in
     let y = Ident.fresh () in
     (* new $forall{k} { $inst{a: k}(y) => < conv body | y > } *)
     CT.Cocase [{
@@ -157,47 +154,52 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
       CT.type_vars = [a];
       CT.variables = [];
       CT.covariables = [y];
-      CT.statement = CT.Cut (convert body, CT.Covar y)
+      CT.statement = CT.Cut (convert body, Lang.Types.Convert.typ b, CT.Covar y)
     }]
 
-  | Lang.Terms.TyTmLet (x, t, u, _ty) ->
+  | Lang.Terms.TyTmLet (x, t, u, ty) ->
+    let t_ty = Lang.Terms.get_type t in
     let y = Ident.fresh () in
     (* μy.< conv t | μ̃x.< conv u | y > > *)
     CT.Mu (y, CT.Cut (
       convert t,
-      CT.MuTilde (x, CT.Cut (convert u, CT.Covar y))
+      Lang.Types.Convert.typ t_ty,
+      CT.MuTilde (x, CT.Cut (convert u, Lang.Types.Convert.typ ty, CT.Covar y))
     ))
 
-  | Lang.Terms.TyTmMatch (t, clauses, _ty) ->
+  | Lang.Terms.TyTmMatch (t, clauses, ty) ->
+    let t_ty = Lang.Terms.get_type t in
     let y = Ident.fresh () in
-    (* μy.< conv t | case { ctor_i{type_vars}(term_vars, y) => < conv body_i | y > } > *)
+    (* μy.< conv t | case { ctor_i{type_vars}(term_vars) => < conv body_i | y > } > *)
     let patterns = List.map (fun (xtor, type_vars, term_vars, body) ->
       { CT.xtor = xtor.Lang.Types.symbol
       ; CT.type_vars = type_vars
       ; CT.variables = term_vars
-      ; CT.covariables = [y]
-      ; CT.statement = CT.Cut (convert body, CT.Covar y)
+      ; CT.covariables = []  (* Case patterns don't have covariables *)
+      ; CT.statement = CT.Cut (convert body, Lang.Types.Convert.typ ty, CT.Covar y)
       }
     ) clauses in
     CT.Mu (y, CT.Cut (
       convert t,
+      Lang.Types.Convert.typ t_ty,
       CT.Case patterns
     ))
 
   | Lang.Terms.TyTmNew (_ty_opt, clauses, _ty) ->
-    (* cocase { dtor_i{type_vars}(this, term_vars, y_i) => < conv body_i | y_i > } *)
+    (* In Lang: new stream(a) { head{_}(self) => x ; tail{_}(self) => self }
+       In Core: cocase { head{a}(self)(k) => <x | k> ; tail{a}(self)(k) => <self | k> }
+       
+       The self parameter represents the object being destructed (like method parameters).
+       In Core, self is a producer variable in the pattern, plus covariable k (continuation).
+    *)
     let patterns = List.map (fun (xtor, _type_vars, term_vars, body) ->
-      (* Split term_vars into this and args *)
-      let _this_var, arg_vars = match term_vars with
-        | [] -> failwith "convert: destructor must have at least 'this' argument"
-        | t :: rest -> t, rest
-      in
+      let body_ty = Lang.Terms.get_type body in
       let y = Ident.fresh () in
       { CT.xtor = xtor.Lang.Types.symbol
       ; CT.type_vars = _type_vars
-      ; CT.variables = arg_vars
+      ; CT.variables = term_vars  (* Keep all term_vars including self *)
       ; CT.covariables = [y]
-      ; CT.statement = CT.Cut (convert body, CT.Covar y)
+      ; CT.statement = CT.Cut (convert body, Lang.Types.Convert.typ body_ty, CT.Covar y)
       }
     ) clauses in
     CT.Cocase patterns
@@ -215,10 +217,12 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     (match tm_args with
     | [] -> failwith "convert: destructor must have at least 'self' argument"
     | self :: rest ->
+      let self_ty = Lang.Terms.get_type self in
       let y = Ident.fresh () in
       (* μy.< conv self | dtor{(Convert.typ ty_args)}((conv rest), y) > *)
       CT.Mu (y, CT.Cut (
         convert self,
+        Lang.Types.Convert.typ self_ty,
         CT.Destructor (dtor.Lang.Types.symbol, (
           List.map Lang.Types.Convert.typ ty_args,
           List.map convert rest,
@@ -250,12 +254,14 @@ let convert_term_def (td: Lang.Terms.typed_term_def) : CT.term_def =
         CT.type_vars = [type_var];
         CT.variables = [];
         CT.covariables = [y];
-        CT.statement = CT.Cut (inner_producer, CT.Covar y)
+        CT.statement = CT.Cut (inner_producer, Lang.Types.Convert.typ td.Lang.Terms.return_type, CT.Covar y)
       }]
     ) td.Lang.Terms.type_args body_producer
   in
   
-  let body_statement = CT.Cut (body_with_type_abstraction, CT.Covar alpha) in
+  let body_statement =
+    CT.Cut (body_with_type_abstraction, Lang.Types.Convert.typ td.Lang.Terms.return_type, CT.Covar alpha)
+  in
   
   { CT.name = td.Lang.Terms.name
   ; CT.type_args = td.Lang.Terms.type_args  (* Keep type parameters in signature *)

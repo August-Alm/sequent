@@ -15,8 +15,8 @@ type chirality =
 
 module Chirality = struct
   let to_string = function
-    | Prd ty -> "Prd " ^ Type.to_string ty
-    | Cns ty -> "Cns " ^ Type.to_string ty
+    | Prd ty -> "prd " ^ Type.to_string ty
+    | Cns ty -> "cns " ^ Type.to_string ty
 end
 
 module Context = struct
@@ -51,7 +51,7 @@ end
 
 
 type statement =
-  | Cut of producer * consumer
+  | Cut of producer * Type.t * consumer
   | Call of Path.t * (Type.t list) * (producer list) * (consumer list)
 
 and producer =
@@ -137,7 +137,7 @@ let xtor_args_to_string (ty_args, prods, cons: xtor_args) : string =
 (* Pretty-print statement *)
 let rec statement_to_string ?(depth=0) (s: statement) : string =
   match s with
-  | Cut (p, c) ->
+  | Cut (p, _, c) ->
     "⟨" ^ producer_to_string ~depth p ^ " | " ^ 
     consumer_to_string ~depth c ^ "⟩"
   
@@ -291,7 +291,10 @@ let rec check_statement
     (defs: definitions) (ctx: Context.t)
     (s: statement) (ty: Type.t) =
   match s with
-  | Cut (p, c) ->
+  | Cut (p, t, c) ->
+    if not (Type.equivalent defs.type_defs t ty) then
+      error ("Cut type mismatch: expected " ^ Type.to_string ty ^
+             ", got " ^ Type.to_string t);
     check_producer defs ctx p ty |> ignore;
     check_consumer defs ctx c ty |> ignore;
     ctx
@@ -536,22 +539,9 @@ and infer_statement
     (defs: definitions) (ctx: Context.t)
     (s: statement) =
   match s with
-  | Cut (p, c) ->
-    (try
-      let _, p_ty = infer_producer defs ctx p in
-      check_consumer defs ctx c p_ty |> ignore;
-    with e1 ->
-      try
-        let _, c_ty = infer_consumer defs ctx c in
-        check_producer defs ctx p c_ty |> ignore;
-      with e2 ->
-        (* Provide both errors for debugging *)
-        (match e1, e2 with
-        | Error msg1, Error msg2 ->
-          error ("cannot infer cut type - producer side: " ^ msg1 ^ "; consumer side: " ^ msg2)
-        | Error msg, _ | _, Error msg ->
-          error ("cannot infer cut type - " ^ msg)
-        | _ -> error "cannot infer cut type"))
+  | Cut (p, ty, c) ->
+    check_producer defs ctx p ty |> ignore;
+    check_consumer defs ctx c ty |> ignore;
   | Call (sym, ty_args, prods, cons) ->
     (* Look up the function definition to get its type *)
     let def = 

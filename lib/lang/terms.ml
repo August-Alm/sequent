@@ -101,7 +101,24 @@ type context =
   ; types: typ Ident.tbl
   }
 
-let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ * typed_term =
+(* Helper: Find if a path is a constructor or destructor *)
+let find_xtor (defs: definitions) (path: Path.t) : (ty_xtor * [`Data | `Code]) option =
+  let rec search_type_defs = function
+    | [] -> None
+    | (_, (Data td, _)) :: rest ->
+      (match List.find_opt (fun (x: ty_xtor) -> Path.equal x.symbol path) td.xtors with
+      | Some xtor -> Some (xtor, `Data)
+      | None -> search_type_defs rest)
+    | (_, (Code td, _)) :: rest ->
+      (match List.find_opt (fun (x: ty_xtor) -> Path.equal x.symbol path) td.xtors with
+      | Some xtor -> Some (xtor, `Code)
+      | None -> search_type_defs rest)
+    | _ :: rest -> search_type_defs rest
+  in
+  search_type_defs defs.type_defs
+
+let rec infer_typ
+    (defs: definitions) (ctx: context) (tm: term) : typ * typed_term =
   match tm with
   | TmInt n -> 
     let ty = Prim.int_typ in
@@ -128,16 +145,39 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ * typed_te
       (ty, TyTmSym (path, ty)))
 
   | TmApp (t, u) ->
-    (* Infer the type of the function *)
-    let t_ty, t_typed = infer_typ defs ctx t in
-    (* Reduce to check if it's a function type *)
-    (match reduce defs.type_defs t_ty with
-    | TyFun (ty_arg, ty_ret) ->
-      (* Check the argument has the expected type *)
-      let u_typed = check_typ defs ctx u ty_arg in
-      (* Return the result type *)
-      (ty_ret, TyTmApp (t_typed, u_typed, ty_ret))
-    | _ -> failwith "application expects a function type")
+    (* Check if this is an application of a constructor or destructor *)
+    (match t with
+    | TmCtor (xtor, [], []) ->
+      (* Constructor with no arguments applied - add this argument *)
+      infer_typ defs ctx (TmCtor (xtor, [], [u]))
+    | TmCtor (xtor, ty_args, tm_args) ->
+      (* Constructor with some arguments already - add another *)
+      infer_typ defs ctx (TmCtor (xtor, ty_args, tm_args @ [u]))
+    | TmSym path ->
+      (match find_xtor defs path with
+      | Some (xtor, `Data) ->
+        (* Constructor application with a single term argument *)
+        infer_typ defs ctx (TmCtor (xtor, [], [u]))
+      | Some (_xtor, `Code) ->
+        (* Destructor application - needs self + argument *)
+        (* But TmApp(TmSym dtor, arg) doesn't have self, so this is an error *)
+        failwith ("destructor " ^ Path.name path ^ " requires self argument")
+      | None ->
+        (* Regular function application *)
+        let t_ty, t_typed = infer_typ defs ctx t in
+        (match reduce defs.type_defs t_ty with
+        | TyFun (ty_arg, ty_ret) ->
+          let u_typed = check_typ defs ctx u ty_arg in
+          (ty_ret, TyTmApp (t_typed, u_typed, ty_ret))
+        | _ -> failwith "application expects a function type"))
+    | _ ->
+      (* Regular function application *)
+      let t_ty, t_typed = infer_typ defs ctx t in
+      (match reduce defs.type_defs t_ty with
+      | TyFun (ty_arg, ty_ret) ->
+        let u_typed = check_typ defs ctx u ty_arg in
+        (ty_ret, TyTmApp (t_typed, u_typed, ty_ret))
+      | _ -> failwith "application expects a function type"))
 
   | TmCtor (ctor, ty_args, tm_args) ->
     (* Allow partial application: verify we have at most the expected number of arguments *)
@@ -340,7 +380,8 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ * typed_te
   | _ ->
     failwith ("cannot infer type of: ")
 
-and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) : typed_term =
+and check_typ
+    (defs: definitions) (ctx: context) (tm: term) (ty: typ) =
   match tm with
   | TmMatch (t, cs) ->
     let t_ty, t_typed = infer_typ defs ctx t in
@@ -720,5 +761,3 @@ let check_all (defs: definitions) : typed_definitions =
   ; term_defs = typed_term_defs
   }
 
-
-(* Conversion to Core terms is now in the Convert module at the top level *)

@@ -45,3 +45,23 @@ However, there is a problem here. In the body of is_even, is_odd is
 a mere producer variable, and vice versa. We should probably add a
 constructor `| Call of Path.t * (producer list) * (consumer list)`
 of the `statement` type, to handle calls of top-level functions.
+
+  const_stream(x: nat)(u$63: cns stream(nat)): stream(nat) =
+    ⟨new {
+      head{_}(self)(u$64) => ⟨x | u$64⟩
+      tail{_}(self)(u$65) => ⟨self | u$65⟩
+    } | u$63⟩
+
+    This is incorrect, I think. In Core both head and tail should have a single continutation/consumer argument. An explicit invocation
+
+    head{a}(z) in Lang
+
+    becomes
+
+    μk.< conv z | dtor{converted_ty_args}(k) >
+
+    If z is a stream constructed as new { tail{_}(self) => x ; head{_}(self) => self } in Lang, we have
+    
+    conv z = new { tail{_}(k) => <x|k>; head{}(k)
+     we then evaluate
+    the cut by proceeding with the statement sh,
