@@ -65,7 +65,9 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
       if provided_arity = required_arity then
         (* Fully applied - generate Call statement *)
         let alpha = Ident.fresh () in
-        CT.Mu (alpha, CT.Call (sym, List.map convert args, [CT.Covar alpha]))
+        (* Extract type arguments from the symbol type if polymorphic *)
+        let ty_args = [] in (* TODO: extract actual type instantiations *)
+        CT.Mu (alpha, CT.Call (sym, ty_args, List.map convert args, [CT.Covar alpha]))
       
       else if provided_arity < required_arity then
         (* Partially applied - generate lambda for remaining arguments *)
@@ -81,7 +83,9 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
           | [] -> 
             (* All arguments provided - make the call *)
             let alpha = Ident.fresh () in
-            CT.Mu (alpha, CT.Call (sym, List.map convert provided_args, [CT.Covar alpha]))
+            (* TODO: extract actual type instantiations *)
+            let ty_args = [] in
+            CT.Mu (alpha, CT.Call (sym, ty_args, List.map convert provided_args, [CT.Covar alpha]))
           | arg_ty :: rest_tys ->
             (* Create lambda for this argument *)
             let x = Ident.fresh () in
@@ -117,13 +121,8 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
       ))
     )
 
-  | Lang.Terms.TyTmIns (t, ty_arg, ty_result) ->
-    (* Type instantiation was already checked - extract the kind from ty_arg *)
-    (* We need the kind k for the $inst destructor symbol *)
-    let k = match t with
-      | Lang.Terms.TyTmAll ((_, k), _, _) -> k
-      | _ -> Common.Types.KStar  (* default to * if we can't determine *)
-    in
+  | Lang.Terms.TyTmIns (t, ty_arg, k, ty_result) ->
+    (* Type instantiation was already checked - kind k is provided *)
     let x = Ident.fresh () in
     (* μx.< conv t | $inst{ty_result}{ty_arg}(x) > *)
     CT.Mu (x, CT.Cut (
@@ -138,10 +137,12 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
   | Lang.Terms.TyTmLam (x, _a, body, _ty) ->
     let _b = Lang.Terms.get_type body in
     let y = Ident.fresh () in
+    let ta = Ident.fresh () in
+    let tb = Ident.fresh () in
     (* new $fun{a}{b} { $apply{a}{b}(this, x, y) => < conv body | y > } *)
     CT.Cocase [{
       CT.xtor = Common.Types.Prim.app_dtor_sym;
-      CT.type_vars = [];
+      CT.type_vars = [ta; tb];
       CT.variables = [x];
       CT.covariables = [y];
       CT.statement = CT.Cut (convert body, CT.Covar y)
@@ -237,17 +238,75 @@ let convert_term_def (td: Lang.Terms.typed_term_def) : CT.term_def =
   let alpha = Ident.fresh () in
   let cons_args = [(alpha, Lang.Types.Convert.typ td.Lang.Terms.return_type)] in
   
-  (* Body: ⟨convert body | α⟩ *)
+  (* Body: convert the body and wrap in nested cocases for each type parameter *)
   let body_producer = convert td.Lang.Terms.body in
-  let body_statement = CT.Cut (body_producer, CT.Covar alpha) in
+  
+  (* Wrap body with type instantiation cocases for polymorphic functions *)
+  let body_with_type_abstraction = 
+    List.fold_right (fun (type_var, kind) inner_producer ->
+      let y = Ident.fresh () in
+      CT.Cocase [{
+        CT.xtor = Common.Types.Prim.ins_dtor_sym kind;
+        CT.type_vars = [type_var];
+        CT.variables = [];
+        CT.covariables = [y];
+        CT.statement = CT.Cut (inner_producer, CT.Covar y)
+      }]
+    ) td.Lang.Terms.type_args body_producer
+  in
+  
+  let body_statement = CT.Cut (body_with_type_abstraction, CT.Covar alpha) in
   
   { CT.name = td.Lang.Terms.name
-  ; CT.type_args = td.Lang.Terms.type_args
+  ; CT.type_args = td.Lang.Terms.type_args  (* Keep type parameters in signature *)
   ; CT.prod_args = prod_args
   ; CT.cons_args = cons_args
   ; CT.return_type = Lang.Types.Convert.typ td.Lang.Terms.return_type
   ; CT.body = body_statement
   }
+
+(* Collect all kinds used in TyTmAll nodes *)
+let rec collect_forall_kinds (tm: Lang.Terms.typed_term) : Common.Types.kind list =
+  match tm with
+  | Lang.Terms.TyTmInt _ -> []
+  | Lang.Terms.TyTmVar _ -> []
+  | Lang.Terms.TyTmSym _ -> []
+  | Lang.Terms.TyTmApp (t, u, _) ->
+    collect_forall_kinds t @ collect_forall_kinds u
+  | Lang.Terms.TyTmIns (t, _, _, _) ->
+    collect_forall_kinds t
+  | Lang.Terms.TyTmLam (_, _, body, _) ->
+    collect_forall_kinds body
+  | Lang.Terms.TyTmAll ((_, k), body, _) ->
+    k :: collect_forall_kinds body
+  | Lang.Terms.TyTmLet (_, t, u, _) ->
+    collect_forall_kinds t @ collect_forall_kinds u
+  | Lang.Terms.TyTmMatch (t, clauses, _) ->
+    let clause_kinds = List.concat_map (fun (_, _, _, body) ->
+      collect_forall_kinds body
+    ) clauses in
+    collect_forall_kinds t @ clause_kinds
+  | Lang.Terms.TyTmNew (_, clauses, _) ->
+    List.concat_map (fun (_, _, _, body) ->
+      collect_forall_kinds body
+    ) clauses
+  | Lang.Terms.TyTmCtor (_, _, args, _) ->
+    List.concat_map collect_forall_kinds args
+  | Lang.Terms.TyTmDtor (_, _, args, _) ->
+    List.concat_map collect_forall_kinds args
+
+let collect_all_forall_kinds (defs: Lang.Terms.typed_definitions) : Common.Types.kind list =
+  let kinds = List.concat_map (fun (_, td) ->
+    collect_forall_kinds td.Lang.Terms.body
+  ) defs.Lang.Terms.term_defs in
+  (* Remove duplicates by converting to a set-like structure *)
+  let rec unique = function
+    | [] -> []
+    | k :: rest ->
+      if List.mem k rest then unique rest
+      else k :: unique rest
+  in
+  unique kinds
 
 (* Convert typed definitions to Core definitions *)
 let convert_definitions (defs: Lang.Terms.typed_definitions) : CT.definitions =
@@ -266,6 +325,18 @@ let convert_definitions (defs: Lang.Terms.typed_definitions) : CT.definitions =
       (path, (Common.Types.Prim (s, k), kind))
   ) defs.Lang.Terms.type_defs in
   
-  { CT.type_defs = core_type_defs
+  (* Collect all kinds used in TyTmAll and generate $forall{k} definitions *)
+  let forall_kinds = collect_all_forall_kinds defs in
+  let forall_type_defs = List.map (fun k ->
+    let a = Ident.fresh () in
+    let forall_def = Common.Types.Prim.all_def a k in
+    let forall_kind = Common.Types.KArrow (Common.Types.KArrow (k, Common.Types.KStar), Common.Types.KStar) in
+    (Common.Types.Prim.all_sym k, (forall_def, forall_kind))
+  ) forall_kinds in
+  
+  (* Add primitive type definitions (int, $fun) and $forall{k} types *)
+  let all_type_defs = Common.Types.primitive_ty_defs @ forall_type_defs @ core_type_defs in
+  
+  { CT.type_defs = all_type_defs
   ; CT.term_defs = core_term_defs
   }

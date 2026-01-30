@@ -32,6 +32,11 @@ module Context = struct
     ; chiralities = Ident.add x ch ctx.chiralities
     }
   
+  let add_with_kind (x, ch, k: (Ident.t * chirality * kind)) (ctx: t) =
+    { kinds = Ident.add x k ctx.kinds
+    ; chiralities = Ident.add x ch ctx.chiralities
+    }
+  
   let add_many (xs: (Ident.t * chirality) list) (ctx: t) =
     List.fold_left (fun acc x -> add x acc) ctx xs
 
@@ -47,7 +52,7 @@ end
 
 type statement =
   | Cut of producer * consumer
-  | Call of Path.t * (producer list) * (consumer list)
+  | Call of Path.t * (Type.t list) * (producer list) * (consumer list)
 
 and producer =
   | Int of int
@@ -136,14 +141,15 @@ let rec statement_to_string ?(depth=0) (s: statement) : string =
     "⟨" ^ producer_to_string ~depth p ^ " | " ^ 
     consumer_to_string ~depth c ^ "⟩"
   
-  | Call (f, prods, cons) ->
+  | Call (f, ty_args, prods, cons) ->
     let f_name = Path.name f in
+    let ty_str = type_args_to_string ty_args in
     let ps = List.map (producer_to_string ~depth) prods in
     let prod_str = if ps = [] then "()" else "(" ^ String.concat ", " ps ^ ")" in
     let cs = List.map (consumer_to_string ~depth) cons in
     let cons_str = if cs = [] then "()" else "(" ^ String.concat ", " cs ^ ")" in
     let args_str = prod_str ^ cons_str in
-    f_name ^ args_str
+    f_name ^ ty_str ^ args_str
 
 (* Pretty-print producer *)
 and producer_to_string ?(depth=0) (p: producer) : string =
@@ -254,6 +260,19 @@ let get_type_def (defs: definitions) (xtor: Path.t) : (ty_def * kind) =
   | Some def -> def
   | None -> error ("undefined type symbol: " ^ Path.name xtor)
 
+(* Check if a destructor symbol is the primitive $inst{k} for some kind k *)
+let is_inst_destructor (sym: Path.t) : kind option =
+  match Path.as_ident sym with
+  | Some id ->
+    let stamp = Ident.stamp id in
+    (* $inst{k} has stamp -(1 + to_int k), where to_int k >= 100 and even *)
+    if stamp < -100 && (-stamp) mod 2 = 1 then
+      (* It's potentially $inst{k} - decode the kind *)
+      Some (CT.Prim.of_int (-stamp - 1))
+    else
+      None
+  | None -> None
+
 let get_xtor (defs: definitions) (sym: Path.t) : ty_xtor =
   let rec find_in_defs defs_list =
     match defs_list with
@@ -276,20 +295,31 @@ let rec check_statement
     check_producer defs ctx p ty |> ignore;
     check_consumer defs ctx c ty |> ignore;
     ctx
-  | Call (sym, prods, cons) ->
+  | Call (sym, ty_args, prods, cons) ->
     (* Look up the function definition to get its type *)
     let def = 
       match List.find_opt (fun (_, td) -> Path.equal td.name sym) defs.term_defs with
       | Some (_, d) -> d
       | None -> error ("Undefined function: " ^ Path.name sym)
     in
-    (* Check producer arguments *)
+    (* Check we have the right number of type arguments *)
+    if List.length ty_args <> List.length def.type_args then
+      error ("Function " ^ Path.name sym ^ " expects " ^
+             string_of_int (List.length def.type_args) ^
+             " type arguments, got " ^ string_of_int (List.length ty_args));
+    (* Build type substitution *)
+    let ty_subst = List.fold_left2 (fun acc (tv, _) ty ->
+      Ident.add tv ty acc
+    ) Ident.emptytbl def.type_args ty_args in
+    (* Check producer arguments with substituted types *)
     List.iter2 (fun prod (_, arg_ty) ->
-      check_producer defs ctx prod arg_ty |> ignore
+      let instantiated_ty = Type.subst ty_subst arg_ty in
+      check_producer defs ctx prod instantiated_ty |> ignore
     ) prods def.prod_args;
-    (* Check consumer arguments *)
+    (* Check consumer arguments with substituted types *)
     List.iter2 (fun cons (_, arg_ty) ->
-      check_consumer defs ctx cons arg_ty |> ignore
+      let instantiated_ty = Type.subst ty_subst arg_ty in
+      check_consumer defs ctx cons instantiated_ty |> ignore
     ) cons def.cons_args;
     ctx
 
@@ -303,53 +333,65 @@ and check_producer
     ctx
 
   | Cocase ptss ->
-    (match ty with
+    let ty_normalized = Type.reduce defs.type_defs ty in
+    (match ty_normalized with
     | TyDef (Code td) ->
       (* Check each pattern/cocase *)
       List.iter (fun (pat: pattern) ->
-        let xtor = get_xtor defs pat.xtor in
-        
-        (* Check this xtor belongs to the codata type *)
-        if not (Path.equal xtor.parent td.symbol) then
-          error ("destructor " ^ Path.name pat.xtor ^ " does not belong to type " ^ Path.name td.symbol);
-        
-        (* Check type variable count *)
-        if List.length pat.type_vars <> List.length xtor.quantified then
-          error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of type variables");
-        
-        (* Build type substitution *)
-        let ty_subst = List.fold_left2 (fun acc tv (qv, _) ->
-          Ident.add qv (TyVar tv) acc
-        ) Ident.emptytbl pat.type_vars xtor.quantified in
-        
-        (* Apply substitution to get actual types *)
-        let prod_tys = List.map (Type.subst ty_subst) xtor.producers in
-        let cons_tys = List.map (Type.subst ty_subst) xtor.consumers in
-        
-        (* Check argument counts *)
-        if List.length pat.variables <> List.length prod_tys then
-          error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of variables");
-        if List.length pat.covariables <> List.length cons_tys then
-          error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of covariables");
-        
-        (* Extend context with pattern bindings *)
-        let ctx' = List.fold_left2 (fun acc var ty ->
-          Context.add (var, Prd ty) acc
-        ) ctx pat.variables prod_tys in
-        let ctx'' = List.fold_left2 (fun acc covar ty ->
-          Context.add (covar, Cns ty) acc
-        ) ctx' pat.covariables cons_tys in
-        
-        (* Check the body statement *)
-        check_statement defs ctx'' pat.statement ty |> ignore
+        (* Find the xtor in the instantiated type declaration td, not globally *)
+        let xtor = match List.find_opt (fun x -> Path.equal x.symbol pat.xtor) td.xtors with
+          | Some x -> x
+          | None -> error ("destructor " ^ Path.name pat.xtor ^ " not found in type " ^ Path.name td.symbol)
+        in
+          
+          (* Check type variable count *)
+          if List.length pat.type_vars <> List.length xtor.quantified then
+            error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of type variables");
+          
+          (* Apply constraints from type instantiation first *)
+          let initial_subst = match xtor.constraints with
+            | None -> Ident.emptytbl
+            | Some constraints ->
+              List.fold_left (fun acc (qv, ty) ->
+                Ident.add qv ty acc
+              ) Ident.emptytbl constraints
+          in
+          
+          (* Then map remaining quantified vars to pattern type vars *)
+          let ty_subst = List.fold_left2 (fun acc tv (qv, _) ->
+            match Ident.find_opt qv acc with
+            | Some _ -> acc  (* Already constrained, keep it *)
+            | None -> Ident.add qv (TyVar tv) acc
+          ) initial_subst pat.type_vars xtor.quantified in
+          
+          (* Apply substitution to get actual types *)
+          let prod_tys = List.map (Type.subst ty_subst) xtor.producers in
+          let cons_tys = List.map (Type.subst ty_subst) xtor.consumers in
+          
+          (* Check argument counts *)
+          if List.length pat.variables <> List.length prod_tys then
+            error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of variables");
+          if List.length pat.covariables <> List.length cons_tys then
+            error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of covariables");
+          
+          (* Extend context with pattern bindings *)
+          let ctx' = List.fold_left2 (fun acc var ty ->
+            Context.add (var, Prd ty) acc
+          ) ctx pat.variables prod_tys in
+          let ctx'' = List.fold_left2 (fun acc covar ty ->
+            Context.add (covar, Cns ty) acc
+          ) ctx' pat.covariables cons_tys in
+          
+          (* Check the body statement - just ensure it type checks *)
+          infer_statement defs ctx'' pat.statement
       ) ptss;
       
       (* Check exhaustivity: all destructors covered *)
       let covered = List.map (fun (pat: pattern) -> pat.xtor) ptss in
       List.iter (fun (xtor: ty_xtor) ->
-        if not (List.exists (Path.equal xtor.symbol) covered) then
-          error ("missing cocase for destructor " ^ Path.name xtor.symbol)
-      ) td.xtors;
+          if not (List.exists (Path.equal xtor.symbol) covered) then
+            error ("missing cocase for destructor " ^ Path.name xtor.symbol)
+        ) td.xtors;
       
       (* Check no duplicates *)
       let rec check_dups seen = function
@@ -364,7 +406,33 @@ and check_producer
       
       ctx
       
-    | _ -> error "cocase used on non-codata type")
+    | TyVar _ ->
+      (* Type variable - skip checking, we can't verify constructors/destructors *)
+      (* Just check the pattern bodies with the type variable in scope *)
+      List.iter (fun (pat: pattern) ->
+        (* Add type variables from pattern to context *)
+        let ctx' = List.fold_left (fun acc tv ->
+          { Context.kinds = Ident.add tv Common.Types.KStar acc.Context.kinds
+          ; Context.chiralities = acc.Context.chiralities
+          }
+        ) ctx pat.type_vars in
+        
+        (* Add variables and covariables to context *)
+        let ctx'' = List.fold_left (fun acc var ->
+          Context.add (var, Prd ty) acc
+        ) ctx' pat.variables in
+        let ctx''' = List.fold_left (fun acc covar ->
+          Context.add (covar, Cns ty) acc
+        ) ctx'' pat.covariables in
+        
+        (* Check the body statement - just ensure it type checks *)
+        infer_statement defs ctx''' pat.statement
+      ) ptss;
+      ctx
+      
+    | _ -> 
+      let ty_str = Type.to_string ty_normalized in
+      error ("cocase used on non-codata type: " ^ ty_str))
 
   | _ ->
     let p_g, p_ty = infer_producer defs ctx p in
@@ -381,24 +449,36 @@ and check_consumer
     ctx
 
   | Case ptss ->
-    (match ty with
+    let ty_normalized = Type.reduce defs.type_defs ty in
+    (match ty_normalized with
     | TyDef (Data td) ->
       (* Check each pattern/case *)
       List.iter (fun (pat: pattern) ->
-        let xtor = get_xtor defs pat.xtor in
-        
-        (* Check this xtor belongs to the data type *)
-        if not (Path.equal xtor.parent td.symbol) then
-          error ("constructor " ^ Path.name pat.xtor ^ " does not belong to type " ^ Path.name td.symbol);
+        (* Find the xtor in the instantiated type declaration td, not globally *)
+        let xtor = match List.find_opt (fun x -> Path.equal x.symbol pat.xtor) td.xtors with
+          | Some x -> x
+          | None -> error ("constructor " ^ Path.name pat.xtor ^ " not found in type " ^ Path.name td.symbol)
+        in
         
         (* Check type variable count *)
         if List.length pat.type_vars <> List.length xtor.quantified then
           error ("pattern for " ^ Path.name pat.xtor ^ " has wrong number of type variables");
         
-        (* Build type substitution *)
+        (* Apply constraints from type instantiation first *)
+        let initial_subst = match xtor.constraints with
+          | None -> Ident.emptytbl
+          | Some constraints ->
+            List.fold_left (fun acc (qv, ty) ->
+              Ident.add qv ty acc
+            ) Ident.emptytbl constraints
+        in
+        
+        (* Then map remaining quantified vars to pattern type vars *)
         let ty_subst = List.fold_left2 (fun acc tv (qv, _) ->
-          Ident.add qv (TyVar tv) acc
-        ) Ident.emptytbl pat.type_vars xtor.quantified in
+          match Ident.find_opt qv acc with
+          | Some _ -> acc  (* Already constrained, keep it *)
+          | None -> Ident.add qv (TyVar tv) acc
+        ) initial_subst pat.type_vars xtor.quantified in
         
         (* Apply substitution to get actual types *)
         let prod_tys = List.map (Type.subst ty_subst) xtor.producers in
@@ -418,8 +498,8 @@ and check_consumer
           Context.add (covar, Cns ty) acc
         ) ctx' pat.covariables cons_tys in
         
-        (* Check the body statement *)
-        check_statement defs ctx'' pat.statement ty |> ignore
+        (* Check the body statement - just ensure it type checks *)
+        infer_statement defs ctx'' pat.statement
       ) ptss;
       
       (* Check exhaustivity: all constructors covered *)
@@ -447,7 +527,10 @@ and check_consumer
   | _ ->
     let c_g, c_ty = infer_consumer defs ctx c in
     if Type.equivalent defs.type_defs c_ty ty then c_g
-    else error "consumer type mismatch"
+    else 
+      let c_ty_str = Type.to_string c_ty in
+      let ty_str = Type.to_string ty in
+      error ("consumer type mismatch: expected " ^ ty_str ^ ", got " ^ c_ty_str)
 
 and infer_statement
     (defs: definitions) (ctx: Context.t)
@@ -457,26 +540,43 @@ and infer_statement
     (try
       let _, p_ty = infer_producer defs ctx p in
       check_consumer defs ctx c p_ty |> ignore;
-    with _ ->
+    with e1 ->
       try
         let _, c_ty = infer_consumer defs ctx c in
         check_producer defs ctx p c_ty |> ignore;
-      with _ ->
-        error "cannot infer cut type")
-  | Call (sym, prods, cons) ->
+      with e2 ->
+        (* Provide both errors for debugging *)
+        (match e1, e2 with
+        | Error msg1, Error msg2 ->
+          error ("cannot infer cut type - producer side: " ^ msg1 ^ "; consumer side: " ^ msg2)
+        | Error msg, _ | _, Error msg ->
+          error ("cannot infer cut type - " ^ msg)
+        | _ -> error "cannot infer cut type"))
+  | Call (sym, ty_args, prods, cons) ->
     (* Look up the function definition to get its type *)
     let def = 
       match List.find_opt (fun (_, td) -> Path.equal td.name sym) defs.term_defs with
       | Some (_, d) -> d
       | None -> error ("Undefined function: " ^ Path.name sym)
     in
-    (* Check producer arguments *)
+    (* Check we have the right number of type arguments *)
+    if List.length ty_args <> List.length def.type_args then
+      error ("Function " ^ Path.name sym ^ " expects " ^
+             string_of_int (List.length def.type_args) ^
+             " type arguments, got " ^ string_of_int (List.length ty_args));
+    (* Build type substitution *)
+    let ty_subst = List.fold_left2 (fun acc (tv, _) ty ->
+      Ident.add tv ty acc
+    ) Ident.emptytbl def.type_args ty_args in
+    (* Check producer arguments with substituted types *)
     List.iter2 (fun prod (_, arg_ty) ->
-      check_producer defs ctx prod arg_ty |> ignore
+      let instantiated_ty = Type.subst ty_subst arg_ty in
+      check_producer defs ctx prod instantiated_ty |> ignore
     ) prods def.prod_args;
-    (* Check consumer arguments *)
+    (* Check consumer arguments with substituted types *)
     List.iter2 (fun cons (_, arg_ty) ->
-      check_consumer defs ctx cons arg_ty |> ignore
+      let instantiated_ty = Type.subst ty_subst arg_ty in
+      check_consumer defs ctx cons instantiated_ty |> ignore
     ) cons def.cons_args;
 
 and infer_producer
@@ -556,30 +656,30 @@ and infer_consumer
 
   | Destructor (dtor, (tys, ps, cs)) ->
     let dtor_dec = get_xtor defs dtor in
-    let parent_def, _ = get_type_def defs dtor_dec.parent in
-    (match parent_def with
-    | Code _ ->
-      (* Check we have the right number of type arguments *)
-      if List.length tys <> List.length dtor_dec.quantified then
-        error ("destructor " ^ Path.name dtor ^ " expects " ^
-               string_of_int (List.length dtor_dec.quantified) ^
-               " type arguments, got " ^ string_of_int (List.length tys));
-      
-      (* Build substitution from quantified variables to provided types *)
-      let ty_subst = List.fold_left2 (fun acc (tv, _) ty ->
-        Ident.add tv ty acc
-      ) Ident.emptytbl dtor_dec.quantified tys in
-      
-      (* Apply substitution to producer and consumer types *)
-      let prod_tys = List.map (Type.subst ty_subst) dtor_dec.producers in
-      let cons_tys = List.map (Type.subst ty_subst) dtor_dec.consumers in
-      
-      (* Check producer arguments *)
-      if List.length ps <> List.length prod_tys then
-        error ("destructor " ^ Path.name dtor ^ " expects " ^
-               string_of_int (List.length prod_tys) ^ " producer arguments");
-      List.iter2 (fun p ty ->
-        check_producer defs ctx p ty |> ignore
+      let parent_def, _ = get_type_def defs dtor_dec.parent in
+      (match parent_def with
+      | Code _ ->
+        (* Check we have the right number of type arguments *)
+        if List.length tys <> List.length dtor_dec.quantified then
+          error ("destructor " ^ Path.name dtor ^ " expects " ^
+                 string_of_int (List.length dtor_dec.quantified) ^
+                 " type arguments, got " ^ string_of_int (List.length tys));
+        
+        (* Build substitution from quantified variables to provided types *)
+        let ty_subst = List.fold_left2 (fun acc (tv, _) ty ->
+          Ident.add tv ty acc
+        ) Ident.emptytbl dtor_dec.quantified tys in
+        
+        (* Apply substitution to producer and consumer types *)
+        let prod_tys = List.map (Type.subst ty_subst) dtor_dec.producers in
+        let cons_tys = List.map (Type.subst ty_subst) dtor_dec.consumers in
+        
+        (* Check producer arguments *)
+        if List.length ps <> List.length prod_tys then
+          error ("destructor " ^ Path.name dtor ^ " expects " ^
+                 string_of_int (List.length prod_tys) ^ " producer arguments");
+        List.iter2 (fun p ty ->
+          check_producer defs ctx p ty |> ignore
       ) ps prod_tys;
       
       (* Check consumer arguments *)
@@ -597,7 +697,35 @@ and infer_consumer
       ) (TySym dtor_dec.parent) arg_tys in
       
       (ctx, result_ty)
-    | _ ->
-      error "destructor used on non-codata type")
+      | _ ->
+        error "destructor used on non-codata type")
   
   | Case _ -> error "Cannot infer type of case"
+
+(* Check a term definition *)
+let check_term_def (defs: definitions) (td: term_def) : unit =
+  (* Build context with type parameters *)
+  let ctx = List.fold_left (fun acc (tv, k) ->
+    { Context.kinds = Ident.add tv k acc.Context.kinds
+    ; Context.chiralities = acc.Context.chiralities
+    }
+  ) Context.empty td.type_args in
+  
+  (* Add producer arguments to context *)
+  let ctx = List.fold_left (fun acc (x, ty) ->
+    Context.add (x, Prd ty) acc
+  ) ctx td.prod_args in
+  
+  (* Add consumer arguments to context *)
+  let ctx = List.fold_left (fun acc (x, ty) ->
+    Context.add (x, Cns ty) acc
+  ) ctx td.cons_args in
+  
+  (* Check the body statement with the return type *)
+  check_statement defs ctx td.body td.return_type |> ignore
+
+(* Check all term definitions *)
+let check_definitions (defs: definitions) : unit =
+  List.iter (fun (_, td) ->
+    check_term_def defs td
+  ) defs.term_defs

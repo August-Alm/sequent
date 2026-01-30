@@ -106,6 +106,18 @@ module Prim = struct
 
   let all_sym k = Path.of_primitive (to_int k) "$forall"
   let ins_dtor_sym k = Path.of_primitive (1 + to_int k) "$inst"
+  
+  let of_all_sym (sym: Path.t) : kind option =
+    match Path.as_ident sym with
+    | Some id ->
+      let stamp = Ident.stamp id in
+      let name = Ident.name id in
+      if name = "$forall" && stamp < 0 && (-stamp) >= 100 && (-stamp) mod 2 = 0 then
+        Some (of_int (-stamp))
+      else
+        None
+    | None -> None
+  
   let all_def a k =
     let t = Ident.mk "t" in
     Code
@@ -415,6 +427,17 @@ let rec whnf (seen: Path.t list) (defs: ty_defs) (ty: typ) =
     (match whnf seen defs f with
     | seen, TyDef (Data td) -> seen, TyDef (Data (inst1 seen defs td a))
     | seen, TyDef (Code td) -> seen, TyDef (Code (inst1 seen defs td a))
+    | seen, TyDef (Prim (sym, _kind)) ->
+      (* Primitive types - look them up in definitions *)
+      if List.exists (Path.equal sym) seen then
+        seen, ty
+      else
+        let seen' = sym :: seen in
+        (match List.assoc_opt sym defs with
+        | Some (Code td, _) -> seen', TyDef (Code (inst1 seen' defs td a))
+        | Some (Data td, _) -> seen', TyDef (Data (inst1 seen' defs td a))
+        | Some (Prim _, _) -> seen', ty
+        | None -> seen', ty)
     | seen, f' when f' == f -> seen, ty (* optimization *)
     | seen, f' -> seen, TyApp (f', a))
   | TySym s ->

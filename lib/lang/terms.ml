@@ -43,7 +43,7 @@ type typed_term =
   | TyTmVar of Ident.t * typ
   | TyTmSym of Path.t * typ
   | TyTmApp of typed_term * typed_term * typ
-  | TyTmIns of typed_term * typ * typ  (* term, type arg, result type *)
+  | TyTmIns of typed_term * typ * kind * typ  (* term, type arg, kind, result type *)
   | TyTmLam of Ident.t * typ * typed_term * typ  (* x, arg type, body, function type *)
   | TyTmAll of (Ident.t * kind) * typed_term * typ
   | TyTmLet of Ident.t * typed_term * typed_term * typ
@@ -61,7 +61,7 @@ let get_type (tm: typed_term) : typ =
   | TyTmVar (_, ty) -> ty
   | TyTmSym (_, ty) -> ty
   | TyTmApp (_, _, ty) -> ty
-  | TyTmIns (_, _, ty) -> ty
+  | TyTmIns (_, _, _, ty) -> ty
   | TyTmLam (_, _, _, ty) -> ty
   | TyTmAll (_, _, ty) -> ty
   | TyTmLet (_, _, _, ty) -> ty
@@ -326,7 +326,7 @@ let rec infer_typ (defs: definitions) (ctx: context) (tm: term) : typ * typed_te
         (* Instantiate ty_body with ty_arg substituted for a *)
         let subst_env = Ident.add a ty_arg Ident.emptytbl in
         let result_ty = subst subst_env ty_body in
-        (result_ty, TyTmIns (t_typed, ty_arg, result_ty))
+        (result_ty, TyTmIns (t_typed, ty_arg, k, result_ty))
     | _ -> failwith "type instantiation expects a polymorphic type")
 
   | TmLet (x, t, u) ->
@@ -675,7 +675,7 @@ and check_typ (defs: definitions) (ctx: context) (tm: term) (ty: typ) : typed_te
     let a = Ident.mk "a" in
     (* Check t against the polymorphic type TyAll((a, k), ty) *)
     let t_typed = check_typ defs ctx t (TyAll ((a, k), ty)) in
-    TyTmIns (t_typed, ty_arg, ty)
+    TyTmIns (t_typed, ty_arg, k, ty)
 
   | TmLet (x, t, u) ->
     (* Infer the type of the bound expression *)
