@@ -132,14 +132,10 @@ end = struct
       | [] -> failwith "code destructor must have at least one source"
       | last :: rest_rev -> (List.rev rest_rev, last)
     in
-    (* Build the self type: parent applied to its arguments *)
-    let self_ty = List.fold_left (fun acc arg ->
-      CT.TyApp (acc, to_sc_typ arg)
-    ) (CT.TySym dtor.parent) dtor.arguments in
     { CT.parent = dtor.parent
     ; CT.symbol = dtor.symbol
     ; CT.quantified = List.map (fun (x, k) -> (x, k)) dtor.quantified
-    ; CT.producers = self_ty :: List.map to_sc_typ srcs  (* Add self as first producer *)
+    ; CT.producers = List.map to_sc_typ srcs
     ; CT.consumers = [to_sc_typ c]
     ; CT.arguments = List.map to_sc_typ dtor.arguments
     ; CT.constraints = Option.map (List.map (fun (x, t) -> (x, to_sc_typ t))) dtor.constraints

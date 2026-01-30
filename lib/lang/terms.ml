@@ -480,11 +480,10 @@ and check_typ
           | None -> failwith ("destructor " ^ Path.name clause_dtor.symbol ^ " not in type")
         in
         
-        (* 2. Verify |ai's| = |dtor.quantified| and |xi's| = |dtor.sources| *)
+        (* 2. Verify |ai's| = |dtor.quantified| *)
         if List.length type_binders <> List.length dtor.quantified then
           failwith ("wrong number of type arguments for " ^ Path.name dtor.symbol);
-        if List.length term_binders <> List.length dtor.sources then
-          failwith ("wrong number of term arguments for " ^ Path.name dtor.symbol);
+        (* Note: term_binders count will be checked later after splitting sources *)
         
         (* 3. Build constraint substitution σ from dtor.constraints *)
         let constraint_subst = 
@@ -509,7 +508,9 @@ and check_typ
         (* Combine: rename first, then apply constraints (so constraints override) *)
         let combined_subst = Ident.join constraint_subst type_var_map in
         
-        (* 5. Split sources into init (arguments) and last (return type) *)
+        (* 5. Split sources into args and return type.
+           Note: In Lang, dtor.sources = args @ [return] (self is NOT included in sources).
+           Self type is stored separately in dtor.arguments. *)
         let rec split_last lst =
           match lst with
           | [] -> failwith "expected at least one source type"
@@ -518,34 +519,27 @@ and check_typ
         in
         
         let inst_sources = List.map (subst combined_subst) dtor.sources in
-        let arg_sources, return_ty = split_last inst_sources in
         
-        (* 6. Build the codata type (this type) from parent and arguments *)
-        let inst_arguments = List.map (subst combined_subst) dtor.arguments in
-        let this_ty =
-          List.fold_left (fun acc arg -> TyApp (acc, arg))
-            (TySym dtor.parent) inst_arguments
+        (* 6. For codata destructors: sources = args @ [return] (no self in sources)
+           Split into args (for pattern binders) and return type *)
+        let arg_sources, return_ty = match inst_sources with
+          | [] -> failwith ("destructor " ^ Path.name dtor.symbol ^ " must have at least a return type")
+          | _ -> split_last inst_sources
         in
         
-        (* 7. Split term binders into this and the rest *)
-        let this_var, arg_vars = match term_binders with
-          | [] -> failwith ("destructor " ^ Path.name dtor.symbol ^ " must have at least one argument (this)")
-          | t :: rest -> t, rest
-        in
-        
-        if List.length arg_vars <> List.length arg_sources then
+        (* 7. Match term binders against argument sources (no self) *)
+        if List.length term_binders <> List.length arg_sources then
           failwith ("destructor " ^ Path.name dtor.symbol ^ 
                     " argument count mismatch: expected " ^ string_of_int (List.length arg_sources) ^
-                    " arguments after this, got " ^ string_of_int (List.length arg_vars));
+                    " arguments (not counting self), got " ^ string_of_int (List.length term_binders));
         
-        (* 8. Extend context with this:this_ty and args:arg_sources *)
-        let ctx' = {ctx with types = Ident.add this_var this_ty ctx.types} in
-        let ctx'' = {ctx' with types = List.fold_left2 (fun acc arg_var arg_ty ->
+        (* 8. Extend context with term binders and their types *)
+        let ctx' = {ctx with types = List.fold_left2 (fun acc arg_var arg_ty ->
           Ident.add arg_var arg_ty acc
-        ) ctx'.types arg_vars arg_sources} in
+        ) ctx.types term_binders arg_sources} in
         
         (* 9. Check the body has the return type in the extended context *)
-        let body_typed = check_typ defs ctx'' body return_ty in
+        let body_typed = check_typ defs ctx' body return_ty in
         (clause_dtor, type_binders, term_binders, body_typed)
       ) cs in
       
@@ -586,11 +580,10 @@ and check_typ
           | None -> failwith ("destructor " ^ Path.name clause_dtor.symbol ^ " not in type")
         in
         
-        (* 2. Verify |ai's| = |dtor.quantified| and |xi's| = |dtor.sources| *)
+        (* 2. Verify |ai's| = |dtor.quantified| *)
         if List.length type_binders <> List.length dtor.quantified then
           failwith ("wrong number of type arguments for " ^ Path.name dtor.symbol);
-        if List.length term_binders <> List.length dtor.sources then
-          failwith ("wrong number of term arguments for " ^ Path.name dtor.symbol);
+        (* Note: term_binders count will be checked later after splitting sources *)
         
         (* 3. Build constraint substitution σ from dtor.constraints *)
         let constraint_subst = 
@@ -615,7 +608,9 @@ and check_typ
         (* Combine: rename first, then apply constraints (so constraints override) *)
         let combined_subst = Ident.join constraint_subst type_var_map in
         
-        (* 5. Split sources into init (arguments) and last (return type) *)
+        (* 5. Split sources into args and return type.
+           Note: In Lang, dtor.sources = args @ [return] (self is NOT included in sources).
+           Self type is stored separately in dtor.arguments. *)
         let rec split_last lst =
           match lst with
           | [] -> failwith "expected at least one source type"
@@ -624,34 +619,27 @@ and check_typ
         in
         
         let inst_sources = List.map (subst combined_subst) dtor.sources in
-        let arg_sources, return_ty = split_last inst_sources in
         
-        (* 6. Build the codata type (this type) from parent and arguments *)
-        let inst_arguments = List.map (subst combined_subst) dtor.arguments in
-        let this_ty =
-          List.fold_left (fun acc arg -> TyApp (acc, arg))
-            (TySym dtor.parent) inst_arguments
+        (* 6. For codata destructors: sources = args @ [return] (no self in sources)
+           Split into args (for pattern binders) and return type *)
+        let arg_sources, return_ty = match inst_sources with
+          | [] -> failwith ("destructor " ^ Path.name dtor.symbol ^ " must have at least a return type")
+          | _ -> split_last inst_sources
         in
         
-        (* 7. Split term binders into this and the rest *)
-        let this_var, arg_vars = match term_binders with
-          | [] -> failwith ("destructor " ^ Path.name dtor.symbol ^ " must have at least one argument (this)")
-          | t :: rest -> t, rest
-        in
-        
-        if List.length arg_vars <> List.length arg_sources then
+        (* 7. Match term binders against argument sources (no self) *)
+        if List.length term_binders <> List.length arg_sources then
           failwith ("destructor " ^ Path.name dtor.symbol ^ 
                     " argument count mismatch: expected " ^ string_of_int (List.length arg_sources) ^
-                    " arguments after this, got " ^ string_of_int (List.length arg_vars));
+                    " arguments (not counting self), got " ^ string_of_int (List.length term_binders));
         
-        (* 8. Extend context with this:this_ty and args:arg_sources *)
-        let ctx' = {ctx with types = Ident.add this_var this_ty ctx.types} in
-        let ctx'' = {ctx' with types = List.fold_left2 (fun acc arg_var arg_ty ->
+        (* 8. Extend context with term binders and their types *)
+        let ctx' = {ctx with types = List.fold_left2 (fun acc arg_var arg_ty ->
           Ident.add arg_var arg_ty acc
-        ) ctx'.types arg_vars arg_sources} in
+        ) ctx.types term_binders arg_sources} in
         
         (* 9. Check the body has the return type in the extended context *)
-        let body_typed = check_typ defs ctx'' body return_ty in
+        let body_typed = check_typ defs ctx' body return_ty in
         (clause_dtor, type_binders, term_binders, body_typed)
       ) cs in
       

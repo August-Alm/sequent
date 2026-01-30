@@ -332,7 +332,7 @@ and check_producer
   match p with
   | Mu (u, s) ->
     let ctx_extended = Context.add (u, Cns ty) ctx in
-    check_statement defs ctx_extended s ty |> ignore;
+    infer_statement defs ctx_extended s;  (* Infer, don't check against ty *)
     ctx
 
   | Cocase ptss ->
@@ -440,7 +440,7 @@ and check_producer
   | _ ->
     let p_g, p_ty = infer_producer defs ctx p in
     if Type.equivalent defs.type_defs p_ty ty then p_g
-    else error "producer type mismatch"
+    else error ("producer type mismatch: expected " ^ Type.to_string ty ^ ", got " ^ Type.to_string p_ty)
 
 and check_consumer
     (defs: definitions) (ctx: Context.t)
@@ -533,7 +533,8 @@ and check_consumer
     else 
       let c_ty_str = Type.to_string c_ty in
       let ty_str = Type.to_string ty in
-      error ("consumer type mismatch: expected " ^ ty_str ^ ", got " ^ c_ty_str)
+      let c_str = match c with | Covar x -> "covar " ^ Ident.name x | _ -> "consumer" in
+      error ("consumer type mismatch for " ^ c_str ^ ": expected " ^ ty_str ^ ", got " ^ c_ty_str)
 
 and infer_statement
     (defs: definitions) (ctx: Context.t)

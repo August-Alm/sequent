@@ -44,22 +44,11 @@ let test_case name input =
     List.iter (fun (_, (type_def, _kind)) ->
       match type_def with
       | Common.Types.Data td ->
-        Printf.printf "\n  data %s:\n" (Common.Identifiers.Path.name td.symbol);
-        List.iter (fun (xtor: Common.Types.ty_xtor) ->
-          Printf.printf "    %s: %d producers, %d consumers\n" 
-            (Common.Identifiers.Path.name xtor.symbol) 
-            (List.length xtor.producers)
-            (List.length xtor.consumers)
-        ) td.xtors
+        print_endline (Common.Types.data_to_string false td ^ "\n")
       | Common.Types.Code td ->
-        Printf.printf "\n  code %s:\n" (Common.Identifiers.Path.name td.symbol);
-        List.iter (fun (xtor: Common.Types.ty_xtor) ->
-          Printf.printf "    %s: %d producers, %d consumers\n" 
-            (Common.Identifiers.Path.name xtor.symbol) 
-            (List.length xtor.producers)
-            (List.length xtor.consumers)
-        ) td.xtors
-      | Common.Types.Prim _ -> ()
+        print_endline (Common.Types.code_to_string false td ^ "\n")
+      | Common.Types.Prim (prim, _) ->
+        print_endline (Common.Identifiers.Path.name prim ^ " --- primitive\n")
     ) core_defs.Core.Terms.type_defs;
     print_endline "\n  Core term definitions:";
     List.iter (fun (_path, core_td) ->
@@ -185,10 +174,10 @@ code stream: type -> type where
   ; tail: {a} stream(a) -> stream(a)
   }
 
-let const_stream(x: nat): stream(nat) = 
-  new stream(nat)
-  { head{_}(self) => x
-  ; tail{_}(self) => self
+let const_stream{a}(x: a): stream(a) = 
+  new stream(a)
+  { head{_} => x
+  ; tail{_} => const_stream{a}(x)
   }
   ";
   

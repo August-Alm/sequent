@@ -11,6 +11,7 @@ module CT = Core.Terms
 (* Helper: Count the number of function arrows in a type *)
 let rec count_fun_arrows (ty: Lang.Types.typ) : int =
   match ty with
+  | Lang.Types.TyAll (_, t2) -> count_fun_arrows t2  (* Skip type abstraction *)
   | Lang.Types.TyFun (_, t2) -> 1 + count_fun_arrows t2
   | _ -> 0
 
@@ -22,11 +23,28 @@ let rec collect_args (tm: Lang.Terms.typed_term) : (Lang.Terms.typed_term * Lang
     (head, args @ [u])
   | _ -> (tm, [])
 
+(* Helper: Collect both type arguments and term arguments from nested applications and instantiations *)
+let rec collect_type_and_term_args (tm: Lang.Terms.typed_term) 
+    : (Lang.Terms.typed_term * Lang.Types.typ list * Lang.Terms.typed_term list) =
+  match tm with
+  | Lang.Terms.TyTmApp (t, u, _) ->
+    let (head, ty_args, tm_args) = collect_type_and_term_args t in
+    (head, ty_args, tm_args @ [u])
+  | Lang.Terms.TyTmIns (t, ty_arg, _, _) ->
+    let (head, ty_args, tm_args) = collect_type_and_term_args t in
+    (head, ty_args @ [ty_arg], tm_args)
+  | _ -> (tm, [], [])
+
 (* Helper: Get function argument types from a function type *)
 let rec get_arg_types (ty: Lang.Types.typ) : Lang.Types.typ list =
   match ty with
   | Lang.Types.TyFun (t1, t2) -> t1 :: get_arg_types t2
   | _ -> []
+
+let rec get_return_type (ty: Lang.Types.typ) : Lang.Types.typ =
+  match ty with
+  | Lang.Types.TyFun (_, t2) -> get_return_type t2
+  | _ -> ty
 
 let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
   match tm with
@@ -43,20 +61,18 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     CT.Mu (alpha, CT.Call (sym, ty_args, [], [CT.Covar alpha]))
 
   | Lang.Terms.TyTmApp (t, u, ty_ret) ->
-    (* Collect all arguments from nested applications *)
-    let (head, args) = collect_args (Lang.Terms.TyTmApp (t, u, ty_ret)) in
+    (* Collect all type and term arguments from nested applications and instantiations *)
+    let (head, ty_args, tm_args) = collect_type_and_term_args (Lang.Terms.TyTmApp (t, u, ty_ret)) in
     (match head with
     | Lang.Terms.TyTmSym (sym, sym_ty) ->
       (* This is an application of a top-level symbol *)
       let required_arity = count_fun_arrows sym_ty in
-      let provided_arity = List.length args in
+      let provided_arity = List.length tm_args in
       
       if provided_arity = required_arity then
-        (* Fully applied - generate Call statement *)
+        (* Fully applied - generate Call statement with type arguments *)
         let alpha = Ident.fresh () in
-        (* Extract type arguments from the symbol type if polymorphic *)
-        let ty_args = [] in (* TODO: extract actual type instantiations *)
-        CT.Mu (alpha, CT.Call (sym, ty_args, List.map convert args, [CT.Covar alpha]))
+        CT.Mu (alpha, CT.Call (sym, List.map Lang.Types.Convert.typ ty_args, List.map convert tm_args, [CT.Covar alpha]))
       
       else if provided_arity < required_arity then
         (* Partially applied - generate lambda for remaining arguments *)
@@ -65,6 +81,7 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
            which is: new { $app(this, y, α) => μβ.Call(foo, [u, y], [β]) | α } *)
         let arg_types = get_arg_types sym_ty in
         let remaining_arg_types = Utility.drop provided_arity arg_types in
+        let final_return_ty = get_return_type sym_ty in  (* The final return type, not the partial app type *)
         
         (* Generate nested lambdas for each remaining argument *)
         let rec make_lambdas remaining_tys provided_args =
@@ -79,22 +96,28 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
             (* Create lambda for this argument *)
             let x = Ident.fresh () in
             let y = Ident.fresh () in
+            let ta = Ident.fresh () in
+            let tb = Ident.fresh () in
+            (* The result type after applying this and all remaining arguments *)
+            let result_ty = 
+              if rest_tys = [] then Lang.Types.Convert.typ final_return_ty
+              else List.fold_right (fun arg_ty acc -> 
+                Common.Types.TyApp (Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.fun_sym, Common.Types.KArrow (Common.Types.KStar, Common.Types.KArrow (Common.Types.KStar, Common.Types.KStar)))), Lang.Types.Convert.typ arg_ty), acc)
+              ) rest_tys (Lang.Types.Convert.typ final_return_ty)
+            in
             CT.Cocase [{
               CT.xtor = Common.Types.Prim.app_dtor_sym;
-              CT.type_vars = [];
+              CT.type_vars = [ta; tb];
               CT.variables = [x];
               CT.covariables = [y];
               CT.statement = CT.Cut (
                 make_lambdas rest_tys (provided_args @ [Lang.Terms.TyTmVar (x, arg_ty)]),
-                (* The result type after applying remaining arguments *)
-                List.fold_right (fun arg_ty acc -> 
-                  Common.Types.TyApp (Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.fun_sym, Common.Types.KArrow (Common.Types.KStar, Common.Types.KArrow (Common.Types.KStar, Common.Types.KStar)))), Lang.Types.Convert.typ arg_ty), acc)
-                ) rest_tys (Lang.Types.Convert.typ ty_ret),
+                result_ty,
                 CT.Covar y
               )
             }]
         in
-        make_lambdas remaining_arg_types args
+        make_lambdas remaining_arg_types tm_args
       
       else
         (* Over-applied - this shouldn't happen in well-typed code *)
@@ -117,19 +140,35 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     )
 
   | Lang.Terms.TyTmIns (t, ty_arg, k, ty_result) ->
-    (* Type instantiation was already checked - kind k is provided *)
-    let x = Ident.fresh () in
-    (* μx.< conv t | $inst{ty_result}{ty_arg}(x) > *)
-    CT.Mu (x, CT.Cut (
-      convert t,
-      (* Forall type: $forall{k}(ty_result) *)
-      Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.all_sym k, Common.Types.KArrow (Common.Types.KArrow (k, Common.Types.KStar), Common.Types.KStar))), Lang.Types.Convert.typ ty_result),
-      CT.Destructor (Common.Types.Prim.ins_dtor_sym k, (
-        [Lang.Types.Convert.typ ty_result; Lang.Types.Convert.typ ty_arg],
-        [],
-        [CT.Covar x]
+    (* Type instantiation: check if this is part of a function call pattern *)
+    (* If t is a symbol or becomes a symbol after collecting args, handle as Call *)
+    let (head, all_ty_args, all_tm_args) = collect_type_and_term_args (Lang.Terms.TyTmIns (t, ty_arg, k, ty_result)) in
+    (match head with
+    | Lang.Terms.TyTmSym (_, _) when all_ty_args <> [] && all_tm_args = [] ->
+      (* Just type instantiation, no term args yet *)
+      let x = Ident.fresh () in
+      CT.Mu (x, CT.Cut (
+        convert t,
+        Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.all_sym k, Common.Types.KArrow (Common.Types.KArrow (k, Common.Types.KStar), Common.Types.KStar))), Lang.Types.Convert.typ ty_result),
+        CT.Destructor (Common.Types.Prim.ins_dtor_sym k, (
+          [Lang.Types.Convert.typ ty_result; Lang.Types.Convert.typ ty_arg],
+          [],
+          [CT.Covar x]
+        ))
       ))
-    ))
+    | _ ->
+      (* Use old forall encoding *)
+      let x = Ident.fresh () in
+      CT.Mu (x, CT.Cut (
+        convert t,
+        Common.Types.TyApp (Common.Types.TyDef (Common.Types.Prim (Common.Types.Prim.all_sym k, Common.Types.KArrow (Common.Types.KArrow (k, Common.Types.KStar), Common.Types.KStar))), Lang.Types.Convert.typ ty_result),
+        CT.Destructor (Common.Types.Prim.ins_dtor_sym k, (
+          [Lang.Types.Convert.typ ty_result; Lang.Types.Convert.typ ty_arg],
+          [],
+          [CT.Covar x]
+        ))
+      ))
+    )
 
   | Lang.Terms.TyTmLam (x, _a, body, _ty) ->
     let b = Lang.Terms.get_type body in
@@ -186,18 +225,31 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
     ))
 
   | Lang.Terms.TyTmNew (_ty_opt, clauses, _ty) ->
-    (* In Lang: new stream(a) { head{_}(self) => x ; tail{_}(self) => self }
-       In Core: cocase { head{a}(self)(k) => <x | k> ; tail{a}(self)(k) => <self | k> }
+    (* In Lang: new stream(a) { head{_} => x ; tail{_} => const_stream(x) }
+       In Core: cocase { head{a}(k) => <x | k> ; tail{a}(k) => <...| k> }
        
-       The self parameter represents the object being destructed (like method parameters).
-       In Core, self is a producer variable in the pattern, plus covariable k (continuation).
+       Note: In Lang, self is implicit (not in pattern bindings).
+       In Core, cocase patterns have NO producer variables (no self).
+       They only have consumer variables for the return continuation.
+       Self appears in destructor APPLICATIONS, not in cocase pattern definitions.
+       
+       Extract type arguments from the result type to use as type variables in patterns.
+       For `new stream(a)`, the type is `TyApp(TyCtor(stream), TyVar(a))`, so we extract `[a]`.
     *)
-    let patterns = List.map (fun (xtor, _type_vars, term_vars, body) ->
+    let rec extract_type_vars (ty: Lang.Types.typ) : Ident.t list =
+      match ty with
+      | Lang.Types.TyVar x -> [x]
+      | Lang.Types.TyApp (t1, t2) -> extract_type_vars t1 @ extract_type_vars t2
+      | _ -> []
+    in
+    let type_vars_from_result = extract_type_vars _ty in
+    
+    let patterns = List.map (fun (xtor, _lang_type_vars, term_vars, body) ->
       let body_ty = Lang.Terms.get_type body in
       let y = Ident.fresh () in
       { CT.xtor = xtor.Lang.Types.symbol
-      ; CT.type_vars = _type_vars
-      ; CT.variables = term_vars  (* Keep all term_vars including self *)
+      ; CT.type_vars = type_vars_from_result  (* Use type vars from result type, not Lang pattern *)
+      ; CT.variables = term_vars  (* Just the non-return arguments (empty for head/tail) *)
       ; CT.covariables = [y]
       ; CT.statement = CT.Cut (convert body, Lang.Types.Convert.typ body_ty, CT.Covar y)
       }
@@ -242,25 +294,12 @@ let convert_term_def (td: Lang.Terms.typed_term_def) : CT.term_def =
   let alpha = Ident.fresh () in
   let cons_args = [(alpha, Lang.Types.Convert.typ td.Lang.Terms.return_type)] in
   
-  (* Body: convert the body and wrap in nested cocases for each type parameter *)
+  (* Body: convert the body directly without type abstraction wrapper *)
+  (* In Core, type parameters are part of the function signature, not the body *)
   let body_producer = convert td.Lang.Terms.body in
   
-  (* Wrap body with type instantiation cocases for polymorphic functions *)
-  let body_with_type_abstraction = 
-    List.fold_right (fun (type_var, kind) inner_producer ->
-      let y = Ident.fresh () in
-      CT.Cocase [{
-        CT.xtor = Common.Types.Prim.ins_dtor_sym kind;
-        CT.type_vars = [type_var];
-        CT.variables = [];
-        CT.covariables = [y];
-        CT.statement = CT.Cut (inner_producer, Lang.Types.Convert.typ td.Lang.Terms.return_type, CT.Covar y)
-      }]
-    ) td.Lang.Terms.type_args body_producer
-  in
-  
   let body_statement =
-    CT.Cut (body_with_type_abstraction, Lang.Types.Convert.typ td.Lang.Terms.return_type, CT.Covar alpha)
+    CT.Cut (body_producer, Lang.Types.Convert.typ td.Lang.Terms.return_type, CT.Covar alpha)
   in
   
   { CT.name = td.Lang.Terms.name
