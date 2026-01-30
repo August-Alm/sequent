@@ -80,7 +80,7 @@ let identity{a}(x: a): a = x
 let map{a}{b}(f: a -> b, xs: list(a)): list(b) =
   match xs with
   { nil{_} => nil{b}
-  ; cons{_}(x, rest) => cons{b}(f(x), map{a, b}(f, rest))
+  ; cons{_}(x)(rest) => cons{b}(f(x))(map{a}{b}(f)(rest))
   }
 ```
 
