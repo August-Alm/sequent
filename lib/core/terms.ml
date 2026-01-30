@@ -47,6 +47,7 @@ end
 
 type statement =
   | Cut of producer * consumer
+  | Call of Path.t * (producer list) * (consumer list)
 
 and producer =
   | Int of int
@@ -134,6 +135,15 @@ let rec statement_to_string ?(depth=0) (s: statement) : string =
   | Cut (p, c) ->
     "⟨" ^ producer_to_string ~depth p ^ " | " ^ 
     consumer_to_string ~depth c ^ "⟩"
+  
+  | Call (f, prods, cons) ->
+    let f_name = Path.name f in
+    let ps = List.map (producer_to_string ~depth) prods in
+    let prod_str = if ps = [] then "()" else "(" ^ String.concat ", " ps ^ ")" in
+    let cs = List.map (consumer_to_string ~depth) cons in
+    let cons_str = if cs = [] then "()" else "(" ^ String.concat ", " cs ^ ")" in
+    let args_str = prod_str ^ cons_str in
+    f_name ^ args_str
 
 (* Pretty-print producer *)
 and producer_to_string ?(depth=0) (p: producer) : string =
@@ -231,7 +241,7 @@ let term_def_to_string (td: term_def) : string =
     ) td.prod_args) ^ ")" in
   let cons_args_str = if td.cons_args = [] then ""
     else "(" ^ String.concat ", " (List.map (fun (x, ty) ->
-      Ident.name x ^ ": " ^ Type.to_string ty
+      Ident.name x ^ ": cns " ^ Type.to_string ty
     ) td.cons_args) ^ ")" in
   let args_str = ty_args_str ^ prod_args_str ^ cons_args_str in
   let ret_str = Type.to_string td.return_type in
@@ -265,6 +275,22 @@ let rec check_statement
   | Cut (p, c) ->
     check_producer defs ctx p ty |> ignore;
     check_consumer defs ctx c ty |> ignore;
+    ctx
+  | Call (sym, prods, cons) ->
+    (* Look up the function definition to get its type *)
+    let def = 
+      match List.find_opt (fun (_, td) -> Path.equal td.name sym) defs.term_defs with
+      | Some (_, d) -> d
+      | None -> error ("Undefined function: " ^ Path.name sym)
+    in
+    (* Check producer arguments *)
+    List.iter2 (fun prod (_, arg_ty) ->
+      check_producer defs ctx prod arg_ty |> ignore
+    ) prods def.prod_args;
+    (* Check consumer arguments *)
+    List.iter2 (fun cons (_, arg_ty) ->
+      check_consumer defs ctx cons arg_ty |> ignore
+    ) cons def.cons_args;
     ctx
 
 and check_producer
@@ -428,7 +454,7 @@ and infer_statement
     (s: statement) =
   match s with
   | Cut (p, c) ->
-    try
+    (try
       let _, p_ty = infer_producer defs ctx p in
       check_consumer defs ctx c p_ty |> ignore;
     with _ ->
@@ -436,7 +462,22 @@ and infer_statement
         let _, c_ty = infer_consumer defs ctx c in
         check_producer defs ctx p c_ty |> ignore;
       with _ ->
-        error "cannot infer cut type";
+        error "cannot infer cut type")
+  | Call (sym, prods, cons) ->
+    (* Look up the function definition to get its type *)
+    let def = 
+      match List.find_opt (fun (_, td) -> Path.equal td.name sym) defs.term_defs with
+      | Some (_, d) -> d
+      | None -> error ("Undefined function: " ^ Path.name sym)
+    in
+    (* Check producer arguments *)
+    List.iter2 (fun prod (_, arg_ty) ->
+      check_producer defs ctx prod arg_ty |> ignore
+    ) prods def.prod_args;
+    (* Check consumer arguments *)
+    List.iter2 (fun cons (_, arg_ty) ->
+      check_consumer defs ctx cons arg_ty |> ignore
+    ) cons def.cons_args;
 
 and infer_producer
     (defs: definitions) (ctx: Context.t)

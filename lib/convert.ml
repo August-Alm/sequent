@@ -8,6 +8,26 @@ open Common.Identifiers
 (* Conversion of Lang terms to Core terms *)
 module CT = Core.Terms
 
+(* Helper: Count the number of function arrows in a type *)
+let rec count_fun_arrows (ty: Lang.Types.typ) : int =
+  match ty with
+  | Lang.Types.TyFun (_, t2) -> 1 + count_fun_arrows t2
+  | _ -> 0
+
+(* Helper: Collect arguments from nested applications *)
+let rec collect_args (tm: Lang.Terms.typed_term) : (Lang.Terms.typed_term * Lang.Terms.typed_term list) =
+  match tm with
+  | Lang.Terms.TyTmApp (t, u, _) ->
+    let (head, args) = collect_args t in
+    (head, args @ [u])
+  | _ -> (tm, [])
+
+(* Helper: Get function argument types from a function type *)
+let rec get_arg_types (ty: Lang.Types.typ) : Lang.Types.typ list =
+  match ty with
+  | Lang.Types.TyFun (t1, t2) -> t1 :: get_arg_types t2
+  | _ -> []
+
 let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
   match tm with
   | Lang.Terms.TyTmInt (n, _ty) ->
@@ -16,29 +36,86 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
   | Lang.Terms.TyTmVar (x, _ty) ->
     CT.Var x
 
-  | Lang.Terms.TyTmSym (sym, _ty) ->
-    (* Symbols become variables using the last component of the path *)
-    (match Path.as_ident sym with
-    | Some id -> CT.Var id
-    | None ->
-      (* If it's a dotted path, create a variable from the name *)
-      CT.Var (Ident.mk (Path.name sym))
-    )
+  | Lang.Terms.TyTmSym (sym, ty) ->
+    (* Check if this is a top-level constant (no arguments) *)
+    let arity = count_fun_arrows ty in
+    if arity = 0 then
+      (* Top-level constant - treat as variable for now *)
+      (* TODO: Could inline the body here if we had access to definitions *)
+      (match Path.as_ident sym with
+      | Some id -> CT.Var id
+      | None -> CT.Var (Ident.mk (Path.name sym))
+      )
+    else
+      (* Function symbol without application - treat as variable *)
+      (match Path.as_ident sym with
+      | Some id -> CT.Var id
+      | None -> CT.Var (Ident.mk (Path.name sym))
+      )
 
   | Lang.Terms.TyTmApp (t, u, ty_ret) ->
-    (* Application was already type-checked, we know it's valid *)
-    (* Extract argument type from u and result type from the typed term *)
-    let ty_arg = Lang.Terms.get_type u in
-    let x = Ident.fresh () in
-    (* μx.< conv t | $apply{ty_arg}{ty_ret}(x, conv u) > *)
-    CT.Mu (x, CT.Cut (
-      convert t,
-      CT.Destructor (Common.Types.Prim.app_dtor_sym, (
-        [Lang.Types.Convert.typ ty_arg; Lang.Types.Convert.typ ty_ret],
-        [CT.Var x],
-        [CT.MuTilde (x, CT.Cut (convert u, CT.Covar x))]
+    (* Collect all arguments from nested applications *)
+    let (head, args) = collect_args (Lang.Terms.TyTmApp (t, u, ty_ret)) in
+    (match head with
+    | Lang.Terms.TyTmSym (sym, sym_ty) ->
+      (* This is an application of a top-level symbol *)
+      let required_arity = count_fun_arrows sym_ty in
+      let provided_arity = List.length args in
+      
+      if provided_arity = required_arity then
+        (* Fully applied - generate Call statement *)
+        let alpha = Ident.fresh () in
+        CT.Mu (alpha, CT.Call (sym, List.map convert args, [CT.Covar alpha]))
+      
+      else if provided_arity < required_arity then
+        (* Partially applied - generate lambda for remaining arguments *)
+        (* foo(u) where foo: a -> b -> c becomes:
+           fun (y: b) => foo(u, y) 
+           which is: new { $app(this, y, α) => μβ.Call(foo, [u, y], [β]) | α } *)
+        let arg_types = get_arg_types sym_ty in
+        let remaining_arg_types = Utility.drop provided_arity arg_types in
+        
+        (* Generate nested lambdas for each remaining argument *)
+        let rec make_lambdas remaining_tys provided_args =
+          match remaining_tys with
+          | [] -> 
+            (* All arguments provided - make the call *)
+            let alpha = Ident.fresh () in
+            CT.Mu (alpha, CT.Call (sym, List.map convert provided_args, [CT.Covar alpha]))
+          | arg_ty :: rest_tys ->
+            (* Create lambda for this argument *)
+            let x = Ident.fresh () in
+            let y = Ident.fresh () in
+            CT.Cocase [{
+              CT.xtor = Common.Types.Prim.app_dtor_sym;
+              CT.type_vars = [];
+              CT.variables = [x];
+              CT.covariables = [y];
+              CT.statement = CT.Cut (
+                make_lambdas rest_tys (provided_args @ [Lang.Terms.TyTmVar (x, arg_ty)]),
+                CT.Covar y
+              )
+            }]
+        in
+        make_lambdas remaining_arg_types args
+      
+      else
+        (* Over-applied - this shouldn't happen in well-typed code *)
+        failwith "convert: over-applied function (type checking should have caught this)"
+    | _ ->
+      (* General application using $app destructor *)
+      let ty_arg = Lang.Terms.get_type u in
+      let x = Ident.fresh () in
+      (* μx.< conv t | $apply{ty_arg}{ty_ret}(x, conv u) > *)
+      CT.Mu (x, CT.Cut (
+        convert t,
+        CT.Destructor (Common.Types.Prim.app_dtor_sym, (
+          [Lang.Types.Convert.typ ty_arg; Lang.Types.Convert.typ ty_ret],
+          [CT.Var x],
+          [CT.MuTilde (x, CT.Cut (convert u, CT.Covar x))]
+        ))
       ))
-    ))
+    )
 
   | Lang.Terms.TyTmIns (t, ty_arg, ty_result) ->
     (* Type instantiation was already checked - extract the kind from ty_arg *)
@@ -148,3 +225,47 @@ let rec convert (tm: Lang.Terms.typed_term) : CT.producer =
         ))
       ))
     )
+
+(* Convert a typed term definition to a Core term definition *)
+let convert_term_def (td: Lang.Terms.typed_term_def) : CT.term_def =
+  (* Producer arguments: for each term argument (x: t), create (x: Prd (convert t)) *)
+  let prod_args = List.map (fun (x, ty) ->
+    (x, Lang.Types.Convert.typ ty)
+  ) td.Lang.Terms.term_args in
+  
+  (* Consumer argument: create a fresh covariable α: Cns (convert return_type) *)
+  let alpha = Ident.fresh () in
+  let cons_args = [(alpha, Lang.Types.Convert.typ td.Lang.Terms.return_type)] in
+  
+  (* Body: ⟨convert body | α⟩ *)
+  let body_producer = convert td.Lang.Terms.body in
+  let body_statement = CT.Cut (body_producer, CT.Covar alpha) in
+  
+  { CT.name = td.Lang.Terms.name
+  ; CT.type_args = td.Lang.Terms.type_args
+  ; CT.prod_args = prod_args
+  ; CT.cons_args = cons_args
+  ; CT.return_type = Lang.Types.Convert.typ td.Lang.Terms.return_type
+  ; CT.body = body_statement
+  }
+
+(* Convert typed definitions to Core definitions *)
+let convert_definitions (defs: Lang.Terms.typed_definitions) : CT.definitions =
+  let core_term_defs = List.map (fun (path, td) ->
+    (path, convert_term_def td)
+  ) defs.Lang.Terms.term_defs in
+  
+  (* Convert type definitions *)
+  let core_type_defs = List.map (fun (path, (ty_def, kind)) ->
+    match ty_def with
+    | Lang.Types.Data td ->
+      (path, (Common.Types.Data (Lang.Types.Convert.data_to_sc td), kind))
+    | Lang.Types.Code td ->
+      (path, (Common.Types.Code (Lang.Types.Convert.code_to_sc td), kind))
+    | Lang.Types.Prim (s, k) ->
+      (path, (Common.Types.Prim (s, k), kind))
+  ) defs.Lang.Terms.type_defs in
+  
+  { CT.type_defs = core_type_defs
+  ; CT.term_defs = core_term_defs
+  }

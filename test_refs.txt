@@ -1,3 +1,0 @@
-data nat: type where { zero: nat; succ: nat -> nat }
-let foo (x: nat): nat = succ(x)
-let bar (y: nat): nat = foo(succ(y))

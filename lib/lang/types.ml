@@ -78,6 +78,8 @@ type ty_defs = (Path.t * (ty_def * kind)) list
 
 module Convert: sig
   val typ: typ -> Common.Types.typ
+  val data_to_sc: ty_dec -> Common.Types.ty_dec
+  val code_to_sc: ty_dec -> Common.Types.ty_dec
 end = struct
   (* Reference the common types module *)
   module CT = Common.Types

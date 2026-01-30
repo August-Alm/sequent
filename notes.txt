@@ -1,0 +1,47 @@
+```ocaml
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat -> nat
+  }
+
+let is_even(n: nat): nat = 
+  match n with
+  { zero => true
+  ; succ(m) => is_odd(m)
+  }
+
+let is_odd(n: nat): nat =
+  match n with
+  { zero => false
+  ; succ(m) => is_even(m)
+  }
+```
+
+A toplevel `let foo((xi : ti)'s) = t` should convert to a toplevel
+`def foo((xi: Prd (convert ti))'s)(𝛼: Cns bool) = ⟨convert t | 𝛼 ⟩`.
+That is, the function gets an additional fresh consumer (co)variable
+as argument, and returns the statement formed by pairing it the the
+producer that arises as the conversion of the original function body.
+Thus, conversion of the above definitions should result in (omitting
+the converted types):
+
+```
+def is_even(n: Prd nat)(𝛼: Cns bool) =
+ ⟨ μx.⟨n | case {
+        zero(x) => ⟨true() | x⟩
+        succ(m)(x) => ⟨μy.⟨is_odd | $app{nat, bool}(y, μ̃y.⟨m | y⟩)⟩ | x⟩
+      }⟩
+  | 𝛼 ⟩
+
+def is_odd(n: Prd nat)(𝛼: Cns bool) =
+  ⟨ μx.⟨n | case {
+        zero(x) => ⟨false() | x⟩
+        succ(m)(x) => ⟨μy.⟨is_even | $app{nat, bool}(y, μ̃y.⟨m | y⟩)⟩ | x⟩
+      }⟩
+  | 𝛼 ⟩
+```
+
+However, there is a problem here. In the body of is_even, is_odd is
+a mere producer variable, and vice versa. We should probably add a
+constructor `| Call of Path.t * (producer list) * (consumer list)`
+of the `statement` type, to handle calls of top-level functions.

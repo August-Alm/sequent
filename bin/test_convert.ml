@@ -31,18 +31,22 @@ let test_case name input =
     print_endline (Printf.sprintf "  ✓ Type checked %d term definitions" 
       (List.length typed_defs.Terms.term_defs));
     
-    (* Step 3: Convert typed_terms to Core producer terms *)
-    print_endline "\nStep 3: Converting to Core terms...";
-    List.iter (fun (path, typed_td) ->
-      let name = Common.Identifiers.Path.name path in
-      print_endline (Printf.sprintf "  Converting definition: %s" name);
-      let core_producer = Convert.convert typed_td.Terms.body in
-      print_endline (Printf.sprintf "  ✓ Converted to Core producer:");
-      
-      (* Use the proper pretty-printer *)
-      let producer_str = Core.Terms.producer_to_string ~depth:2 core_producer in
-      print_endline (Printf.sprintf "    %s" producer_str)
-    ) typed_defs.Terms.term_defs;
+    (* Step 3: Convert to Core definitions *)
+    print_endline "\nStep 3: Converting to Core definitions...";
+    let core_defs = Convert.convert_definitions typed_defs in
+    print_endline (Printf.sprintf "  ✓ Converted %d type definitions and %d term definitions" 
+      (List.length core_defs.Core.Terms.type_defs)
+      (List.length core_defs.Core.Terms.term_defs));
+    
+    (* Display the converted Core definitions *)
+    print_endline "\n  Core definitions:";
+    List.iter (fun (_path, core_td) ->
+      let def_str = Core.Terms.term_def_to_string core_td in
+      print_endline "";
+      List.iter (fun line -> 
+        print_endline ("  " ^ line)
+      ) (String.split_on_char '\n' def_str)
+    ) core_defs.Core.Terms.term_defs;
     
     print_endline "\n✓ All steps completed successfully!\n";
     print_separator ()
@@ -170,6 +174,75 @@ let is_zero(n: nat): bool =
   }
   ";
   
+  (* Test 10: mutual recursion *)
+  test_case "Test 10: Mutual recursion" "
+data bool: type where 
+  { true: bool
+  ; false: bool
+  }
+
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+let is_even (n: nat): bool = 
+  match n with
+  { zero => true
+  ; succ(m) => is_odd(m)
+  }
+
+let is_odd (n: nat): bool =
+  match n with
+  { zero => false
+  ; succ(m) => is_even(m)
+  }
+  ";  
+
+  (* Test 11: Partial application *)
+  test_case "Test 11: Partial application" "
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+let add(x: nat)(y: nat): nat = 
+  match x with
+  { zero => y
+  ; succ(m) => succ(add(m)(y))
+  }
+
+let add_one: nat -> nat = add(succ(zero))
+  ";
+
+  (* Test 12: Multi-argument function *)
+  test_case "Test 12: Multi-argument function fully applied" "
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+let add(x: nat)(y: nat): nat = 
+  match x with
+  { zero => y
+  ; succ(m) => succ(add(m)(y))
+  }
+
+let three: nat = add(succ(zero))(succ(succ(zero)))
+  ";
+
+  (* Test 13: Top-level constant reference *)
+  test_case "Test 13: Top-level constant reference" "
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+let my_zero: nat = zero
+
+let another_zero: nat = my_zero
+  ";
+
   print_endline "╔════════════════════════════════════════╗";
   print_endline "║  Test Suite Complete                   ║";
   print_endline "╚════════════════════════════════════════╝";

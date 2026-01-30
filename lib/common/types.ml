@@ -153,7 +153,7 @@ let rec kind_to_string (k: kind) : string =
 
 and kind_to_string_prec (needs_parens: bool) (k: kind) : string =
   match k with
-  | KStar -> "*"
+  | KStar -> "type"
   | KArrow (k1, k2) ->
     let s = kind_to_string_prec true k1 ^ " -> " ^ kind_to_string_prec false k2 in
     if needs_parens then "(" ^ s ^ ")" else s
@@ -211,10 +211,11 @@ and ctor_to_string (ctor: ty_xtor) : string =
   let quant_str = 
     if ctor.quantified = [] then ""
     else
-      ctor.quantified
-      |> List.map (fun (x, k) ->
-        "{" ^ Ident.name x ^ ": " ^ kind_to_string k ^ "} ")
-      |> String.concat ""
+      let s =
+        ctor.quantified
+        |> List.map (fun (x, k) -> Ident.name x ^ ": " ^ kind_to_string k)
+        |> String.concat ", "
+      in "{" ^ s ^ "}"
   in
   let producers_str =
     "(" ^ String.concat ", " (List.map (typ_to_string true) ctor.producers) ^ ")"
@@ -279,10 +280,11 @@ and dtor_to_string (dtor: ty_xtor) : string =
   let quant_str = 
     if dtor.quantified = [] then ""
     else
-      dtor.quantified
-      |> List.map (fun (x, k) ->
-        "{" ^ Ident.name x ^ ": " ^ kind_to_string k ^ "} ")
-      |> String.concat ""
+      let s =
+        dtor.quantified
+        |> List.map (fun (x, k) -> Ident.name x ^ ": " ^ kind_to_string k)
+        |> String.concat ", "
+      in "{" ^ s ^ "}"
   in
   let producers_str =
     "(" ^ String.concat ", " (List.map (typ_to_string true) dtor.producers) ^ ")"
