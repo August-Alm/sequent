@@ -1,4 +1,4 @@
-## normalization
+## Naming subterms
 
 We shall describe a normalization transformation N from Core to Cut.
 
@@ -15,4 +15,107 @@ The producer p is bound to variable x using the µ˜-binding so that the argumen
 becomes a variable. More generally, we use the following transformation rules to give
 a name to each non-variable subexpression.
 
-N[⟨C (..., p, ...) | c0 ⟩] = N[⟨p | µ˜x.N[⟨C (..., x, ...) | c0⟩]⟩] where x is fresh
+N[⟨C (..., p, ...) | c0⟩] = N[⟨p | µ˜x.N[⟨C (..., x, ...) | c0⟩]⟩] where x is fresh
+N[⟨C (..., c, ...) | c0⟩] = N[⟨µα.N[⟨C (..., α, ...) | c0⟩] | c⟩] where α is fresh
+N[⟨p0 | D(..., p, ...)⟩] = N[⟨p |µ˜x.N[⟨p0 | D(..., x, ...)⟩]⟩] where x is fresh
+N[⟨p0 | D(..., c, ...)⟩] = N[⟨µα.N[⟨p0 | D(..., α, ...)⟩] | c⟩] where α is fresh
+
+In these rules, we assume that the arguments p or c, respectively, are the first non-
+variable arguments. While the above transformation rules include the well-known rules
+for static focusing, we additionally lift subterms that are values.
+
+## Shrinking
+
+Since there are four different syntactic alternatives for both producers and consumers,
+there are a total of 16 different forms of statements. Two of them, a constructor meeting
+a destructor and a pattern match meeting a copattern match, cannot occur due to typing.
+This leaves us with the following list of 14 statement forms. Since subexpressions of
+constructors and destructors now have to be variables, we write these lists as Γ, indicating
+that they are applied to a part of the environment. Next, we show how to remove the six
+forms displayed at the bottom below:
+
+Statements s ::=
+  ⟨C(Γ) | µ˜x.s ⟩                | ⟨µα.s |D(Γ)⟩
+| ⟨x | case {C(Γ) ⇒ s, ... }⟩    | ⟨cocase {D(Γ) ⇒ s, ... } | α⟩
+| ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ | ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩
+| ⟨C(Γ) | α⟩                     | ⟨x | D(Γ)⟩
+
+| ⟨x | α⟩                         | ⟨µα.s | µ˜x.s⟩
+| ⟨C(Γ) | case {C (Γ) ⇒s, ... }⟩  | ⟨cocase {D(Γ) ⇒ s, ... } | D(Γ)⟩
+| ⟨x | µ˜y.s⟩                     | ⟨µβ.s | α⟩
+
+_Removing renaming._ The two forms in the last row cut a variable with a binding, renaming
+variables unnecessarily. To transform them away, we simply reduce the cuts by substitution:
+
+N[⟨x | µ˜y.s⟩] = N[s{y → x}]
+N[⟨µβ.s | α⟩] = N[s{β → α}]
+
+_Removing completely known cuts._ The two forms in the second-to-last row are completely
+known cuts. We eliminate them again by reduction, substituting the arguments for the
+variables bound in the corresponding clause. This substitution is a renaming that never
+introduces new known cuts.
+
+N[⟨C(Γ0) | case {..., C (Γ) ⇒ s, ... }⟩] = N[s{Γ → Γ0}]
+N[⟨cocase {..., D(Γ) ⇒ s, ... } | D(Γ0)⟩] = N[s{Γ → Γ0}]
+
+_Removing completely unknown cuts._ Next, we consider cuts where both sides are variables.
+We assume a call-by-value evaluation order for data types and a call-by-name evaluation
+order for codata types, which ensures that all η-laws hold for both kinds of types. We
+transform away completely unknown cuts by η-expansion. For cuts at data types we expand
+the consumer variable and for cuts at codata types we expand the producer variable, based
+on their set of constructors and destructors, respectively. A subset T means "at type T":
+
+N[⟨x | α⟩_T] = ⟨x | case {C1(Γ1) ⇒ ⟨C1(Γ1) | α⟩, ...}⟩ where data T {C1(Γ1), ...}
+N[⟨x | α⟩_T] = ⟨cocase {D1(Γ1) ⇒ ⟨x | D1(Γ1) ⟩, ...} | α⟩ where codata T {D1(Γ1), ...}
+
+_Removing critical pairs._ Finally, we consider critical pairs ⟨µα.s1 | µ˜x.s2 ⟩. They
+arise during focusing and their semantics determines the evaluation order. We again use
+η-expansion, for data types on the µ˜-binding and for codata types on the µ-binding.
+Again, since data types follow call-by-value and codata types follow call-by-name, all
+η-laws hold.
+
+N[⟨µα.s1 | µ˜x.s2⟩_T] = ⟨µα.N[s1] | case {C1(Γ1) ⇒ ⟨C1(Γ1) | µ˜x.N[s2]⟩, ... }⟩
+  where data T {C1(Γ1), ...}
+
+N[⟨µα.s1 | µ˜x.s2 ⟩_T] = ⟨cocase {D1(Γ1) ⇒ ⟨µα.N[s1] | D1(Γ1)⟩, ...} | µ˜x.N[s2]⟩
+  where codata T {D1(Γ1), ...}
+
+_Collapsing the data-codata symmetry._ We are now left with only eight forms of cuts/
+statements, where in each of them one side of the cut is a constructor, destructor,
+pattern match, or copattern match and the other side is either a variable, a µ-, or
+a µ˜-binding. In our final step of removing redundant statement forms, we exploit the
+symmetry of statements. Producers of data (constructors) are perfectly symmetric to
+consumers of codata (destructors) and consumers of data (pattern matches) are perfectly
+symmetric to producers of codata (copattern matches). We use the following unified
+syntax for the four remaining statement forms:
+
+⟨C(Γ) | µ˜x.s ⟩                & ⟨µα.s |D(Γ)⟩                      → let v = m(Γ); s
+⟨x | case {C(Γ) ⇒ s, ... }⟩    & ⟨cocase {D(Γ) ⇒ s, ... } | α⟩     → switch v {m(Γ) ⇒ s, ...}
+⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩ → new v = {m(Γ) ⇒ s, ...}; s
+⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩                        → invoke v m(Γ)
+
+Here, m is a unified notation for constructors C and destructors D, similar to how we
+use v for variables and covariables. On the type level, we uniformly describe both data
+and codata types by signatures, without polarities.
+
+data T {C(Γ), ... } & codata T {D(Γ), ... } → signature T {m(Γ), ... }
+
+With this unification, a producer of a signature now represents a constructor or destructor
+and a consumer now represents a pattern match or copattern match. We can choose to view
+a signature as a data type or a codata type.
+
+## Explicit substitutions
+
+The Cut language follows a linear typing discipline. The discussion above, so far, defines a
+normalization into a version of Cut that allows unrestriced variable use. To complete our
+normalization of Core terms into Cut terms, we consider explicit structural rules for weakening,
+contraction, and exchange. The key, combining wakening, constraction and exchange, is the
+substitution statement of Core:
+
+Statements s ::= ... | substitute [v → v, ...]; s
+
+Substitution statements define a new environment for the remaining statement s based on
+the variables in scope. This includes reordering variables by using them once, duplicating
+variables by using them multiple times, and dropping variables by not using them at all.
+Substitutions happen simultaneously. Logically speaking, they can be thought of as context
+morphisms.
