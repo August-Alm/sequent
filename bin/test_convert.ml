@@ -164,11 +164,6 @@ let not(b: bool): bool =
   
   (* Test 8: Codata type with destructor *)
   test_case "Test 8: Codata type with destructor" "
-data nat: type where 
-  { zero: nat
-  ; succ: nat -> nat
-  }
-
 code stream: type -> type where
   { head: {a} stream(a) -> a
   ; tail: {a} stream(a) -> stream(a)
@@ -268,6 +263,7 @@ let my_zero: nat = zero
 
 let another_zero: nat = my_zero
   ";
+
 
   print_endline "╔════════════════════════════════════════╗";
   print_endline "║  Test Suite Complete                   ║";

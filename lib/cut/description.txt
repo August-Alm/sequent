@@ -1,0 +1,172 @@
+## Syntax
+
+Statements s ::=
+    jump l
+  | substitute [v →v, ...]; s
+  | extern m(v, ...){(Γ) ⇒s, ... }
+  | let v = m(Γ); s
+  | new v = (Γ)b; s
+  | switch v b
+  | invoke v m
+
+Programs P ::= define l : Γ = s, ...
+
+Branches b ::= {m(Γ) ⇒ s, ... }
+
+Labels l ::= f | g | ...
+
+Variables v ::= x | y | j | k | ...
+
+Term symbols m ::= nil | true | apply ...
+
+Type symbols T ::= List | Bool | Func ...
+
+Types τ ::= prd T | cns T | ext T
+
+Signatures Σ ::= signature T = {m(Γ), ... }, ...
+
+Type Environment Γ ::= v : τ, ...
+
+Label Environment Θ ::= l : Γ, ...
+
+In new statements, which bind (co)pattern matches, we explicitly annotate the closure
+environment Γ, because it is operationally relevant. In contrast, invoke does not mention
+arguments since we require the environment to match at the call site. We define a separate
+syntactic category of branches b that contain one clause m(Γ) ⇒ s for each symbol in a
+signature and symmetrically occur in switch and new statements. As we have unified data
+and codata types, we collect all names for constructors and destructors in the syntactic
+category m of term-level symbols, which also contains the names of extern statements.
+Similarly, the syntactic category T of type-level symbols contains signature names as well as
+names of external types. All signatures are collected in a global map Σ which maps signature
+names to a list of symbols m, and each symbol to a list of parameters Γ. Finally, a label
+environment Θ maps labels to the type environments they assume.
+
+Extern statements and extern (ext) types are a general extension mechanism for primitive
+operations. Extern statements have a name m, zero or more arguments v, and zero or more
+clauses {(Γ1) ⇒s1, ... }, each with zero or more parameters described by Γ.
+
+Statements s ::=... | extern m(v, ...){(Γ) ⇒ s, ... }
+
+For example, the addition statement is expressed as extern add(v1, v2) {(v) ⇒ s }, which
+adds the machine integers given by v1 and v2, and makes the result available as v in the
+remaining statement s. While add has one clause to continue execution, in general, externs
+can have multiple clauses, e.g., a conditional statement, or even no clauses, e.g., a
+terminating statement.  Extern statements generally operate on external types, such as the
+type Int of machine integers in the above example of add.
+
+## Typing
+
+Θ(l) = Γ      Σ; Θ; Γ ⊢ s...
+---------------------------- [PROGRAM]
+Σ Θ ⊢ define l : Γ = s, ...
+
+ Θ(l) = Γ
+---------- [JUMP]
+Γ ⊢ jump l 
+
+v′1 : τ1, ... ⊢ s      Γ(v1) = τ1
+--------------------------------- [SUBSTITUTE]
+Γ ⊢ substitute [v′1 → v1, ...]; s
+
+v1 : τ_1, ... ⊢ m: (Γ1), ...   Γ(v1) = τ1 ...     Γ, Γ1 ⊢ s1  ...
+------------------------------------------------------------------ [EXTERN]
+Γ ⊢ extern m(v1, ...){(Γ1) ⇒ s1, ... }
+
+Σ(T ) = {..., m(Γ0), ... }      Γ, v : prd T ⊢ s
+------------------------------------------------ [LET]
+Γ, Γ0 ⊢ let v = m(Γ0); s
+
+Σ(T ) = {m1(Γ1), ...}    Γ, v : cns T ⊢ s     Γ1, Γ0 ⊢ s1    ...
+---------------------------------------------------------------- [NEW]
+Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒s1, ... }; s
+
+Σ(T ) = {m1(Γ1), ...}      Γ, Γ1 ⊢ s1   ...
+------------------------------------------- [SWITCH]
+Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ... }
+
+
+Σ(T ) = {..., m(Γ), ...}
+------------------------- [INVOKE]
+Γ, v : cns T ⊢ invoke v m
+
+Programs are typed with signatures Σ and with
+labels Θ. The statement for each label must be well-typed in the annotated type environment
+Γ. The only typing rule that refers to the label environment is Jump. It ensures that the
+current type environment exactly matches the one assumed by the label. We omit the
+signatures Σ and the label environment Θ from the rules, since they do not change.
+Rule Substitute for explicit substitutions makes the structural rules of weakening,
+contraction, and exchange explicit. It is the only place where sharing and erasing of variables
+can occur and also the only way to reorder variables in the environment for the subsequent
+statement s. All other typing rules, except for rule EXTERN, follow the rules of ordered logic.
+Extern statements, such as add, do not consume the variables they use and it does not matter
+at which positions in the environment these variables occur. Rule EXTERN merely checks
+that the variables vi are of the correct type and adds the bound variables (Γi ) to the type
+environment in each statement si , but otherwise does not change the environment. Which
+assumptions and consequences an external symbol m has is defined outside the system. They
+usually only involve external types.
+
+The remaining rules are concerned with producers and consumers, as described in
+In rules LET and NEW, an introduction rule meets an activation rule in a cut.
+The introduced term is bound to a variable v in the remaining statement s. In rule Let the
+only subderivation is for the remaining statement s. There are no subderivations for the
+arguments of symbol m, as all of them would be axioms. We omit them and instead simply
+require the type environment Γ0 to exactly match the signature of m. This environment is
+consumed before the new binding is added. Similarly, in rule New, the closure environment
+Γ0 of the branches is consumed. It must be used in each clause in addition to the parameters
+Γi of the corresponding symbol. Dually, in rules Switch and Invoke, an introduction
+meets an axiom in a cut. The variable v is consumed in both rules. In rule Switch, the rest
+of the environment Γ must be used in each clause in addition to the parameters Γi of the
+corresponding symbol. In rule Invoke, the rest of the environment Γ must exactly match
+the signature of the symbol m, again because the variable restriction is baked into the rules.
+
+## Semantics
+
+Syntax of states:
+
+  Values V ::= {m; E } | {E; b } | 0 | 1 | ...
+
+  Environments E ::= x → V, ...
+
+  Configurations M ::= ⟨s ∥ E ∥ P⟩
+
+Stepping relation:
+
+(let)     ⟨let v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v →{m; E0}⟩ where E0 : Γ0
+(new)     ⟨new v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v →{E0; b}⟩ where E0 : Γ0
+(switch)  ⟨switch v b ∥ E, v → {m; E0 }⟩ → ⟨b(m) ∥ E, E0⟩
+(invoke)  ⟨invoke v m ∥ E, v → {E0; b }⟩ → ⟨b(m) ∥ E, E0⟩
+(jump)    ⟨jump l ∥ E⟩ → ⟨P(l) ∥ E⟩
+(subst)   ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
+(lit)     ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩
+(add)     ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
+(ifz)     ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
+
+A machine configuration consists of a statement s under execution, a value environment E
+mapping variables to values, and a program P. The latter is required for jumping to labels
+and does not change during execution. We hence omit it from the definition of the individual
+steps. Values are either producers {m; E} consisting of a symbol and a field environment,
+consumers {E; b} consisting of a closure environment and branches, or machine integers.
+
+Above listing defines the evaluation steps of the abstract machine. There is one rule for
+each kind of statement, which mirrors its typing rule. Rule (let) constructs a producer by
+removing the part E0, corresponding to the variable environment Γ0 of the symbol m, from
+the value environment, and then adding a binding of producer {m; E0} to E. Dually, rule
+(new) constructs a consumer. It packages up the part E0 of the environment corresponding
+to the closure environment Γ0 together with the branches b as a new binding. Rule (switch)
+destructs a producer by looking up the symbol m in the value environment, and selecting
+the corresponding statement b(m) to execute. It then removes the binding for the producer
+and adds the value environment E0. Rule (invoke) destructs a consumer by looking up the
+statement b(m) corresponding to m and extending the value environment with the stored
+closure environment E0. Rule (jump) transfers execution to the statement P(l) of label l
+defined in program P. Rule (subst) creates a new value environment by looking up each
+variable in the bindings of the old value environment. We list rules (lit), (add), and
+(ifz) as examples of the semantics of extern statements. Generally, the representation
+of external types and the semantics of extern statements are dependent on the platform
+the program runs on.
+
+The only place where parts of the value environment are reordered, duplicated, or dropped
+is in rule (subst) for explicit substitutions. Moreover, besides direct transfer of control
+in rule (jump), there are two kinds of indirect transfer of control: rule (switch) where
+the symbol is unknown but the clauses are known, and rule (invoke) where the symbol is
+known but the clauses are unknown. Finally, extern statements have control over if and how
+to continue execution.

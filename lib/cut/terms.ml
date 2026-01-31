@@ -6,12 +6,13 @@
   intermediate language Cut.
 *)
 
+open Common.Identifiers
 
-type symbol = MkSymbol of string
+type symbol = Path.t
 
-type variable = string
+type variable = Ident.t 
 
-type label = MkLabel of string
+type label = MkLabel of Path.t
 
 type typ =
   | Prd of symbol
@@ -38,11 +39,11 @@ type statement =
 and branches = (symbol * (variable list) * statement) list
 
 module Label = struct
-  let to_string (MkLabel l) = l
+  let to_string (MkLabel l) = Path.name l
 end
 
 module Symbol = struct
-  let to_string (MkSymbol s) = s
+  let to_string = Path.name
 end
 
 type typed_statement = MkTyped of (typ_env * typed_node)
@@ -67,7 +68,7 @@ module Check = struct
   let get_type (v: variable) (gamma: typ_env) =
     match List.assoc_opt v gamma with
     | Some t -> t
-    | None -> error ("unknown variable: " ^ v)
+    | None -> error ("unknown variable: " ^ Ident.name v)
 
   (** Looks up the type environment associated with a label *)
   let get_type_env (l: label) (theta: label_env) =

@@ -1,0 +1,18 @@
+## normalization
+
+We shall describe a normalization transformation N from Core to Cut.
+
+Producers and consumers can occur either directly in cuts or as nested arguments of
+constructors and destructors. In Cut, we demand that all arguments of constructors and
+destructors are variables, a restriction similar to A-normal form. To express programs
+under this restriction, we use µ- and µ˜-bindings to lift producers and consumers out of
+argument positions. For example, suppose that C is a constructor with a producer argument
+p, which is not a variable, and C(p) is cut with some consumer c.
+
+N[ ⟨C (p) | c⟩ ] = ⟨p | µ˜x.⟨C (x) | c⟩⟩
+
+The producer p is bound to variable x using the µ˜-binding so that the argument of C
+becomes a variable. More generally, we use the following transformation rules to give
+a name to each non-variable subexpression.
+
+N[⟨C (..., p, ...) | c0 ⟩] = N[⟨p | µ˜x.N[⟨C (..., x, ...) | c0⟩]⟩] where x is fresh
