@@ -19,24 +19,45 @@ type typ =
   | Cns of symbol
   | Ext of symbol
 
+(* type environment Γ ::= v : τ, ... *)
 type typ_env = (variable * typ) list
 
+(* label environment Θ ::= l : Γ, ... *)
 type label_env = (label * typ_env) list
 
-type signature_env = (symbol * (symbol * typ_env) list) list
+(* m(Γ) *)
+type pattern = symbol * typ_env
 
-type import_env = (symbol * (typ list * (typ list) list)) list
+(* signatures Σ ::= signature T = {m(Γ), ...}, ... *)
+type signatures = (symbol * (pattern list)) list
+
+(* [v → v', ...] *)
+type substitutions = (variable * variable) list
 
 type statement =
+  (* jump l *)
   | Jump of label
-  | Substitute of ((variable * variable) list) * statement
-  | Let of variable * symbol * (variable list) * statement
-  | New of variable * symbol * (variable list) * branches * statement
+  (* substitute [v → v', ...]; s *)
+  | Substitute of substitutions * statement
+  (* extern m(v, ...){(Γ) ⇒ s, ...} *)
+  | Extern of symbol * variable list * extern_branches
+  (* let v = m(Γ); s *)
+  | Let of variable * symbol * typ_env * statement
+  (* new v = (Γ)b; s  -- but with symbol for type annotation *)
+  | New of variable * symbol * typ_env * branches * statement
+  (* switch v b *)
   | Switch of variable * branches
+  (* invoke v m *)
   | Invoke of variable * symbol
-  | Extern of symbol * variable list * (((variable list) * statement) list)
 
-and branches = (symbol * (variable list) * statement) list
+(* branches b ::= {m(Γ) ⇒ s, ...} *)
+and branches = (symbol * typ_env * statement) list
+
+(* extern branches {(Γ) ⇒ s, ...} *)
+and extern_branches = (typ_env * statement) list
+
+(* programs P ::= define l : Γ = s, ... *)
+type program = (label * typ_env * statement) list
 
 module Label = struct
   let to_string (MkLabel l) = Path.name l
@@ -46,204 +67,338 @@ module Symbol = struct
   let to_string = Path.name
 end
 
-type typed_statement = MkTyped of (typ_env * typed_node)
+(** Pretty printing *)
 
-and clauses = (symbol * variable list * typed_statement) list
+let string_of_typ = function
+  | Prd s -> "prd " ^ Path.name s
+  | Cns s -> "cns " ^ Path.name s
+  | Ext s -> "ext " ^ Path.name s
 
-and typed_node =
-  | Jump of label
-  | Substitute of ((variable * variable) list) * typed_statement
-  | Let of variable * symbol * (variable list) * typed_statement
-  | New of variable * symbol * (variable list) * clauses * typed_statement
-  | Switch of variable * clauses
-  | Invoke of variable * symbol
-  | Extern of symbol * variable list * (((variable list) * typed_statement) list)
+let string_of_var_typ (v, ty) =
+  Ident.name v ^ " : " ^ string_of_typ ty
 
-module Check = struct
+let string_of_typ_env gamma =
+  String.concat ", " (List.map string_of_var_typ gamma)
 
-  exception Error of string
-  let error s = raise (Error s)
+let string_of_substitution (v1, v2) =
+  Ident.name v1 ^ " → " ^ Ident.name v2
 
-  (** Looks up the type of a variable in the type environment *)
-  let get_type (v: variable) (gamma: typ_env) =
-    match List.assoc_opt v gamma with
-    | Some t -> t
-    | None -> error ("unknown variable: " ^ Ident.name v)
+let string_of_substitutions subst =
+  "[" ^ String.concat ", " (List.map string_of_substitution subst) ^ "]"
 
-  (** Looks up the type environment associated with a label *)
-  let get_type_env (l: label) (theta: label_env) =
-    match List.assoc_opt l theta with
-    | Some g -> g
-    | None -> error ("unknown label: " ^ (Label.to_string l))
-
-  (** Looks up the signature associated with a type symbol *)
-  let get_signature (tty: symbol) (sigma: signature_env) =
-    match List.assoc_opt tty sigma with
-    | Some mg -> mg
-    | None -> error ("unknown type symbol: " ^ (Symbol.to_string tty))
-
-  (** Looks up the declaration associated with a constructor (method): its
-      declaring type and the declared typing of its arguments. *)
-  let get_declaration (ctor: symbol) (sigma: signature_env) =
-    sigma
-    |> List.find_opt (fun (_, mg) -> List.exists (fun (m, _) -> m = ctor) mg)
-    |> function
-      | Some (t, mg) -> (t, snd (List.find (fun (m, _) -> m = ctor) mg))
-      | None -> error ("no matching signature for method: " ^ (Symbol.to_string ctor))
-
-  (** Gets the interface of the imported term. *)
-  let get_interface (ext: symbol) (iota: import_env) =
-    match List.assoc_opt ext iota with
-    | Some (ins, outs) -> (ins, outs)
-    | None -> error ("unknown external: " ^ (Symbol.to_string ext))
-
-  (** Skips the initial part of a type environment g that matches vs,
-      returning the matching and remaining part of g. Raises an error
-      if vs is not a prefix of g. *)
-  let skip (vs: variable list) (g: typ_env) =
-    let rec loop vs g0 g1 =
-      match vs, g1 with
-      | [], g1 -> (List.rev g0), g1
-      | v :: vs, (v', t) :: g1 when v = v' -> loop vs ((v', t) :: g0) g1
-      | _ -> error "type environment mismatch in let"
-    in loop vs [] g
+let rec string_of_statement ?(indent=0) s =
+  let ind = String.make (indent * 2) ' ' in
+  match s with
+  | Jump l -> ind ^ "jump " ^ Label.to_string l
   
-  let arguments (expected: typ_env) (vs: variable list) (gamma: typ_env) =
-    let given = List.map (fun v -> (v, get_type v gamma)) vs in
-    if List.length expected <> List.length given then
-      error "argument length mismatch";
-    List.iter2
-      (fun (v1, t1) (v2, t2) ->
-        if v1 <> v2 then error "argument name mismatch";
-        if t1 <> t2 then error "argument type mismatch")
-      expected given
+  | Substitute (subst, s') ->
+    ind ^ "substitute " ^ string_of_substitutions subst ^ ";\n" ^
+    string_of_statement ~indent s'
   
-  let symbols (expected: symbol) (given: symbol) =
-    if expected <> given then error "symbol mismatch"
+  | Extern (f, vars, branches) ->
+    let vars_str = String.concat ", " (List.map Ident.name vars) in
+    ind ^ "extern " ^ Symbol.to_string f ^ "(" ^ vars_str ^ ") {\n" ^
+    string_of_extern_branches ~indent:(indent + 1) branches ^ "\n" ^
+    ind ^ "}"
   
-  let rec statement
-      (sigma: signature_env) (theta: label_env) (iota: import_env) (gamma: typ_env)
-      (s: statement) =
-    match s with
-    | Jump l ->
-      let g = get_type_env l theta in
-      if gamma <> g then error "type environment mismatch in jump"
-      else MkTyped (g, Jump l)
-    
-    | Substitute (subs, s) ->
-      let g = List.map (fun (v', v) -> (v', get_type v gamma)) subs in
-      let st = statement sigma theta iota g s in
-      MkTyped (gamma, Substitute (subs, st))
-    
-    | Let (v, m, vs, s) ->
-      let g0, g1 = skip vs gamma in
-      let (m_ty, m_g) = get_declaration m sigma in
-      arguments m_g vs g0;
-      let st = statement sigma theta iota ((v, Prd m_ty) :: g1) s in
-      MkTyped (gamma, Let (v, m, vs, st))
-    
-    | New (v, tty, vs, bs, s) ->
-      let g0, g1 = skip vs gamma in
-      let sgn = get_signature tty sigma in
-      let cs = List.map2
-        (fun (m1, g1) (m', vs', s1) ->
-          symbols m1 m';
-          arguments g1 vs' g0;
-          let st1 = statement sigma theta iota (g0 @ g1) s1 in
-          (m', vs', st1))
-        sgn bs
-      in
-      let st = statement sigma theta iota ((v, Cns tty) :: g1) s in
-      MkTyped (gamma, New (v, tty, vs, cs, st))
-    
-    | Switch (v, bs) ->
-      (match gamma with
-      | (v', Prd tty) :: g when v' = v ->
-        let sgn = get_signature tty sigma in
-        let cs = List.map2
-          (fun (m1, g1) (m1', vs', s1) ->
-            symbols m1 m1';
-            arguments g1 vs' gamma;
-            let st1 = statement sigma theta iota (g1 @ g) s1 in
-            (m1', vs', st1))
-          sgn bs
-        in
-        MkTyped (gamma, Switch (v, cs))
-      | _ -> error "incorrect producer type")
-    
-    | Invoke (v, m) ->
-      (match gamma with
-      | (v', Cns tty) :: g when v' = v ->
-        let sgn = get_signature tty sigma in
-        (match List.assoc_opt m sgn with
-        | Some m_g ->
-          arguments m_g (List.map fst g) g;
-          MkTyped (gamma, Invoke (v, m))
-        | None -> error "unknown method in invoke")
-      | _ -> error "incorrect consumer type")
-    
-    | Extern (m, vs, ss) ->
-      let (ins, outs) = get_interface m iota in
-      List.iter2
-        (fun t v ->
-          let v_ty = get_type v gamma in
-          if t <> v_ty then error "argument type mismatch in extern")
-        ins vs;
-      let sts = List.map2
-        (fun ts (ys, s1) ->
-          let g1 = List.combine ys ts in
-          let st1 = statement sigma theta iota (g1 @ gamma) s1 in
-          (ys, st1))
-        outs ss
-      in
-      MkTyped (gamma, Extern (m, vs, sts))
+  | Let (v, m, gamma, s') ->
+    ind ^ "let " ^ Ident.name v ^ " = " ^ Symbol.to_string m ^
+    "(" ^ string_of_typ_env gamma ^ ");\n" ^
+    string_of_statement ~indent s'
+  
+  | New (v, ty_sym, gamma, branches, s') ->
+    ind ^ "new " ^ Ident.name v ^ " : " ^ Symbol.to_string ty_sym ^
+    "(" ^ string_of_typ_env gamma ^ ") {\n" ^
+    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
+    ind ^ "};\n" ^
+    string_of_statement ~indent s'
+  
+  | Switch (v, branches) ->
+    ind ^ "switch " ^ Ident.name v ^ " {\n" ^
+    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
+    ind ^ "}"
+  
+  | Invoke (v, m) ->
+    ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m
+
+and string_of_branches ?(indent=0) branches =
+  let ind = String.make (indent * 2) ' ' in
+  String.concat "\n" (List.map (fun (m, gamma, s) ->
+    ind ^ Symbol.to_string m ^ "(" ^ string_of_typ_env gamma ^ ") ⇒\n" ^
+    string_of_statement ~indent:(indent + 1) s
+  ) branches)
+
+and string_of_extern_branches ?(indent=0) branches =
+  let ind = String.make (indent * 2) ' ' in
+  String.concat "\n" (List.map (fun (gamma, s) ->
+    ind ^ "(" ^ string_of_typ_env gamma ^ ") ⇒\n" ^
+    string_of_statement ~indent:(indent + 1) s
+  ) branches)
+
+let string_of_definition (l, gamma, s) =
+  "define " ^ Label.to_string l ^ "(" ^ string_of_typ_env gamma ^ ") =\n" ^
+  string_of_statement ~indent:1 s
+
+let string_of_program prog =
+  String.concat "\n\n" (List.map string_of_definition prog)
+
+(** Type checking *)
+
+exception TypeError of string
+
+(* External symbol interface: (input types, output clauses) 
+   Each output clause specifies the types of variables it binds *)
+type extern_interface = typ list * (typ_env list)
+
+(* External environment: maps extern symbols to their interfaces *)
+type extern_env = (symbol * extern_interface) list
+
+module Env = struct
+  (** Look up a variable in the type environment *)
+  let rec lookup (v: variable) (gamma: typ_env) : typ option =
+    match gamma with
+    | [] -> None
+    | (v', ty) :: rest ->
+      if Ident.equal v v' then Some ty
+      else lookup v rest
+
+  (** Look up a variable, raising an error if not found *)
+  let lookup_exn (v: variable) (gamma: typ_env) : typ =
+    match lookup v gamma with
+    | Some ty -> ty
+    | None -> raise (TypeError ("Variable not in environment: " ^ Ident.name v))
+
+  (** Check if two type environments are equal *)
+  let equal (gamma1: typ_env) (gamma2: typ_env) : bool =
+    List.length gamma1 = List.length gamma2 &&
+    List.for_all2 (fun (v1, ty1) (v2, ty2) ->
+      Ident.equal v1 v2 && ty1 = ty2
+    ) gamma1 gamma2
+
+  (** Split environment: Γ, Γ0 where Γ0 has length n *)
+  let split_at (n: int) (gamma: typ_env) : typ_env * typ_env =
+    let rec take acc i rest =
+      if i = 0 then (List.rev acc, rest)
+      else match rest with
+      | [] -> raise (TypeError "Environment too short for split")
+      | x :: xs -> take (x :: acc) (i - 1) xs
+    in
+    take [] n gamma
+
+  (** Remove a variable from the front of the environment *)
+  let remove_front (v: variable) (gamma: typ_env) : typ_env =
+    match gamma with
+    | (v', _) :: rest when Ident.equal v v' -> rest
+    | _ -> raise (TypeError ("Variable " ^ Ident.name v ^ " not at front of environment"))
 end
 
-type definition =
-  { name: label
-  ; args: typ_env
-  ; body: statement
-  } 
+module Signatures = struct
+  (** Look up a signature by type symbol *)
+  let rec lookup (ty_sym: symbol) (sigs: signatures) : pattern list option =
+    match sigs with
+    | [] -> None
+    | (ty_sym', patterns) :: rest ->
+      if Path.equal ty_sym ty_sym' then Some patterns
+      else lookup ty_sym rest
 
-type program =
-  { imports: import_env
-  ; signatures: signature_env
-  ; definitions: definition list
-  }
+  (** Look up a signature, raising an error if not found *)
+  let lookup_exn (ty_sym: symbol) (sigs: signatures) : pattern list =
+    match lookup ty_sym sigs with
+    | Some patterns -> patterns
+    | None -> raise (TypeError ("Signature not found for type: " ^ Symbol.to_string ty_sym))
 
-type typed_definition =
-  { name: label
-  ; args: typ_env
-  ; body: typed_statement
-  }
+  (** Find the pattern for a specific constructor/destructor symbol *)
+  let find_pattern (m: symbol) (patterns: pattern list) : typ_env option =
+    List.find_map (fun (m', gamma) -> 
+      if Path.equal m m' then Some gamma else None
+    ) patterns
 
-type typed_program =
-  { imports: import_env
-  ; signatures: signature_env
-  ; definitions: typed_definition list
-  }
+  (** Find pattern, raising an error if not found *)
+  let find_pattern_exn (m: symbol) (patterns: pattern list) : typ_env =
+    match find_pattern m patterns with
+    | Some gamma -> gamma
+    | None -> raise (TypeError ("Constructor/destructor not found: " ^ Symbol.to_string m))
+end
 
-let mk_typed (prog: program) =
-  let labels =
-    List.map
-      (fun (def: definition) -> (def.name, def.args))
-      prog.definitions
-  in
-  { imports = prog.imports;
-    signatures = prog.signatures;
-    definitions =
-      List.map
-        (fun (def: definition) ->
-          let typed_body =
-            Check.statement
-              prog.signatures
-              labels
-              prog.imports
-              def.args
-              def.body
-          in
-          { name = def.name
-          ; args = def.args
-          ; body = typed_body
-          })
-        prog.definitions }
+(** Check a statement against a type environment
+    Rule: Σ; Θ; Γ ⊢ s
+*)
+let rec check_statement 
+    (sigs: signatures) 
+    (theta: label_env) 
+    (extern_env: extern_env)
+    (gamma: typ_env) 
+    (s: statement) : unit =
+  match s with
+  | Jump l ->
+    (* Rule [JUMP]: Θ(l) = Γ
+                    ----------
+                    Γ ⊢ jump l *)
+    let expected_gamma = 
+      match List.assoc_opt l theta with
+      | Some g -> g
+      | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
+    in
+    if not (Env.equal gamma expected_gamma) then
+      raise (TypeError ("Jump: environment mismatch for label " ^ Label.to_string l))
+
+  | Substitute (pairs, s') ->
+    (* Rule [SUBSTITUTE]: v′1 : τ1, ... ⊢ s      Γ(v1) = τ1
+                          ---------------------------------
+                          Γ ⊢ substitute [v′1 → v1, ...]; s *)
+    (* Build new environment from substitution pairs *)
+    let gamma' = List.map (fun (v_new, v_old) ->
+      let ty = Env.lookup_exn v_old gamma in
+      (v_new, ty)
+    ) pairs in
+    check_statement sigs theta extern_env gamma' s'
+
+  | Extern (m, vars, branches) ->
+    (* Rule [EXTERN]: v1 : τ_1, ... ⊢ m: (Γ1), ...   Γ(v1) = τ1 ...     Γ, Γ1 ⊢ s1  ...
+                      ------------------------------------------------------------------
+                      Γ ⊢ extern m(v1, ...){(Γ1) ⇒ s1, ... } *)
+    (* Look up the extern interface *)
+    let (input_types, output_clauses) = 
+      match List.assoc_opt m extern_env with
+      | Some iface -> iface
+      | None -> raise (TypeError ("Extern symbol not found: " ^ Symbol.to_string m))
+    in
+    (* Check that input variables have the correct types *)
+    if List.length vars <> List.length input_types then
+      raise (TypeError ("Extern: wrong number of arguments for " ^ Symbol.to_string m));
+    List.iter2 (fun v ty ->
+      let v_ty = Env.lookup_exn v gamma in
+      if v_ty <> ty then
+        raise (TypeError ("Extern: argument type mismatch for " ^ Ident.name v))
+    ) vars input_types;
+    (* Check that we have the right number of branches *)
+    if List.length branches <> List.length output_clauses then
+      raise (TypeError ("Extern: wrong number of branches for " ^ Symbol.to_string m));
+    (* Check each branch *)
+    List.iter2 (fun (gamma_i, s_i) clause_gamma ->
+      (* Check that branch environment matches clause signature *)
+      if not (Env.equal gamma_i clause_gamma) then
+        raise (TypeError "Extern: branch environment mismatch");
+      (* Check the statement with Γ, Γi *)
+      let extended_gamma = gamma_i @ gamma in
+      check_statement sigs theta extern_env extended_gamma s_i
+    ) branches output_clauses
+
+  | Let (v, m, gamma0, s') ->
+    (* Rule [LET]: Σ(T) = {..., m(Γ0), ... }      Γ, v : prd T ⊢ s
+                   ------------------------------------------------
+                   Γ, Γ0 ⊢ let v = m(Γ0); s *)
+    (* Find which type T the constructor m belongs to *)
+    let ty_sym = 
+      match List.find_opt (fun (_ty_sym, patterns) ->
+        Signatures.find_pattern m patterns <> None
+      ) sigs with
+      | Some (ty_sym, _) -> ty_sym
+      | None -> raise (TypeError ("Constructor not found in any signature: " ^ Symbol.to_string m))
+    in
+    let patterns = Signatures.lookup_exn ty_sym sigs in
+    let expected_gamma0 = Signatures.find_pattern_exn m patterns in
+    (* Check that gamma0 matches the constructor signature *)
+    if not (Env.equal gamma0 expected_gamma0) then
+      raise (TypeError ("Let: constructor argument environment mismatch for " ^ Symbol.to_string m));
+    (* Split current environment: Γ, Γ0 where Γ0 is at head (rightmost in text) *)
+    let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
+    if not (Env.equal gamma0 gamma0_actual) then
+      raise (TypeError "Let: environment split mismatch");
+    (* Check continuation with Γ, v : prd T where v goes at head *)
+    let new_gamma = (v, Prd ty_sym) :: gamma_rest in
+    check_statement sigs theta extern_env new_gamma s'
+
+  | New (v, ty_sym, gamma0, branches, s') ->
+    (* Rule [NEW]: Σ(T) = {m1(Γ1), ...}    Γ, v : cns T ⊢ s     Γ1, Γ0 ⊢ s1    ...
+                   ----------------------------------------------------------------
+                   Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ... }; s *)
+    let patterns = Signatures.lookup_exn ty_sym sigs in
+    (* Split current environment: Γ, Γ0 where Γ0 is at head *)
+    let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
+    if not (Env.equal gamma0 gamma0_actual) then
+      raise (TypeError "New: environment split mismatch");
+    (* Check that we have the right branches *)
+    if List.length branches <> List.length patterns then
+      raise (TypeError ("New: wrong number of branches for type " ^ Symbol.to_string ty_sym));
+    (* Check each branch *)
+    List.iter2 (fun (m_i, gamma_i, s_i) (m_expected, gamma_i_expected) ->
+      if not (Path.equal m_i m_expected) then
+        raise (TypeError ("New: branch symbol mismatch, expected " ^ Symbol.to_string m_expected));
+      if not (Env.equal gamma_i gamma_i_expected) then
+        raise (TypeError ("New: branch environment mismatch for " ^ Symbol.to_string m_i));
+      (* Check statement with Γ1, Γ0 where Γ1 is at head *)
+      let branch_env = gamma_i @ gamma0 in
+      check_statement sigs theta extern_env branch_env s_i
+    ) branches patterns;
+    (* Check continuation with Γ, v : cns T where v goes at head *)
+    let new_gamma = (v, Cns ty_sym) :: gamma_rest in
+    check_statement sigs theta extern_env new_gamma s'
+
+  | Switch (v, branches) ->
+    (* Rule [SWITCH]: Σ(T) = {m1(Γ1), ...}      Γ, Γ1 ⊢ s1   ...
+                      -------------------------------------------
+                      Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ... } *)
+    (* Check that v is at front of environment and is a producer *)
+    (match gamma with
+    | (v', Prd ty_sym) :: gamma_rest when Ident.equal v v' ->
+      let patterns = Signatures.lookup_exn ty_sym sigs in
+      (* Check that we have the right branches *)
+      if List.length branches <> List.length patterns then
+        raise (TypeError ("Switch: wrong number of branches for type " ^ Symbol.to_string ty_sym));
+      (* Check each branch *)
+      List.iter2 (fun (m_i, gamma_i, s_i) (m_expected, gamma_i_expected) ->
+        if not (Path.equal m_i m_expected) then
+          raise (TypeError ("Switch: branch symbol mismatch, expected " ^ Symbol.to_string m_expected));
+        if not (Env.equal gamma_i gamma_i_expected) then
+          raise (TypeError ("Switch: branch environment mismatch for " ^ Symbol.to_string m_i));
+        (* Check statement with Γ, Γ1 *)
+        let branch_env = gamma_i @ gamma_rest in
+        check_statement sigs theta extern_env branch_env s_i
+      ) branches patterns
+    | (v', _) :: _ when Ident.equal v v' ->
+      raise (TypeError ("Switch: variable " ^ Ident.name v ^ " is not a producer"))
+    | _ ->
+      raise (TypeError ("Switch: variable " ^ Ident.name v ^ " not at front of environment")))
+
+  | Invoke (v, m) ->
+    (* Rule [INVOKE]: Σ(T) = {..., m(Γ), ...}
+                      -------------------------
+                      Γ, v : cns T ⊢ invoke v m *)
+    (* Check that v is at front of environment and is a consumer *)
+    (match gamma with
+    | (v', Cns ty_sym) :: gamma_rest when Ident.equal v v' ->
+      let patterns = Signatures.lookup_exn ty_sym sigs in
+      let expected_gamma = Signatures.find_pattern_exn m patterns in
+      (* Check that rest of environment matches m's signature *)
+      if not (Env.equal gamma_rest expected_gamma) then
+        raise (TypeError ("Invoke: environment mismatch for method " ^ Symbol.to_string m))
+    | (v', _) :: _ when Ident.equal v v' ->
+      raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
+    | _ ->
+      raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " not at front of environment")))
+
+(** Check a program
+    Rule [PROGRAM]: Θ(l) = Γ    Σ; Θ; Γ ⊢ s    ...
+                    ------------------------------
+                    Σ Θ ⊢ define l : Γ = s, ...
+*)
+let check_program 
+    (sigs: signatures) 
+    (extern_env: extern_env)
+    (prog: program) : unit =
+  (* Build label environment from program *)
+  let theta = List.map (fun (l, gamma, _) -> (l, gamma)) prog in
+  (* Check each definition *)
+  List.iter (fun (l, gamma, s) ->
+    (* Verify label is in theta with correct type *)
+    let expected_gamma = 
+      match List.assoc_opt l theta with
+      | Some g -> g
+      | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
+    in
+    if not (Env.equal gamma expected_gamma) then
+      raise (TypeError ("Program: environment mismatch for label " ^ Label.to_string l));
+    (* Check the statement *)
+    check_statement sigs theta extern_env gamma s
+  ) prog

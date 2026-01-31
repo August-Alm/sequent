@@ -1,3 +1,4 @@
 (library
  (name sequent)
+ (modules normalization linearization convert)
  (libraries utility common lang core cut))

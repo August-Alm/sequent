@@ -119,3 +119,26 @@ the variables in scope. This includes reordering variables by using them once, d
 variables by using them multiple times, and dropping variables by not using them at all.
 Substitutions happen simultaneously. Logically speaking, they can be thought of as context
 morphisms.
+
+One can imagine a version of Cut without the Substitute statement and unrestricted variable
+usage. It is possible to infer variable usage and linearize such terms with unrestriced usage.
+For example, imagine a definition
+
+define consTwice(v : ext Int, l0 : prd List(Int), k : cns List(Int)) =
+  let l1 = cons(v, l0);
+  invoke k cons(v, l1)
+
+It receives an integer and a list and returns the same list with the integer prepended twice.
+We insert an explicit substitution before each statement, where for every free variable in
+the statement we substitute this variable for itself in an order dictated by what variables
+the statement consumes. This will exchange and weaken variables appropriately. When a
+variable occurs free more than once, such as v here, we have to contract and rename it. In
+this example, we get the below program in Cut with explicit substitutions. The cons in
+the invoke statement does not need explicit arguments anymore, because they now exactly
+match the context.
+
+define consTwice(v : ext Int, l0 : prd List(Int), k : cns List(Int)) =
+  substitute [v → v, k → k, v0 → v, l0 → l0];
+  let l1 = cons(v0, l0);
+  substitute [v → v, l1 → l1, k → k];
+  invoke k cons
