@@ -184,7 +184,22 @@ let rec normalize_producer (defs: CT.definitions) (sigs: CutT.signatures) (p: CT
   | CT.Cocase patterns ->
     (* Cocase is a producer, need to bind it *)
     let v = Ident.fresh () in
-    let branches = normalize_cocase_patterns defs sigs patterns in
+    (* Infer type from the first pattern's parent xtor *)
+    let cocase_ty = 
+      match patterns with
+      | [] -> failwith "Empty cocase patterns"
+      | pat :: _ ->
+        let xtor_info = CT.get_xtor defs pat.xtor in
+        (* Build a type application from the parent and the pattern's type arguments *)
+        let parent_sym = xtor_info.parent in
+        (* If there are type arguments in the pattern, apply them *)
+        List.fold_left (fun acc ty_arg -> 
+          CTy.TyApp (acc, ty_arg)
+        ) (CTy.TySym parent_sym) (List.map (fun ty_var -> 
+          CTy.TyVar ty_var
+        ) pat.type_vars)
+    in
+    let branches = normalize_cocase_patterns defs sigs cocase_ty patterns in
     (* The cocase will be bound in the continuation *)
     k_consume_cocase branches k v
 
@@ -268,6 +283,15 @@ and normalize_cut (defs: CT.definitions) (sigs: CutT.signatures) (p: CT.producer
     | None ->
       failwith ("Destructor " ^ Path.name dtor ^ " not found in cocase patterns"))
   
+  (* Rule: ⟨cocase {...} | α⟩ → new v = cocase; substitute α := v *)
+  | (CT.Cocase patterns, CT.Covar alpha) ->
+    let v = Ident.fresh () in
+    let branches = normalize_cocase_patterns defs sigs ty patterns in
+    (* Create the cocase object and make it available to the continuation via substitution *)
+    (* The jump to "cocase_done" is a placeholder - at top level, execution completes here *)
+    CutT.New (v, core_type_to_cut_type defs ty, [], branches, 
+      CutT.Substitute ([(alpha, v)], CutT.Jump (CutT.MkLabel (Path.of_string "cocase_done"))))
+  
   (* Rule: ⟨x | α⟩ → η-expand (unknown cut) *)
   | (CT.Var x, CT.Covar alpha) ->
     normalize_unknown_cut defs sigs x alpha ty
@@ -278,22 +302,12 @@ and normalize_cut (defs: CT.definitions) (sigs: CutT.signatures) (p: CT.producer
   
   (* Default cases: lift non-variable subterms *)
   | (p, c) ->
-    normalize_producer defs sigs p (fun _p_var ->
-      normalize_consumer defs sigs c (fun _c_var ->
-        (* Now both are variables, create appropriate statement *)
-        match (is_data_type defs ty, p, c) with
-        (* ⟨C(Γ) | μ̃x.s⟩ & ⟨μα.s | D(Γ)⟩ → let *)
-        | (_, CT.Constructor (ctor, _), CT.MuTilde (x, s)) ->
-          let norm_s = normalize_statement defs sigs s in
-          CutT.Let (x, ctor, [], [], norm_s)
-        | (_, CT.Mu (alpha, s), CT.Destructor (dtor, _)) ->
-          let norm_s = normalize_statement defs sigs s in
-          CutT.Let (alpha, dtor, [], [], norm_s)
-        
-        (* ⟨C(Γ) | α⟩ & ⟨x | D(Γ)⟩ → invoke *)
-        | _ ->
-          (* Generic case: create jump or invoke based on structure *)
-          failwith "Unhandled cut case in normalization"
+    (* First normalize producer to a variable *)
+    normalize_producer defs sigs p (fun p_var ->
+      (* Then normalize consumer to a covariable *)
+      normalize_consumer defs sigs c (fun c_var ->
+        (* Now we have ⟨p_var | c_var⟩, which is an unknown cut needing η-expansion *)
+        normalize_unknown_cut defs sigs p_var c_var ty
       )
     )
 
@@ -465,22 +479,150 @@ and normalize_case_patterns (defs: CT.definitions) (sigs: CutT.signatures) (patt
     let norm_s = normalize_statement defs sigs pat.statement in
     (* Look up constructor to get argument types *)
     let xtor_info = CT.get_xtor defs pat.xtor in
-    let prod_types = List.map (core_type_to_cut_type defs) xtor_info.producers in
-    let var_env = List.map2 (fun v ty -> (v, Cut.Types.Prd ty)) pat.variables prod_types in
+    (* Constructors take producers, so use Prd chirality *)
+    let var_env = List.map2 (fun v ty -> 
+      (v, Cut.Types.Prd (core_type_to_cut_type defs ty))
+    ) pat.variables xtor_info.producers in
     (pat.xtor, [], var_env, norm_s)
   ) patterns
 
 (** Normalize cocase patterns *)
-and normalize_cocase_patterns (defs: CT.definitions) (sigs: CutT.signatures) (patterns: CT.pattern list)
+and normalize_cocase_patterns (defs: CT.definitions) (sigs: CutT.signatures) 
+    (ty: CTy.typ) (patterns: CT.pattern list)
     : CutT.branches =
+  (* Extract type arguments from the type to instantiate polymorphic types *)
+  let rec extract_type_args acc t =
+    match t with
+    | CTy.TyApp (t1, t2) -> extract_type_args (t2 :: acc) t1
+    | _ -> acc
+  in
+  let type_args = extract_type_args [] ty in
+  
   List.map (fun (pat: CT.pattern) ->
     let norm_s = normalize_statement defs sigs pat.statement in
     (* Look up destructor to get argument types *)
     let xtor_info = CT.get_xtor defs pat.xtor in
-    let cons_types = List.map (core_type_to_cut_type defs) xtor_info.consumers in
-    let var_env = List.map2 (fun v ty -> (v, Cut.Types.Cns ty)) pat.covariables cons_types in
-    (pat.xtor, [], var_env, norm_s)
+    
+    (* Find the parent type to look up the signature for canonical variable names *)
+    let parent_sym = xtor_info.parent in
+    
+    (* Try to find the signature to get canonical variable names and apply type instantiation *)
+    let (sig_vars, instantiated_prod_types, instantiated_cons_types) = 
+      try
+        let (sig_def, _) = List.assoc parent_sym sigs in
+        let msig = List.find (fun (m: Cut.Types.method_sig) -> 
+          Path.equal m.symbol pat.xtor
+        ) sig_def.methods in
+        
+        (* Build type substitution from signature's type params to actual type args *)
+        let type_params = List.map fst sig_def.parameters in
+        let cut_type_args = List.map (core_type_to_cut_type defs) type_args in
+        let type_subst = 
+          if List.length type_params <> List.length cut_type_args then (
+            Printf.eprintf "ERROR: Type parameter count mismatch for %s:\n" (Path.name parent_sym);
+            Printf.eprintf "  Expected %d type params, got %d type args\n" 
+              (List.length type_params) (List.length cut_type_args);
+            failwith "Type parameter count mismatch"
+          ) else
+            List.combine type_params cut_type_args in
+        
+        (* Apply substitution to the chirality types from the signature *)
+        let inst_prods = List.map (fun (v, chi_ty) ->
+          (v, Cut.Types.substitute_chirality type_subst chi_ty)
+        ) msig.producers in
+        let inst_cons = List.map (fun (v, chi_ty) ->
+          (v, Cut.Types.substitute_chirality type_subst chi_ty)
+        ) msig.consumers in
+        
+        (* Extract variable names and types *)
+        let vars = List.map fst (inst_prods @ inst_cons) in
+        let prod_tys = List.map (fun (_, chi_ty) -> 
+          match chi_ty with Cut.Types.Prd t -> t | _ -> failwith "Expected Prd"
+        ) inst_prods in
+        let cons_tys = List.map (fun (_, chi_ty) ->
+          match chi_ty with Cut.Types.Cns t -> t | _ -> failwith "Expected Cns"
+        ) inst_cons in
+        
+        (vars, prod_tys, cons_tys)
+      with Not_found ->
+        (* Fallback: use pattern's own variables and uninstantiated types *)
+        let sig_vars = pat.variables @ pat.covariables in
+        let prod_tys = List.map (core_type_to_cut_type defs) xtor_info.producers in
+        let cons_tys = List.map (core_type_to_cut_type defs) xtor_info.consumers in
+        (sig_vars, prod_tys, cons_tys)
+    in
+    
+    (* Create environment with instantiated types *)
+    let n_prods = List.length instantiated_prod_types in
+    let prod_vars = List.take n_prods sig_vars in
+    let cons_vars = List.drop n_prods sig_vars in
+    
+    let prod_env = List.map2 (fun v ty -> (v, Cut.Types.Prd ty)) prod_vars instantiated_prod_types in
+    let cons_env = List.map2 (fun v ty -> (v, Cut.Types.Cns ty)) cons_vars instantiated_cons_types in
+    let var_env = prod_env @ cons_env in
+    
+    (* Build substitution from pattern variables to signature variables *)
+    let pat_vars = pat.variables @ pat.covariables in
+    let var_subst = 
+      if List.length pat_vars <> List.length sig_vars then (
+        Printf.eprintf "ERROR: Variable count mismatch for pattern %s:\n" (Path.name pat.xtor);
+        Printf.eprintf "  Pattern has %d vars, signature has %d vars\n"
+          (List.length pat_vars) (List.length sig_vars);
+        Printf.eprintf "  Pattern vars: %s\n"
+          (String.concat ", " (List.map Ident.name pat_vars));
+        Printf.eprintf "  Signature vars: %s\n"
+          (String.concat ", " (List.map Ident.name sig_vars));
+        failwith "Variable count mismatch"
+      ) else
+        List.combine pat_vars sig_vars in
+    
+    (* Apply substitution to the normalized statement *)
+    let subst_s = apply_cut_substitution var_subst norm_s in
+    
+    (* Convert type_args to Cut types for the branch *)
+    let branch_type_args = List.map (core_type_to_cut_type defs) type_args in
+    
+    (pat.xtor, branch_type_args, var_env, subst_s)
   ) patterns
+
+(** Apply variable substitution to a Cut statement *)
+and apply_cut_substitution (subst: (Ident.t * Ident.t) list) (s: CutT.statement) : CutT.statement =
+  if subst = [] then s else
+  let apply_var v = 
+    match List.assoc_opt v subst with Some v' -> v' | None -> v
+  in
+  let rec go_stmt = function
+    | CutT.Jump label -> CutT.Jump label
+    | CutT.Substitute (pairs, s') ->
+      let pairs' = List.map (fun (v1, v2) -> (apply_var v1, apply_var v2)) pairs in
+      CutT.Substitute (pairs', go_stmt s')
+    | CutT.Extern (f, vars, branches) ->
+      CutT.Extern (f, List.map apply_var vars, List.map go_extern_branch branches)
+    | CutT.Let (v, m, ty_args, gamma, s') ->
+      let gamma' = List.map (fun (x, chi) -> (apply_var x, chi)) gamma in
+      CutT.Let (apply_var v, m, ty_args, gamma', go_stmt s')
+    | CutT.New (v, ty, gamma, branches, s') ->
+      let gamma' = List.map (fun (x, chi) -> (apply_var x, chi)) gamma in
+      CutT.New (apply_var v, ty, gamma', List.map go_branch branches, go_stmt s')
+    | CutT.Switch (v, branches) ->
+      CutT.Switch (apply_var v, List.map go_branch branches)
+    | CutT.Invoke (v, m, ty_args, vars) ->
+      CutT.Invoke (apply_var v, m, ty_args, List.map apply_var vars)
+  and go_branch (m, ty_args, gamma, s) =
+    (* Variables bound in gamma shadow the substitution *)
+    let bound_vars = List.map fst gamma in
+    let subst' = List.filter (fun (v, _) -> not (List.mem v bound_vars)) subst in
+    let gamma' = List.map (fun (x, chi) -> (apply_var x, chi)) gamma in
+    let s' = apply_cut_substitution subst' s in
+    (m, ty_args, gamma', s')
+  and go_extern_branch (gamma, s) =
+    let bound_vars = List.map fst gamma in
+    let subst' = List.filter (fun (v, _) -> not (List.mem v bound_vars)) subst in
+    let gamma' = List.map (fun (x, chi) -> (apply_var x, chi)) gamma in
+    let s' = apply_cut_substitution subst' s in
+    (gamma', s')
+  in
+  go_stmt s
 
 (** Helper: find matching pattern *)
 and find_matching_pattern (xtor: Path.t) (patterns: CT.pattern list) 
@@ -532,9 +674,10 @@ and k_consume_case (_branches: CutT.branches) (k: Ident.t -> CutT.statement)
   k v
 
 (** Helper: consume a cocase *)
-and k_consume_cocase (_branches: CutT.branches) (k: Ident.t -> CutT.statement)
-    (v: Ident.t) : CutT.statement =
-  k v
+and k_consume_cocase (_branches: CutT.branches) (_k: Ident.t -> CutT.statement)
+    (_v: Ident.t) : CutT.statement =
+  (* This should not be called - cocase should be handled directly in normalize_cut *)
+  failwith "k_consume_cocase: cocase should be handled in normalize_cut"
 
 (** Convert Core type definitions to Cut signatures
     
@@ -549,15 +692,52 @@ let extract_signatures (defs: CT.definitions) : CutT.signatures =
   List.filter_map (fun (ty_sym, (ty_def, kind)) ->
     match ty_def with
     | CTy.Data ty_dec | CTy.Code ty_dec ->
+      (* Extract type parameters - create meaningful identifiers for them *)
+      let type_params = List.mapi (fun i (_, k) ->
+        (* Use meaningful names: a, b, c, ... *)
+        let param_name = String.make 1 (Char.chr (Char.code 'a' + i)) in
+        (Ident.mk param_name, core_kind_to_cut_kind k)
+      ) ty_dec.arguments in
+      
+      (* Collect all type variables used in xtors to build substitution *)
+      let collect_type_vars ty =
+        let rec go acc t =
+          match t with
+          | CTy.TyVar v -> if List.mem v acc then acc else v :: acc
+          | CTy.TyApp (t1, t2) -> go (go acc t1) t2
+          | _ -> acc
+        in go [] ty
+      in
+      
+      let all_type_vars = List.fold_left (fun acc (xtor: CTy.ty_xtor) ->
+        let prod_vars = List.fold_left (fun a ty -> List.rev_append (collect_type_vars ty) a) acc xtor.producers in
+        List.fold_left (fun a ty -> List.rev_append (collect_type_vars ty) a) prod_vars xtor.consumers
+      ) [] ty_dec.xtors in
+      
+      (* Remove duplicates and take only as many as we have parameters *)
+      let unique_vars = List.sort_uniq Ident.compare all_type_vars in
+      let old_type_params = List.take (List.length type_params) unique_vars in
+      
+      (* Build substitution from old type variables to new parameter identifiers *)
+      let type_param_subst = 
+        if List.length old_type_params = List.length type_params then
+          List.map2 (fun old_v (new_v, _) -> (old_v, Cut.Types.TyVar new_v)) old_type_params type_params
+        else [] in
+      
       (* Convert each xtor to a method signature *)
       let methods = List.filter_map (fun (xtor: CTy.ty_xtor) ->
         try
           (* Build producer and consumer environments from xtor parameters *)
+          (* Chirality is determined by position: producers → Prd, consumers → Cns *)
           let prod_params = List.map (fun ty -> 
-            (Ident.fresh (), type_to_chirality defs ty)
+            let cut_ty = core_type_to_cut_type defs ty in
+            let subst_ty = Cut.Types.Type.substitute type_param_subst cut_ty in
+            (Ident.fresh (), Cut.Types.Prd subst_ty)
           ) xtor.producers in
           let cons_params = List.map (fun ty ->
-            (Ident.fresh (), type_to_chirality defs ty)
+            let cut_ty = core_type_to_cut_type defs ty in
+            let subst_ty = Cut.Types.Type.substitute type_param_subst cut_ty in
+            (Ident.fresh (), Cut.Types.Cns subst_ty)
           ) xtor.consumers in
           
           (* Convert quantified type variables to Cut types *)
@@ -587,7 +767,7 @@ let extract_signatures (defs: CT.definitions) : CutT.signatures =
       (* Create signature with methods *)
       let sig_def : Cut.Types.signature = {
         symbol = ty_sym;
-        parameters = []; (* No type parameters for now *)
+        parameters = type_params;
         methods = methods;
       } in
       let cut_kind = core_kind_to_cut_kind kind in

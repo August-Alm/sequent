@@ -399,7 +399,10 @@ let rec check_statement
       in
       
       if not (Env.equal branch_gamma expected_branch_gamma) then
-        raise (TypeError ("New: branch environment mismatch for " ^ Symbol.to_string m_i));
+        (Printf.eprintf "DEBUG: Branch environment mismatch for %s\n" (Symbol.to_string m_i);
+         Printf.eprintf "  branch_gamma: %s\n" (string_of_typ_env branch_gamma);
+         Printf.eprintf "  expected: %s\n" (string_of_typ_env expected_branch_gamma);
+         raise (TypeError ("New: branch environment mismatch for " ^ Symbol.to_string m_i)));
       
       (* Check statement with Γᵖ, Γᶜ, Γ₀ *)
       let branch_env = branch_gamma @ gamma0 in

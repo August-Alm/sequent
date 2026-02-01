@@ -142,3 +142,6 @@ define consTwice(v : ext Int, l0 : prd List(Int), k : cns List(Int)) =
   let l1 = cons(v0, l0);
   substitute [v → v, l1 → l1, k → k];
   invoke k cons
+ 
+
+ ⟨cocase {D(Γ) ⇒ s, ... } | α⟩

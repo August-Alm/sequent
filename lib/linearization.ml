@@ -173,11 +173,17 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
     let free_in_cont = free_vars_statement s' in
-    let preserve = List.filter (fun v -> not (List.mem v gamma_vars))
-      (List.map fst free_in_cont) in
-    let (subst, _env_after) = build_substitution current_env gamma_vars preserve [] in
+    (* Only preserve variables that are:
+       1. Not consumed by the constructor (not in gamma_vars)
+       2. Actually in current_env (not future variables like v itself) *)
+    let preserve = List.filter (fun var -> 
+      not (List.mem var gamma_vars) && 
+      not (Ident.equal var v) &&
+      List.mem var current_env
+    ) (List.map fst free_in_cont) in
+    let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
     (* After let, v is added to the environment *)
-    let new_env = v :: current_env in
+    let new_env = v :: env_after in
     let s_linearized = linearize_statement new_env s' in
     prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
   
@@ -189,8 +195,15 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
     let free_in_branches = free_vars_branches_max branch_free_lists in
     let free_in_cont = free_vars_statement s' in
     let all_free = merge_var_counts free_in_branches free_in_cont in
-    let preserve = List.filter (fun v -> not (List.mem v gamma_vars))
-      (List.map fst all_free) in
+    (* Only preserve variables that are:
+       1. Not consumed by the new binding (not in gamma_vars)
+       2. Not the variable being bound (not v itself)
+       3. Actually in current_env (not future variables) *)
+    let preserve = List.filter (fun var -> 
+      not (List.mem var gamma_vars) && 
+      not (Ident.equal var v) &&
+      List.mem var current_env
+    ) (List.map fst all_free) in
     let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
     (* Linearize branches with their own environments *)
     let branches' = List.map (linearize_branch env_after_gamma) branches in

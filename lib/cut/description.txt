@@ -58,9 +58,9 @@ type Int of machine integers in the above example of add.
 
 Θ(l) = Γ    Σ; Θ; Γ ⊢ s    ...
 ------------------------------ [PROGRAM]
-Σ Θ ⊢ define l : Γ = s, ...
+Σ;Θ ⊢ define l : Γ = s, ...
 
- Θ(l) = Γ
+Θ(l) = Γ
 ---------- [JUMP]
 Γ ⊢ jump l 
 
@@ -70,33 +70,33 @@ v′1 : τ1, ... ⊢ s      Γ(v1) = τ1
 
 v1 : τ_1, ... ⊢ m: (Γ1), ...   Γ(v1) = τ1 ...     Γ, Γ1 ⊢ s1  ...
 ------------------------------------------------------------------ [EXTERN]
-Γ ⊢ extern m(v1, ...){(Γ1) ⇒ s1, ... }
+Γ ⊢ extern m(v1, ...){(Γ1) ⇒ s1, ...}
 
-Σ(T ) = {..., m(Γ0), ... }      Γ, v : prd T ⊢ s
------------------------------------------------- [LET]
+Σ(T) = {..., m(Γ0), ...}      Γ, v : prd T ⊢ s
+----------------------------------------------- [LET]
 Γ, Γ0 ⊢ let v = m(Γ0); s
 
-Σ(T ) = {m1(Γ1), ...}    Γ, v : cns T ⊢ s     Γ1, Γ0 ⊢ s1    ...
+Σ(T) = {m1(Γ1), ...}    Γ, v : cns T ⊢ s     Γ1, Γ0 ⊢ s1    ...
 ---------------------------------------------------------------- [NEW]
-Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ... }; s
+Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ...}; s
 
-Σ(T ) = {m1(Γ1), ...}      Γ, Γ1 ⊢ s1   ...
-------------------------------------------- [SWITCH]
-Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ... }
+Σ(T) = {m1(Γ1), ...}     Γ, Γ1 ⊢ s1    ...
+------------------------------------------ [SWITCH]
+Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ...}
 
-Σ(T ) = {..., m(Γ), ...}
+Σ(T) = {..., m(Γ), ...}
 ------------------------- [INVOKE]
 Γ, v : cns T ⊢ invoke v m
 
 Programs are typed with signatures Σ and with labels Θ. The statement for each label
 must be well-typed in the annotated type environment Γ. The only typing rule that
-refers to the label environment is Jump. It ensures that the current type environment
+refers to the label environment is JUMP. It ensures that the current type environment
 exactly matches the one assumed by the label. We omit the signatures Σ and the label
-environment Θ from the rules, since they do not change.  Rule Substitute for explicit
+environment Θ from the rules, since they do not change.  Rule SUBSTITUTE for explicit
 substitutions makes the structural rules of weakening, contraction, and exchange explicit.
 It is the only place where sharing and erasing of variables can occur and also the only
 way to reorder variables in the environment for the subsequent statement s. All other
-typing rules, except for rule EXTERN, follow the rules of ordered logic.  Extern
+typing rules, except for rule EXTERN, follow the rules of ordered logic. Extern
 statements, such as add, do not consume the variables they use and it does not matter at
 which positions in the environment these variables occur. Rule EXTERN merely checks that
 the variables vi are of the correct type and adds the bound variables (Γi ) to the type
@@ -104,17 +104,17 @@ environment in each statement si , but otherwise does not change the environment
 assumptions and consequences an external symbol m has is defined outside the system.
 They usually only involve external types.
 
-The remaining rules are concerned with producers and consumers.  In rules LET and NEW,
+The remaining rules are concerned with producers and consumers. In rules LET and NEW,
 an introduction rule meets an activation rule in a cut.  The introduced term is bound to
 a variable v in the remaining statement s. In rule Let the only subderivation is for the
 remaining statement s. There are no subderivations for the arguments of symbol m, as all
 of them would be axioms. We omit them and instead simply require the type environment Γ0
 to exactly match the signature of m. This environment is consumed before the new binding
-is added. Similarly, in rule New, the closure environment Γ0 of the branches is consumed.
+is added. Similarly, in rule NEW, the closure environment Γ0 of the branches is consumed.
 It must be used in each clause in addition to the parameters Γi of the corresponding symbol.
 Dually, in rules Switch and Invoke, an introduction meets an axiom in a cut. The variable
-v is consumed in both rules. In rule Switch, the rest of the environment Γ must be used in
-each clause in addition to the parameters Γi of the corresponding symbol. In rule Invoke,
+v is consumed in both rules. In rule SWITCH, the rest of the environment Γ must be used in
+each clause in addition to the parameters Γi of the corresponding symbol. In rule INVOKE,
 the rest of the environment Γ must exactly match the signature of the symbol m, again
 because the variable restriction is baked into the rules.
 
@@ -122,7 +122,10 @@ because the variable restriction is baked into the rules.
 
 Syntax of states:
 
-  Values V ::= {m; E } | {E; b } | 0 | 1 | ...
+  Values V ::=
+              {m; E}        producers
+            | {E; b}        consumers
+            | 0 | 1 | ...   literals of external types (e.g. ext Int)
 
   Environments E ::= x → V, ...
 
@@ -132,8 +135,8 @@ Stepping relation:
 
 (let)     ⟨let v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v →{m; E0}⟩ where E0 : Γ0
 (new)     ⟨new v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v →{E0; b}⟩ where E0 : Γ0
-(switch)  ⟨switch v b ∥ E, v → {m; E0 }⟩ → ⟨b(m) ∥ E, E0⟩
-(invoke)  ⟨invoke v m ∥ E, v → {E0; b }⟩ → ⟨b(m) ∥ E, E0⟩
+(switch)  ⟨switch v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩
+(invoke)  ⟨invoke v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
 (jump)    ⟨jump l ∥ E⟩ → ⟨P(l) ∥ E⟩
 (subst)   ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
 (lit)     ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩

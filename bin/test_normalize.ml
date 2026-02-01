@@ -56,6 +56,16 @@ let test_case name input =
       (List.length core_defs.Core.Terms.type_defs)
       (List.length core_defs.Core.Terms.term_defs));
     
+    (* Display Core definitions *)
+    print_endline "\n  Core term definitions:";
+    List.iter (fun (path, core_td) ->
+      let def_str = Core.Terms.term_def_to_string core_td in
+      print_endline "";
+      List.iter (fun line -> 
+        print_endline ("    " ^ line)
+      ) (String.split_on_char '\n' def_str)
+    ) core_defs.Core.Terms.term_defs;
+    
     (* Step 4: Type check Core definitions *)
     print_endline "\nStep 4: Type checking in Core...";
     Core.Terms.check_definitions core_defs;
