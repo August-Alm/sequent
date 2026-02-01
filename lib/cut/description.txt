@@ -7,7 +7,7 @@ Statements s ::=
   | let v = m(Γ); s
   | new v = (Γ)b; s
   | switch v b
-  | invoke v m
+  | invoke v m(Γ)
 
 Programs P ::= define l : Γ = s, ...
 

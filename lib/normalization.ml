@@ -123,19 +123,19 @@ and subst_core_pattern (subst: (Ident.t * Ident.t) list) (pat: CT.pattern) : CT.
   }
 
 (** Normalize a producer, lifting non-variable subterms *)
-let rec normalize_producer (defs: CT.definitions) (p: CT.producer) 
+let rec normalize_producer (defs: CT.definitions) (sigs: CutT.signatures) (p: CT.producer) 
     (k: Ident.t -> CutT.statement) : CutT.statement =
   match p with
   | CT.Var x -> k x
   
   | CT.Mu (alpha, s) ->
     (* μα.s is already a binding, continue with normalizing the statement *)
-    let norm_s = normalize_statement defs s in
+    let norm_s = normalize_statement defs sigs s in
     k_consume_mu norm_s k alpha
   
   | CT.Constructor (ctor, (_ty_args, prod_args, cons_args)) ->
     (* Lift all non-variable arguments *)
-    lift_xtor_args defs prod_args cons_args (fun vars ->
+    lift_xtor_args defs sigs prod_args cons_args (fun vars ->
       (* Once all args are variables, create constructor and bind to continuation *)
       (* Create let statement: let v = ctor(Γ); s *)
       let v = Ident.fresh () in
@@ -147,7 +147,7 @@ let rec normalize_producer (defs: CT.definitions) (p: CT.producer)
   | CT.Cocase patterns ->
     (* Cocase is a producer, need to bind it *)
     let v = Ident.fresh () in
-    let branches = normalize_cocase_patterns defs patterns in
+    let branches = normalize_cocase_patterns defs sigs patterns in
     (* The cocase will be bound in the continuation *)
     k_consume_cocase branches k v
 
@@ -162,43 +162,43 @@ let rec normalize_producer (defs: CT.definitions) (p: CT.producer)
       [([(v, CutT.Ext int_sym)], k v)])
 
 (** Normalize a consumer, lifting non-variable subterms *)
-and normalize_consumer (defs: CT.definitions) (c: CT.consumer)
+and normalize_consumer (defs: CT.definitions) (sigs: CutT.signatures) (c: CT.consumer)
     (k: Ident.t -> CutT.statement) : CutT.statement =
   match c with
   | CT.Covar alpha -> k alpha
   
   | CT.MuTilde (x, s) ->
     (* μ̃x.s is already a binding, continue *)
-    let norm_s = normalize_statement defs s in
+    let norm_s = normalize_statement defs sigs s in
     k_consume_mutilde norm_s k x
   
   | CT.Destructor (dtor, (_ty_args, prod_args, cons_args)) ->
     (* Lift all non-variable arguments *)
-    lift_xtor_args defs prod_args cons_args (fun _vars ->
+    lift_xtor_args defs sigs prod_args cons_args (fun vars ->
       (* Create invoke: invoke v dtor(Γ) *)
       let v = Ident.fresh () in
-      CutT.Invoke (v, dtor)
+      CutT.Invoke (v, dtor, vars)
     )
   
   | CT.Case patterns ->
     (* Case is a consumer, need to bind it *)
     let v = Ident.fresh () in
-    let branches = normalize_case_patterns defs patterns in
+    let branches = normalize_case_patterns defs sigs patterns in
     k_consume_case branches k v
 
 (** Main normalization for statements *)
-and normalize_statement (defs: CT.definitions) (s: CT.statement) : CutT.statement =
+and normalize_statement (defs: CT.definitions) (sigs: CutT.signatures) (s: CT.statement) : CutT.statement =
   match s with
   | CT.Cut (p, ty, c) ->
     (* The core case - normalize both sides then apply shrinking rules *)
-    normalize_cut defs p ty c
+    normalize_cut defs sigs p ty c
   
   | CT.Call (f, _ty_args, prod_args, cons_args) ->
     (* Function call - convert to jump with proper environment setup *)
     (* For now, treat as external call *)
     let call_label = CutT.MkLabel f in
     (* Lift all arguments to variables *)
-    lift_xtor_args defs prod_args cons_args (fun vars ->
+    lift_xtor_args defs sigs prod_args cons_args (fun vars ->
       let _gamma = List.map (fun x ->
         (x, CutT.Prd (type_to_symbol (CTy.TySym f)))
       ) vars in
@@ -206,23 +206,23 @@ and normalize_statement (defs: CT.definitions) (s: CT.statement) : CutT.statemen
     )
 
 (** Normalize a cut, applying shrinking rules *)
-and normalize_cut (defs: CT.definitions) (p: CT.producer) 
+and normalize_cut (defs: CT.definitions) (sigs: CutT.signatures) (p: CT.producer) 
     (ty: CTy.typ) (c: CT.consumer) : CutT.statement =
   match (p, c) with
   (* Rule: ⟨x | μ̃y.s⟩ → s{y → x} (renaming) *)
   | (CT.Var x, CT.MuTilde (y, s)) ->
-    normalize_statement defs (subst_core_statement [(y, x)] s)
+    normalize_statement defs sigs (subst_core_statement [(y, x)] s)
   
   (* Rule: ⟨μβ.s | α⟩ → s{β → α} (renaming) *)
   | (CT.Mu (beta, s), CT.Covar alpha) ->
-    normalize_statement defs (subst_core_statement [(beta, alpha)] s)
+    normalize_statement defs sigs (subst_core_statement [(beta, alpha)] s)
   
   (* Rule: ⟨C(Γ₀) | case {..., C(Γ) ⇒ s, ...}⟩ → s{Γ → Γ₀} (known cut) *)
   | (CT.Constructor (ctor, (_, prods, cons)), CT.Case patterns) ->
     (match find_matching_pattern ctor patterns with
     | Some (_, vars, covars, body) ->
       (* Substitute pattern variables with constructor arguments *)
-      normalize_known_cut defs prods cons vars covars body
+      normalize_known_cut defs sigs prods cons vars covars body
     | None ->
       failwith ("Constructor " ^ Path.name ctor ^ " not found in case patterns"))
   
@@ -230,30 +230,30 @@ and normalize_cut (defs: CT.definitions) (p: CT.producer)
   | (CT.Cocase patterns, CT.Destructor (dtor, (_, prods, cons))) ->
     (match find_matching_pattern dtor patterns with
     | Some (_, vars, covars, body) ->
-      normalize_known_cut defs prods cons vars covars body
+      normalize_known_cut defs sigs prods cons vars covars body
     | None ->
       failwith ("Destructor " ^ Path.name dtor ^ " not found in cocase patterns"))
   
   (* Rule: ⟨x | α⟩ → η-expand (unknown cut) *)
   | (CT.Var x, CT.Covar alpha) ->
-    normalize_unknown_cut defs x alpha ty
+    normalize_unknown_cut defs sigs x alpha ty
   
   (* Rule: ⟨μα.s₁ | μ̃x.s₂⟩ → η-expand (critical pair) *)
   | (CT.Mu (alpha, s1), CT.MuTilde (x, s2)) ->
-    normalize_critical_pair defs alpha s1 x s2 ty
+    normalize_critical_pair defs sigs alpha s1 x s2 ty
   
   (* Default cases: lift non-variable subterms *)
   | (p, c) ->
-    normalize_producer defs p (fun _p_var ->
-      normalize_consumer defs c (fun _c_var ->
+    normalize_producer defs sigs p (fun _p_var ->
+      normalize_consumer defs sigs c (fun _c_var ->
         (* Now both are variables, create appropriate statement *)
         match (is_data_type defs ty, p, c) with
         (* ⟨C(Γ) | μ̃x.s⟩ & ⟨μα.s | D(Γ)⟩ → let *)
         | (_, CT.Constructor (ctor, _), CT.MuTilde (x, s)) ->
-          let norm_s = normalize_statement defs s in
+          let norm_s = normalize_statement defs sigs s in
           CutT.Let (x, ctor, [], norm_s)
         | (_, CT.Mu (alpha, s), CT.Destructor (dtor, _)) ->
-          let norm_s = normalize_statement defs s in
+          let norm_s = normalize_statement defs sigs s in
           CutT.Let (alpha, dtor, [], norm_s)
         
         (* ⟨C(Γ) | α⟩ & ⟨x | D(Γ)⟩ → invoke *)
@@ -264,59 +264,101 @@ and normalize_cut (defs: CT.definitions) (p: CT.producer)
     )
 
 (** η-expand unknown cut ⟨x | α⟩ *)
-and normalize_unknown_cut (defs: CT.definitions) (x: Ident.t) (alpha: Ident.t)
+and normalize_unknown_cut (defs: CT.definitions) (sigs: CutT.signatures) (x: Ident.t) (alpha: Ident.t)
     (ty: CTy.typ) : CutT.statement =
   match get_xtors defs ty with
   | Some xtors ->
     (match is_data_type defs ty with
     | Some true ->
       (* Data type: expand consumer with case *)
+      (* Look up signature to get variable names *)
+      let ty_sym = type_to_symbol ty in
+      let sig_patterns = try List.assoc ty_sym sigs with Not_found -> [] in
       let branches = List.map (fun (xtor: CTy.ty_xtor) ->
-        let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
-        let var_env = List.map (fun v -> (v, type_to_chirality defs ty)) vars in
-        (* ⟨C(Γ) | α⟩ *)
-        (xtor.symbol, var_env, CutT.Invoke (alpha, xtor.symbol))
+        (* Try to find signature pattern for this constructor *)
+        let var_env = 
+          try
+            let (_, sig_env) = List.find (fun (sym, _) -> sym = xtor.symbol) sig_patterns in
+            sig_env
+          with Not_found ->
+            (* Fallback: use fresh variables if signature not found *)
+            let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
+            List.map (fun v -> (v, type_to_chirality defs ty)) vars
+        in
+        (* ⟨C(Γ) | α⟩ → invoke α C(Γ) *)
+        let pattern_vars = List.map fst var_env in
+        (xtor.symbol, var_env, CutT.Invoke (alpha, xtor.symbol, pattern_vars))
       ) xtors in
       CutT.Switch (x, branches)
     
     | Some false ->
       (* Codata type: expand producer with cocase *)
+      (* Look up signature to get variable names *)
+      let ty_sym = type_to_symbol ty in
+      let sig_patterns = try List.assoc ty_sym sigs with Not_found -> [] in
       let branches = List.map (fun (xtor: CTy.ty_xtor) ->
-        let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
-        let var_env = List.map (fun v -> (v, type_to_chirality defs ty)) vars in
-        (* ⟨x | D(Γ)⟩ *)
-        (xtor.symbol, var_env, CutT.Invoke (x, xtor.symbol))
+        (* Try to find signature pattern for this destructor *)
+        let var_env = 
+          try
+            let (_, sig_env) = List.find (fun (sym, _) -> sym = xtor.symbol) sig_patterns in
+            sig_env
+          with Not_found ->
+            (* Fallback: use fresh variables if signature not found *)
+            let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
+            List.map (fun v -> (v, type_to_chirality defs ty)) vars
+        in
+        (* ⟨x | D(Γ)⟩ → invoke x D(Γ) *)
+        let pattern_vars = List.map fst var_env in
+        (xtor.symbol, var_env, CutT.Invoke (x, xtor.symbol, pattern_vars))
       ) xtors in
       let v = Ident.fresh () in
-      CutT.New (v, type_to_symbol ty, [], branches, CutT.Invoke (alpha, type_to_symbol ty))
+      CutT.New (v, type_to_symbol ty, [], branches, CutT.Invoke (alpha, type_to_symbol ty, [v]))
     
     | None -> failwith "Cannot determine if type is data or codata for η-expansion")
   | None -> failwith "Cannot get constructors/destructors for η-expansion"
 
 (** η-expand critical pair ⟨μα.s₁ | μ̃x.s₂⟩ *)
-and normalize_critical_pair (defs: CT.definitions) 
+and normalize_critical_pair (defs: CT.definitions) (sigs: CutT.signatures)
     (alpha: Ident.t) (s1: CT.statement)
     (x: Ident.t) (s2: CT.statement)
     (ty: CTy.typ) : CutT.statement =
   match get_xtors defs ty with
   | Some xtors ->
-    let norm_s1 = normalize_statement defs s1 in
-    let norm_s2 = normalize_statement defs s2 in
+    let norm_s1 = normalize_statement defs sigs s1 in
+    let norm_s2 = normalize_statement defs sigs s2 in
     (match is_data_type defs ty with
     | Some true ->
       (* Data type: expand μ̃x.s₂ with case *)
+      (* Look up signature to get variable names *)
+      let ty_sym = type_to_symbol ty in
+      let sig_patterns = try List.assoc ty_sym sigs with Not_found -> [] in
       let branches = List.map (fun (xtor: CTy.ty_xtor) ->
-        let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
-        let var_env = List.map (fun v -> (v, type_to_chirality defs ty)) vars in
+        let var_env = 
+          try
+            let (_, sig_env) = List.find (fun (sym, _) -> sym = xtor.symbol) sig_patterns in
+            sig_env
+          with Not_found ->
+            let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
+            List.map (fun v -> (v, type_to_chirality defs ty)) vars
+        in
         (xtor.symbol, var_env, norm_s2)
       ) xtors in
       CutT.New (alpha, type_to_symbol ty, [], branches, norm_s2)
     
     | Some false ->
       (* Codata type: expand μα.s₁ with cocase *)
+      (* Look up signature to get variable names *)
+      let ty_sym = type_to_symbol ty in
+      let sig_patterns = try List.assoc ty_sym sigs with Not_found -> [] in
       let branches = List.map (fun (xtor: CTy.ty_xtor) ->
-        let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
-        let var_env = List.map (fun v -> (v, type_to_chirality defs ty)) vars in
+        let var_env = 
+          try
+            let (_, sig_env) = List.find (fun (sym, _) -> sym = xtor.symbol) sig_patterns in
+            sig_env
+          with Not_found ->
+            let vars = List.map (fun _ -> Ident.fresh ()) xtor.producers in
+            List.map (fun v -> (v, type_to_chirality defs ty)) vars
+        in
         (xtor.symbol, var_env, norm_s1)
       ) xtors in
       CutT.New (x, type_to_symbol ty, [], branches, norm_s1)
@@ -325,7 +367,7 @@ and normalize_critical_pair (defs: CT.definitions)
   | None -> failwith "Cannot get constructors/destructors for critical pair"
 
 (** Lift non-variable arguments *)
-and lift_xtor_args (defs: CT.definitions) 
+and lift_xtor_args (defs: CT.definitions) (sigs: CutT.signatures)
     (prods: CT.producer list) (cons: CT.consumer list)
     (k: Ident.t list -> CutT.statement) : CutT.statement =
   (* Lift producers, then consumers, accumulating bound variables *)
@@ -339,7 +381,7 @@ and lift_xtor_args (defs: CT.definitions)
         lift_prods rest (x :: acc_vars)
       | None ->
         (* Not a variable - normalize it, which binds it to a fresh variable *)
-        normalize_producer defs p (fun x ->
+        normalize_producer defs sigs p (fun x ->
           lift_prods rest (x :: acc_vars)
         )
   and lift_cons cs acc_vars =
@@ -354,27 +396,27 @@ and lift_xtor_args (defs: CT.definitions)
         lift_cons rest (alpha :: acc_vars)
       | None ->
         (* Not a covariable - normalize it, which binds it to a fresh covariable *)
-        normalize_consumer defs c (fun alpha ->
+        normalize_consumer defs sigs c (fun alpha ->
           lift_cons rest (alpha :: acc_vars)
         )
   in
   lift_prods prods []
 
 (** Normalize case patterns *)
-and normalize_case_patterns (defs: CT.definitions) (patterns: CT.pattern list) 
+and normalize_case_patterns (defs: CT.definitions) (sigs: CutT.signatures) (patterns: CT.pattern list) 
     : CutT.branches =
   List.map (fun (pat: CT.pattern) ->
-    let norm_s = normalize_statement defs pat.statement in
+    let norm_s = normalize_statement defs sigs pat.statement in
     let var_env = List.map (fun v -> (v, CutT.Prd (type_to_symbol (CTy.TySym pat.xtor)))) 
       pat.variables in
     (pat.xtor, var_env, norm_s)
   ) patterns
 
 (** Normalize cocase patterns *)
-and normalize_cocase_patterns (defs: CT.definitions) (patterns: CT.pattern list)
+and normalize_cocase_patterns (defs: CT.definitions) (sigs: CutT.signatures) (patterns: CT.pattern list)
     : CutT.branches =
   List.map (fun (pat: CT.pattern) ->
-    let norm_s = normalize_statement defs pat.statement in
+    let norm_s = normalize_statement defs sigs pat.statement in
     let var_env = List.map (fun v -> (v, CutT.Cns (type_to_symbol (CTy.TySym pat.xtor)))) 
       pat.variables in
     (pat.xtor, var_env, norm_s)
@@ -390,12 +432,12 @@ and find_matching_pattern (xtor: Path.t) (patterns: CT.pattern list)
   ) patterns
 
 (** Helper: normalize known cut by substitution *)
-and normalize_known_cut (defs: CT.definitions)
+and normalize_known_cut (defs: CT.definitions) (sigs: CutT.signatures)
     (prods: CT.producer list) (cons: CT.consumer list)
     (vars: Ident.t list) (covars: Ident.t list)
     (body: CT.statement) : CutT.statement =
   (* Lift all arguments to variables, then substitute pattern vars with actual vars *)
-  lift_xtor_args defs prods cons (fun actual_vars ->
+  lift_xtor_args defs sigs prods cons (fun actual_vars ->
     (* Build substitution mapping: pattern variables -> actual variables *)
     (* actual_vars contains producers followed by consumers *)
     let n_prods = List.length prods in
@@ -410,7 +452,7 @@ and normalize_known_cut (defs: CT.definitions)
     
     (* Apply substitution to Core statement, then normalize *)
     let subst_body = subst_core_statement subst body in
-    normalize_statement defs subst_body
+    normalize_statement defs sigs subst_body
   )
 
 (** Helper: consume a Mu binding *)
@@ -434,29 +476,79 @@ and k_consume_cocase (_branches: CutT.branches) (k: Ident.t -> CutT.statement)
     (v: Ident.t) : CutT.statement =
   k v
 
-(** Main entry point: normalize a Core program to Cut *)
-let normalize_program (defs: CT.definitions) : CutT.program =
+(** Convert Core type definitions to Cut signatures
+    
+    Extracts data and codata type definitions from Core and converts them
+    to Cut signatures. Each constructor/destructor becomes a pattern in the signature.
+    
+    @param defs Core definitions
+    @return Cut signatures mapping type symbols to constructor/destructor patterns
+*)
+let extract_signatures (defs: CT.definitions) : CutT.signatures =
+  List.filter_map (fun (ty_sym, (ty_def, _kind)) ->
+    match ty_def with
+    | CTy.Data ty_dec | CTy.Code ty_dec ->
+      (* Convert each xtor to a pattern, filtering out those with type variables *)
+      let patterns = List.filter_map (fun (xtor: CTy.ty_xtor) ->
+        try
+          (* Check if any producers or consumers contain type variables *)
+          let has_type_var ty =
+            let rec check = function
+              | CTy.TyVar _ -> true
+              | CTy.TyApp (t1, t2) -> check t1 || check t2
+              | _ -> false
+            in
+            check ty
+          in
+          if List.exists has_type_var xtor.producers || 
+             List.exists has_type_var xtor.consumers then
+            None (* Skip polymorphic constructors for now *)
+          else
+            (* Build type environment from xtor parameters *)
+            let prod_env = List.map (fun ty -> 
+              (Ident.fresh (), type_to_chirality defs ty)
+            ) xtor.producers in
+            let cons_env = List.map (fun ty ->
+              (Ident.fresh (), type_to_chirality defs ty)
+            ) xtor.consumers in
+            let gamma = prod_env @ cons_env in
+            Some (xtor.symbol, gamma)
+        with
+        | Failure _ -> None (* Skip if conversion fails *)
+      ) ty_dec.xtors in
+      if patterns = [] then None
+      else Some (ty_sym, patterns)
+    | CTy.Prim _ ->
+      (* Primitive types don't have user-defined constructors *)
+      None
+  ) defs.type_defs
+
+let normalize_program (defs: CT.definitions) (sigs: CutT.signatures) : CutT.program =
   List.map (fun (path, (tdef: CT.term_def)) ->
     let label = CutT.MkLabel path in
     (* Build environment from function parameters *)
+    (* prod_args are producers - use type_to_chirality to determine Prd/Cns *)
     let prod_env = List.map (fun (v, ty) -> (v, type_to_chirality defs ty)) tdef.prod_args in
-    let cons_env = List.map (fun (v, ty) -> (v, type_to_chirality defs ty)) tdef.cons_args in
+    (* cons_args are consumers - always Cns regardless of base type *)
+    let cons_env = List.map (fun (v, ty) -> (v, CutT.Cns (type_to_symbol ty))) tdef.cons_args in
     let gamma = prod_env @ cons_env in
-    let body = normalize_statement defs tdef.body in
+    let body = normalize_statement defs sigs tdef.body in
     (label, gamma, body)
   ) defs.term_defs
 
-(** Complete normalization pipeline: Core definitions to Cut program
+(** Complete normalization pipeline: Core definitions to Cut definitions
     
     This function combines Pass A (naming, shrinking, collapsing) and Pass B (linearization)
-    to produce a fully normalized Cut program with explicit substitutions.
+    to produce a fully normalized Cut program with explicit substitutions and type signatures.
     
     @param defs Core definitions
-    @return Cut program with linearized variable usage
+    @return Cut definitions with signatures and linearized program
 *)
-let normalize_definitions (defs: CT.definitions) : CutT.program =
-  (* Pass A: Naming, shrinking, collapsing *)
-  let cut_prog = normalize_program defs in
+let normalize_definitions (defs: CT.definitions) : CutT.definitions =
+  (* Extract type signatures from Core type definitions *)
+  let signatures = extract_signatures defs in
+  (* Pass A: Naming, shrinking, collapsing - now with signatures *)
+  let cut_prog = normalize_program defs signatures in
   (* Pass B: Linearization with explicit substitutions *)
   let linearized_prog = Linearization.linearize_program cut_prog in
-  linearized_prog
+  { CutT.signatures; CutT.program = linearized_prog }

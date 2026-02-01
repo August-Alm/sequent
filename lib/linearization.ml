@@ -62,9 +62,9 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let branch_vars = List.concat_map free_vars_branch branches in
     merge_var_counts v_count branch_vars
   
-  | CutT.Invoke (v, _dtor) ->
-    (* Just the variable v *)
-    [(v, 1)]
+  | CutT.Invoke (v, _dtor, args) ->
+    (* The variable v and all args *)
+    [(v, 1)] @ count_occurrences args
 
 (** Free variables in a branch *)
 and free_vars_branch ((_xtor, gamma, body): CutT.symbol * CutT.typ_env * CutT.statement) 
@@ -116,6 +116,28 @@ and merge_var_counts (xs: (Ident.t * int) list) (ys: (Ident.t * int) list)
   in
   go xs ys
 
+(** Merge variable counts taking maximum (for mutually exclusive branches) *)
+and merge_var_counts_max (xs: (Ident.t * int) list) (ys: (Ident.t * int) list)
+    : (Ident.t * int) list =
+  let rec go xs ys =
+    match xs with
+    | [] -> ys
+    | (v, n) :: rest ->
+      let m = match List.assoc_opt v ys with
+        | Some k -> k
+        | None -> 0
+      in
+      (v, max n m) :: go rest (List.remove_assoc v ys)
+  in
+  go xs ys
+
+(** Collect free variables from mutually exclusive branches (taking max, not sum) *)
+and free_vars_branches_max (branches: (Ident.t * int) list list) : (Ident.t * int) list =
+  match branches with
+  | [] -> []
+  | first :: rest ->
+    List.fold_left merge_var_counts_max first rest
+
 (** Linearize a statement by inserting explicit substitutions
     
     @param current_env The current environment (list of available variables)
@@ -140,14 +162,20 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
   
   | CutT.Extern (f, vars, branches) ->
     (* Build substitution for extern statement *)
-    let (subst, env_after) = build_substitution current_env vars [] in
+    let free_in_branches = List.concat_map free_vars_extern_branch branches in
+    let preserve = List.filter (fun v -> not (List.mem v vars)) 
+      (List.map fst free_in_branches) in
+    let (subst, env_after) = build_substitution current_env vars preserve [] in
     let branches' = List.map (linearize_extern_branch env_after) branches in
     prepend_subst subst (CutT.Extern (f, vars, branches'))
   
   | CutT.Let (v, ctor, gamma, s') ->
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
-    let (subst, _env_after) = build_substitution current_env gamma_vars [] in
+    let free_in_cont = free_vars_statement s' in
+    let preserve = List.filter (fun v -> not (List.mem v gamma_vars))
+      (List.map fst free_in_cont) in
+    let (subst, _env_after) = build_substitution current_env gamma_vars preserve [] in
     (* After let, v is added to the environment *)
     let new_env = v :: current_env in
     let s_linearized = linearize_statement new_env s' in
@@ -156,7 +184,14 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
   | CutT.New (v, ty, gamma, branches, s') ->
     (* Gamma lists variables in the new binding *)
     let gamma_vars = List.map fst gamma in
-    let (subst, env_after_gamma) = build_substitution current_env gamma_vars [] in
+    (* Branches are mutually exclusive - take max, not sum *)
+    let branch_free_lists = List.map free_vars_branch branches in
+    let free_in_branches = free_vars_branches_max branch_free_lists in
+    let free_in_cont = free_vars_statement s' in
+    let all_free = merge_var_counts free_in_branches free_in_cont in
+    let preserve = List.filter (fun v -> not (List.mem v gamma_vars))
+      (List.map fst all_free) in
+    let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
     (* Linearize branches with their own environments *)
     let branches' = List.map (linearize_branch env_after_gamma) branches in
     (* After new, v is added to environment *)
@@ -166,14 +201,21 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
   
   | CutT.Switch (v, branches) ->
     (* Build substitution that puts v first *)
-    let (subst, env_after) = build_substitution current_env [v] [] in
+    (* Branches are mutually exclusive - take max, not sum *)
+    let branch_free_lists = List.map free_vars_branch branches in
+    let free_in_branches = free_vars_branches_max branch_free_lists in
+    let preserve = List.filter (fun w -> not (Ident.equal w v))
+      (List.map fst free_in_branches) in
+    let (subst, env_after) = build_substitution current_env [v] preserve [] in
     let branches' = List.map (linearize_branch env_after) branches in
     prepend_subst subst (CutT.Switch (v, branches'))
   
-  | CutT.Invoke (v, dtor) ->
-    (* Invoke uses variable v, everything else is dropped *)
-    let (subst, _env_after) = build_substitution current_env [v] [] in
-    prepend_subst subst (CutT.Invoke (v, dtor))
+  | CutT.Invoke (v, dtor, args) ->
+    (* Invoke uses variable v and all args, everything else is dropped *)
+    (* INVOKE rule: Γ, v : cns T, so v comes first (rightmost = head) *)
+    let needed = v :: args in
+    let (subst, _env_after) = build_substitution current_env needed [] [] in
+    prepend_subst subst (CutT.Invoke (v, dtor, args))
 
 (** Linearize a branch 
     The branch binds new variables in its pattern and has a body
@@ -202,48 +244,52 @@ and linearize_extern_branch (current_env: Ident.t list)
 (** Build a substitution to transform current_env to support the needed variables
     
     @param current_env The current environment
-    @param needed Variables needed (in order they'll be used)
+    @param needed Variables needed immediately (in order they'll be used)
+    @param preserve Additional variables to preserve in the environment
     @param fresh_map Accumulator for fresh variables for contraction
-    @return (substitution pairs, remaining environment after substitution)
+    @return (substitution pairs, resulting environment after substitution)
 *)
 and build_substitution (_current_env: Ident.t list) (needed: Ident.t list)
-    (fresh_map: (Ident.t * Ident.t list) list)
+    (preserve: Ident.t list) (fresh_map: (Ident.t * Ident.t list) list)
     : CutT.substitutions * Ident.t list =
-  (* Count how many times each variable is needed *)
-  let needed_counts = count_occurrences needed in
+  (* Result environment should be: needed @ preserve *)
+  let all_vars = needed @ preserve in
+  (* Count multiplicities across all vars *)
+  let var_counts = count_occurrences all_vars in
   
-  (* For each needed variable, handle contraction if used multiple times *)
-  let rec process_needed needed_list acc_subst acc_fresh_map =
-    match needed_list with
-    | [] -> (List.rev acc_subst, acc_fresh_map)
-    | (v, count) :: rest ->
+  (* Build substitution pairs in the order of all_vars *)
+  let rec build_pairs vars acc_subst acc_fresh_map =
+    match vars with
+    | [] -> (acc_subst, acc_fresh_map)
+    | v :: rest ->
+      let count = match List.assoc_opt v var_counts with
+        | Some n -> n
+        | None -> 1
+      in
       if count = 1 then
-        (* Single use: map v → v *)
-        process_needed rest ((v, v) :: acc_subst) acc_fresh_map
+        (* Single use: v → v *)
+        build_pairs rest (acc_subst @ [(v, v)]) acc_fresh_map
       else
-        (* Multiple uses: need to create fresh copies *)
+        (* Multiple uses: need contraction *)
         let existing_fresh = match List.assoc_opt v acc_fresh_map with
           | Some fs -> fs
           | None -> []
         in
-        (* Generate fresh variables for remaining uses *)
-        let fresh_vars = generate_fresh_vars v (count - List.length existing_fresh) in
+        (* How many fresh vars do we still need? *)
+        let fresh_needed = count - List.length existing_fresh in
+        let fresh_vars = if fresh_needed > 0 then
+          generate_fresh_vars v fresh_needed
+        else [] in
         let all_fresh = existing_fresh @ fresh_vars in
         let acc_fresh_map' = (v, all_fresh) :: List.remove_assoc v acc_fresh_map in
         
-        (* Use fresh variables in substitution *)
-        let subst_entries = List.mapi (fun i _ ->
-          if i = 0 then (v, v)
-          else (List.nth all_fresh (i - 1), v)
-        ) (List.init count (fun i -> i)) in
-        
-        process_needed rest (List.rev_append subst_entries acc_subst) acc_fresh_map'
+        (* Create substitution pairs: v → v, fresh1 → v, fresh2 → v, ... *)
+        let subst_entries = (v, v) :: List.map (fun fv -> (fv, v)) all_fresh in
+        build_pairs rest (acc_subst @ subst_entries) acc_fresh_map'
   in
   
-  let (subst_pairs, _fresh_map') = process_needed needed_counts [] fresh_map in
-  
-  (* The resulting environment contains the needed variables in order *)
-  (subst_pairs, needed)
+  let (subst_pairs, _fresh_map') = build_pairs all_vars [] fresh_map in
+  (subst_pairs, all_vars)
 
 (** Generate n fresh variables based on a base variable *)
 and generate_fresh_vars (_base: Ident.t) (n: int) : Ident.t list =

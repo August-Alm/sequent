@@ -47,8 +47,8 @@ type statement =
   | New of variable * symbol * typ_env * branches * statement
   (* switch v b *)
   | Switch of variable * branches
-  (* invoke v m *)
-  | Invoke of variable * symbol
+  (* invoke v m(Γ) *)
+  | Invoke of variable * symbol * variable list
 
 (* branches b ::= {m(Γ) ⇒ s, ...} *)
 and branches = (symbol * typ_env * statement) list
@@ -58,6 +58,12 @@ and extern_branches = (typ_env * statement) list
 
 (* programs P ::= define l : Γ = s, ... *)
 type program = (label * typ_env * statement) list
+
+(* Complete definitions including type signatures and program *)
+type definitions = {
+  signatures: signatures;
+  program: program;
+}
 
 module Label = struct
   let to_string (MkLabel l) = Path.name l
@@ -118,8 +124,9 @@ let rec string_of_statement ?(indent=0) s =
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "}"
   
-  | Invoke (v, m) ->
-    ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m
+  | Invoke (v, m, args) ->
+    let arg_str = if args = [] then "" else "(" ^ String.concat ", " (List.map Ident.name args) ^ ")" in
+    ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m ^ arg_str
 
 and string_of_branches ?(indent=0) branches =
   let ind = String.make (indent * 2) ' ' in
@@ -361,17 +368,23 @@ let rec check_statement
     | _ ->
       raise (TypeError ("Switch: variable " ^ Ident.name v ^ " not at front of environment")))
 
-  | Invoke (v, m) ->
+  | Invoke (v, m, args) ->
     (* Rule [INVOKE]: Σ(T) = {..., m(Γ), ...}
                       -------------------------
-                      Γ, v : cns T ⊢ invoke v m *)
+                      Γ, v : cns T ⊢ invoke v m(Γ) *)
     (* Check that v is at front of environment and is a consumer *)
     (match gamma with
     | (v', Cns ty_sym) :: gamma_rest when Ident.equal v v' ->
       let patterns = Signatures.lookup_exn ty_sym sigs in
       let expected_gamma = Signatures.find_pattern_exn m patterns in
-      (* Check that rest of environment matches m's signature *)
-      if not (Env.equal gamma_rest expected_gamma) then
+      (* Build actual gamma from args *)
+      let actual_gamma = List.map (fun arg ->
+        match List.assoc_opt arg gamma_rest with
+        | Some typ -> (arg, typ)
+        | None -> raise (TypeError ("Invoke: variable " ^ Ident.name arg ^ " not in environment"))
+      ) args in
+      (* Check that actual environment matches m's signature *)
+      if not (Env.equal actual_gamma expected_gamma) then
         raise (TypeError ("Invoke: environment mismatch for method " ^ Symbol.to_string m))
     | (v', _) :: _ when Ident.equal v v' ->
       raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
