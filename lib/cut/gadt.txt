@@ -1,0 +1,486 @@
+## Typing Rules for Cut with Higher-Kinded Types and GADTs
+
+This document extends the typing rules from description.txt to support the richer
+type system defined in Cut.Types, including:
+- Higher-kinded types and type application
+- Polymorphic methods with quantification
+- GADTs with type constraints
+- Full type inference and checking
+
+The key difference from the simple system: signatures are now parametric with
+kinds, methods have quantified type variables, and types can be applications.
+
+### Notation
+
+We extend the notation from description.txt:
+
+**Kinds:**
+  κ ::= type | κ → κ
+
+**Types:**
+  τ ::= α                           (type variable)
+      | τ(τ)                        (type application)
+      | T                           (signature reference)
+      | prd τ | cns τ | ext τ       (chirality types)
+
+**Type Environments:**
+  Δ ::= α : κ, ...                  (type variable environment)
+  Γ ::= v : τ, ...                  (term variable environment)
+
+**Signatures:**
+  Σ ::= signature T(α₁ : κ₁, ..., αₙ : κₙ) = {m₁, ..., mₖ}, ...
+
+**Methods (in signatures):**
+  m ::= symbol : ∀β₁:κ₁, ..., βₘ:κₘ. (v₁ : τ₁, ...) | (w₁ : τ'₁, ...) : τᵣ where C
+
+Where:
+  - (v₁ : τ₁, ...) are producer arguments
+  - (w₁ : τ'₁, ...) are consumer arguments  
+  - τᵣ is the result type (how method instantiates parent signature)
+  - C is a list of type equality constraints (for GADTs)
+
+**Label Environment:**
+  Θ ::= l : Γ, ...
+
+**Type equality constraints:**
+  C ::= [α = τ, ...]
+
+### Judgments
+
+We use several judgment forms:
+
+  Δ ⊢ τ : κ                         (type τ has kind κ)
+  Δ ⊢ τ₁ ≡ τ₂ : κ                   (types are equal at kind κ)
+  Δ ⊢ C                             (constraints C are satisfied)
+  Σ; Δ; Θ; Γ ⊢ s                   (statement s is well-typed)
+  Σ; Δ ⊢ Θ                          (label environment is well-formed)
+  Σ Θ ⊢ P                           (program P is well-typed)
+
+### Kinding Rules
+
+Type variables have their kinds from the type environment:
+
+  α : κ ∈ Δ
+  --------- [K-VAR]
+  Δ ⊢ α : κ
+
+Signatures have kinds determined by their parameters:
+
+  signature T(α₁ : κ₁, ..., αₙ : κₙ) ∈ Σ
+  --------------------------------------- [K-SIG]
+  Δ ⊢ T : κ₁ → ... → κₙ → type
+
+Type application applies a constructor to an argument:
+
+  Δ ⊢ τ₁ : κ → κ'    Δ ⊢ τ₂ : κ
+  -------------------------------- [K-APP]
+  Δ ⊢ τ₁(τ₂) : κ'
+
+Chirality types are always proper types:
+
+  Δ ⊢ τ : type
+  ---------------- [K-PRD]
+  Δ ⊢ prd τ : type
+
+  Δ ⊢ τ : type
+  ---------------- [K-CNS]
+  Δ ⊢ cns τ : type
+
+  Δ ⊢ τ : type
+  ---------------- [K-EXT]
+  Δ ⊢ ext τ : type
+
+Primitive types have their annotated kinds:
+
+  prim P : κ
+  ---------- [K-PRIM]
+  Δ ⊢ P : κ
+
+### Type Equality
+
+Reflexivity, symmetry, and transitivity:
+
+  Δ ⊢ τ : κ
+  ------------- [EQ-REFL]
+  Δ ⊢ τ ≡ τ : κ
+
+  Δ ⊢ τ₂ ≡ τ₁ : κ
+  ---------------- [EQ-SYM]
+  Δ ⊢ τ₁ ≡ τ₂ : κ
+
+  Δ ⊢ τ₁ ≡ τ₂ : κ    Δ ⊢ τ₂ ≡ τ₃ : κ
+  ----------------------------------- [EQ-TRANS]
+  Δ ⊢ τ₁ ≡ τ₃ : κ
+
+Congruence for type application:
+
+  Δ ⊢ τ₁ ≡ τ₁' : κ → κ'    Δ ⊢ τ₂ ≡ τ₂' : κ
+  ------------------------------------------- [EQ-APP]
+  Δ ⊢ τ₁(τ₂) ≡ τ₁'(τ₂') : κ'
+
+Constraints provide equations:
+
+  (α = τ) ∈ C    Δ ⊢ C    Δ ⊢ τ : κ    α : κ ∈ Δ
+  ------------------------------------------------ [EQ-CONSTR]
+  Δ ⊢ α ≡ τ : κ
+
+### Constraint Satisfaction
+
+Empty constraints are satisfied:
+
+  -------- [C-EMPTY]
+  Δ ⊢ []
+
+Constraints extend with equations:
+
+  Δ ⊢ C    Δ ⊢ τ₁ ≡ τ₂ : κ    α : κ ∈ Δ
+  ---------------------------------------- [C-CONS]
+  Δ ⊢ [(α = τ₁), ...C] when α = τ₂
+
+### Type Environment Lookup
+
+Variables have their types from the environment:
+
+  (v : τ) ∈ Γ
+  ----------- [ENV-LOOKUP]
+  Γ(v) = τ
+
+Type environment concatenation (Γ₁, Γ₂) adds Γ₂ to the right (head) of Γ₁.
+
+Type environment extension Γ, v : τ adds v : τ to the head of Γ.
+
+### Statement Typing Rules
+
+The key insight: methods are polymorphic, so we must instantiate their quantified
+type variables when using them. We write θ for a type substitution that instantiates
+quantified variables.
+
+---
+
+**[PROGRAM]** - Programs are collections of labeled definitions
+
+  Σ; ∅ ⊢ Θ    Θ(l) = Γ    Σ; ∅; Θ; Γ ⊢ s    (for each label l)
+  ---------------------------------------------------------------
+  Σ Θ ⊢ define l₁ : Γ₁ = s₁, ..., lₙ : Γₙ = sₙ
+
+Programs are typed in the empty type variable environment (∅) since they must be
+closed. Each label's statement must type check in its declared environment.
+
+---
+
+**[JUMP]** - Jumping to a label requires exact environment match
+
+  Θ(l) = Γ
+  ----------
+  Γ ⊢ jump l
+
+This rule is unchanged. The environment must exactly match the label's signature.
+
+---
+
+**[SUBSTITUTE]** - Explicit substitutions reorder/duplicate/erase variables
+
+  Γ'(v'ᵢ) = τᵢ    Γ(vᵢ) = τᵢ    (for each i)    Γ' ⊢ s
+  -------------------------------------------------------
+  Γ ⊢ substitute [v'₁ → v₁, ..., v'ₙ → vₙ]; s
+
+This rule is unchanged. Each substitution pair must preserve types, and the body
+must type check in the reordered environment.
+
+---
+
+**[EXTERN]** - External operations with multiple continuations
+
+  extern m : (τ₁, ..., τₙ) ⇒ [(Γ₁), ..., (Γₖ)]    (signature of extern)
+  Γ(vᵢ) = τᵢ    (for each argument i)
+  Γ, Γⱼ ⊢ sⱼ    (for each clause j)
+  --------------------------------------------------
+  Γ ⊢ extern m(v₁, ..., vₙ){(Γ₁) ⇒ s₁, ..., (Γₖ) ⇒ sₖ}
+
+This rule is unchanged. External operations are typed separately and their
+signatures specify argument types and continuation environments.
+
+---
+
+**[LET]** - Binding a producer (data constructor or let-bound producer)
+
+  signature T(ᾱ : κ̄) = {..., m : ∀β̄:κ̄'. (v₁:τ₁,...,vₙ:τₙ) | () : τᵣ where C, ...} ∈ Σ
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (type substitution instantiating parameters and quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints in signature must be satisfiable)
+  
+  Γ₀ = (v₁ : θ(τ₁), ..., vₙ : θ(τₙ))    (method's producer arguments, instantiated)
+  
+  τ_v = prd (θ(τᵣ))    (the bound variable's type)
+  
+  Δ ⊢ τ_v : type    (result type is well-kinded)
+  
+  Σ; Δ; Θ; Γ, v : τ_v ⊢ s    (continuation with bound variable)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ, Γ₀ ⊢ let v = m(Γ₀); s
+
+**Intuition:** Let binds a producer value. The method m may be polymorphic (∀β̄),
+so we must provide type arguments to instantiate it. The pattern arguments Γ₀
+are consumed from the environment. The result type (after substitution) becomes
+the type of the bound producer variable v.
+
+**Note:** When T has no type parameters (kind type), and m has no quantified
+variables, and C is empty, this reduces to the old rule:
+  Σ(T) = {..., m(Γ₀), ...}    Γ, v : prd T ⊢ s
+  ---------------------------------------------
+  Γ, Γ₀ ⊢ let v = m(Γ₀); s
+
+---
+
+**[NEW]** - Binding a consumer (codata destructor or new-bound consumer)
+
+  signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. (Γᵖᵢ) | (Γᶜᵢ) : τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (instantiation for this method)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints must be satisfiable)
+    
+    Γᵖᵢ' = θᵢ(Γᵖᵢ), Γᶜᵢ' = θᵢ(Γᶜᵢ)    (instantiated producer/consumer environments)
+    
+    Σ; Δ; Θ; Γᵖᵢ', Γᶜᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
+  
+  τ_v = cns (T(τ̄))    (the bound consumer has the instantiated signature type)
+  
+  Δ ⊢ τ_v : type
+  
+  Σ; Δ; Θ; Γ, v : τ_v ⊢ s    (continuation with bound consumer)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ, Γ₀ ⊢ new v = (Γ₀){m₁(Γᵖ₁', Γᶜ₁') ⇒ s₁, ..., mₖ(Γᵖₖ', Γᶜₖ') ⇒ sₖ}; s
+
+**Intuition:** New binds a consumer value by creating a cocase with branches for
+all methods in the signature. The closure environment Γ₀ is captured and available
+in each branch. Each method may have both producer arguments (the result) and
+consumer arguments (the destructor's inputs).
+
+**Note:** When T : type, no quantification, and no constraints, this reduces to:
+  Σ(T) = {m₁(Γ₁), ...}    Γ, v : cns T ⊢ s    Γ₁, Γ₀ ⊢ s₁ ...
+  ------------------------------------------------------------
+  Γ, Γ₀ ⊢ new v = (Γ₀){m₁(Γ₁) ⇒ s₁, ...}; s
+
+---
+
+**[SWITCH]** - Pattern matching on a producer
+
+  signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
+  
+  Γ(v) = prd (T(τ̄))    (switching on a producer of instantiated signature type)
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. (Γᵖᵢ) | (Γᶜᵢ) : τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (must instantiate signature parameters consistently)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints satisfied)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(τᵣᵢ) ≡ T(τ̄) : type    (result type matches)
+    
+    Γᵖᵢ' = θᵢ(Γᵖᵢ), Γᶜᵢ' = θᵢ(Γᶜᵢ)    (instantiated arguments)
+    
+    Σ; Δ; Θ; Γ, Γᵖᵢ', Γᶜᵢ' ⊢ sᵢ    (each branch has method's arguments available)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ, v : prd (T(τ̄)) ⊢ switch v {m₁(Γᵖ₁', Γᶜ₁') ⇒ s₁, ..., mₖ(Γᵖₖ', Γᶜₖ') ⇒ sₖ}
+
+**Intuition:** Switch pattern matches on a producer value. The branches must cover
+all methods in the signature. Each method's arguments become available in the
+corresponding branch. The signature is instantiated at the type arguments of v.
+
+**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T(τ̄).
+For non-GADT constructors this is automatic, but for GADT constructors this
+provides type refinement - the constraints Cᵢ may refine the type parameters
+based on which constructor matched.
+
+**Note:** When T : type, no quantification, no constraints, reduces to:
+  Σ(T) = {m₁(Γ₁), ...}    Γ, Γ₁ ⊢ s₁ ...
+  ----------------------------------------
+  Γ, v : prd T ⊢ switch v {m₁(Γ₁) ⇒ s₁, ...}
+
+---
+
+**[INVOKE]** - Invoking a method on a consumer
+
+  signature T(ᾱ : κ̄) = {..., m : ∀β̄:κ̄'. (Γᵖ) | (Γᶜ) : τᵣ where C, ...} ∈ Σ
+  
+  Γ(v) = cns (T(τ̄))    (invoking method on consumer of instantiated type)
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (instantiate signature parameters and method quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints satisfied)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(τᵣ) ≡ T(τ̄) : type    (result type matches)
+  
+  Γᵖ' = θ(Γᵖ), Γᶜ' = θ(Γᶜ)    (instantiated argument environments)
+  
+  Γ = (Γᵖ', Γᶜ', v : cns (T(τ̄)))    (environment must match exactly)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γᵖ', Γᶜ', v : cns (T(τ̄)) ⊢ invoke v m(Γᵖ', Γᶜ')
+
+**Intuition:** Invoke calls a method on a consumer. The method may be polymorphic,
+so we instantiate its quantified variables. The environment must contain exactly
+the method's arguments (both producers and consumers after instantiation) plus
+the consumer being invoked.
+
+**Key for GADTs:** The result type must match the consumer's type after applying
+constraints, enabling type refinement based on which method is being invoked.
+
+**Note:** When T : type, no quantification, no constraints, reduces to:
+  Σ(T) = {..., m(Γ), ...}
+  ------------------------
+  Γ, v : cns T ⊢ invoke v m
+
+Where Γ matches the method signature exactly.
+
+---
+
+### Type Inference Strategy
+
+For type checking with polymorphism and GADTs:
+
+1. **Signature lookup**: Given method symbol m, find parent signature T(ᾱ : κ̄)
+   
+2. **Parameter inference**: At usage site, infer or check type arguments τ̄
+   - For let: τ̄ comes from result type unification
+   - For switch: τ̄ comes from scrutinee type
+   - For invoke: τ̄ comes from consumer type
+   
+3. **Quantifier instantiation**: For method's ∀β̄:κ̄', generate fresh unification
+   variables or infer from context
+   
+4. **Constraint solving**: Check that constraints C are satisfiable under the
+   instantiation θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]
+   
+5. **Type checking**: Apply θ to method's signature and check that:
+   - Argument environments match
+   - Result type matches expected type
+   - All types are well-kinded
+
+### Examples
+
+**Example 1: Non-GADT data type (List)**
+
+Signature:
+```
+signature List(a : type) = {
+  nil  : ∀. () | () : List(a)
+  cons : ∀. (prd a, prd List(a)) | () : List(a)
+}
+```
+
+Typing a switch:
+```
+Γ, xs : prd List(Nat) ⊢ 
+  switch xs {
+    nil() ⇒ ...                              [θ₁ = [a ↦ Nat]]
+    cons(y : prd Nat, ys : prd List(Nat)) ⇒ ... [θ₂ = [a ↦ Nat]]
+  }
+```
+
+Both branches instantiate a to Nat, matching xs's type.
+
+---
+
+**Example 2: GADT (Length-indexed vectors)**
+
+Signature:
+```
+signature Vec(a : type, n : Nat) = {
+  vnil  : ∀. () | () : Vec(a, Zero) 
+         where []
+         
+  vcons : ∀m:Nat. (prd a, prd Vec(a,m)) | () : Vec(a, Succ(m))
+         where []
+}
+```
+
+Typing a switch with refinement:
+```
+Γ, v : prd Vec(Int, n) ⊢
+  switch v {
+    vnil() ⇒ 
+      (* Here we know n ≡ Zero *)
+      ...
+    vcons(x : prd Int, xs : prd Vec(Int, m)) ⇒
+      (* Here we know n ≡ Succ(m) *)
+      ...
+  }
+```
+
+The result types refine n: in the nil branch, n must be Zero; in the cons
+branch, n must be Succ(m) for some m.
+
+---
+
+**Example 3: Polymorphic codata (Stream)**
+
+Signature:
+```
+signature Stream(a : type) = {
+  head : ∀. (prd a) | (cns Stream(a)) : Stream(a)
+  tail : ∀. (prd Stream(a)) | (cns Stream(a)) : Stream(a)
+}
+```
+
+Creating a stream:
+```
+Γ ⊢ new s = (){
+      head(x : prd Nat) | (α : cns Stream(Nat)) ⇒ ...
+      tail(xs : prd Stream(Nat)) | (α : cns Stream(Nat)) ⇒ ...
+    }; s
+```
+
+Here s : cns Stream(Nat). Each method's type is instantiated with a ↦ Nat.
+
+---
+
+### Backwards Compatibility
+
+**Theorem (Subsumption)**: For signatures of kind type with no quantified
+method variables and no constraints, the rules in this document reduce exactly
+to the rules in description.txt.
+
+**Proof sketch**:
+- When T : type (no parameters), τ̄ = [] and θ just instantiates ᾱ = []
+- When methods have ∀. (no quantifiers), β̄ = [] and θ instantiates β̄ = []  
+- When C = [] (no constraints), constraint checking is trivial
+- The result type T(τ̄) = T simplifies to just T
+- Type application T(τ̄) is just T when τ̄ = []
+- The instantiated environments Γ' = θ(Γ) = Γ when no substitution needed
+
+Therefore each rule reduces:
+- [LET] reduces to: Σ(T) = {..., m(Γ₀), ...} Γ,v:prd T ⊢ s / Γ,Γ₀ ⊢ let v=m(Γ₀);s
+- [NEW] reduces to: Σ(T) = {m₁(Γ₁),...} Γ,v:cns T ⊢ s Γ₁,Γ₀ ⊢ s₁... / Γ,Γ₀ ⊢ new v=(Γ₀)b;s
+- [SWITCH] reduces to: Σ(T) = {m₁(Γ₁),...} Γ,Γ₁ ⊢ s₁... / Γ,v:prd T ⊢ switch v b
+- [INVOKE] reduces to: Σ(T) = {...,m(Γ),...} / Γ,v:cns T ⊢ invoke v m
+
+Which match the rules in description.txt exactly. ∎
+
+---
+
+### Implementation Notes
+
+When implementing a type checker for this system:
+
+1. **Maintain type variable contexts** Δ alongside term variable contexts Γ
+
+2. **Use unification** for inferring type applications and quantifier instantiations
+
+3. **Track constraints** and check satisfiability using a constraint solver
+
+4. **Kind check all types** before using them in type checking
+
+5. **Generate fresh variables** for quantified variables at each use site
+
+6. **Check result type matching** by unification with expected type
+
+7. **Handle substitution** carefully to avoid variable capture
+
+The system is decidable when:
+- Kinds are fully annotated in signatures
+- Type applications are fully explicit (no inference across abstraction boundaries)
+- Constraint checking is decidable (e.g., restricted to equations over base types)
