@@ -49,12 +49,12 @@ Where:
 
 We use several judgment forms:
 
-  Δ ⊢ τ : κ                         (type τ has kind κ)
-  Δ ⊢ τ₁ ≡ τ₂ : κ                   (types are equal at kind κ)
-  Δ ⊢ C                             (constraints C are satisfied)
+  Δ ⊢ τ : κ                        (type τ has kind κ)
+  Δ ⊢ τ₁ ≡ τ₂ : κ                  (types are equal at kind κ)
+  Δ ⊢ C                            (constraints C are satisfied)
   Σ; Δ; Θ; Γ ⊢ s                   (statement s is well-typed)
-  Σ; Δ ⊢ Θ                          (label environment is well-formed)
-  Σ Θ ⊢ P                           (program P is well-typed)
+  Σ; Δ ⊢ Θ                         (label environment is well-formed)
+  Σ Θ ⊢ P                          (program P is well-typed)
 
 ### Kinding Rules
 

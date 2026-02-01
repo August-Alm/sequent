@@ -185,6 +185,20 @@ module Type = struct
     | _ -> false
 end
 
+(** Chirality type operations *)
+let substitute_chirality (subst: (Ident.t * typ) list) (chi: chirality_type) : chirality_type =
+  match chi with
+  | Prd ty -> Prd (Type.substitute subst ty)
+  | Cns ty -> Cns (Type.substitute subst ty)
+  | Ext ty -> Ext (Type.substitute subst ty)
+
+let equal_chirality (c1: chirality_type) (c2: chirality_type) : bool =
+  match c1, c2 with
+  | Prd t1, Prd t2 -> Type.equal t1 t2
+  | Cns t1, Cns t2 -> Type.equal t1 t2
+  | Ext t1, Ext t2 -> Type.equal t1 t2
+  | _ -> false
+
 (** Signature utilities *)
 module Sig = struct
   (** Look up a signature by symbol *)

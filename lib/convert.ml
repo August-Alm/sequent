@@ -119,10 +119,9 @@ let rec convert (tm: LTm.typed_term) : CTm.producer =
     CTm.Var x
 
   | LTm.TyTmSym (sym, _ty) ->
-    (* Top-level symbol reference - always use Call *)
+    (* Top-level symbol reference without application - no type args yet *)
     let alpha = Ident.fresh () in
-    let ty_args = [] in (* TODO: extract actual type instantiations *)
-    CTm.Mu (alpha, CTm.Call (sym, ty_args, [], [CTm.Covar alpha]))
+    CTm.Mu (alpha, CTm.Call (sym, [], [], [CTm.Covar alpha]))
 
   | LTm.TyTmApp (t, u, ty_ret) ->
     (* Collect all type and term arguments from nested applications and instantiations *)
@@ -151,10 +150,8 @@ let rec convert (tm: LTm.typed_term) : CTm.producer =
         let rec make_lambdas remaining_tys provided_args =
           match remaining_tys with
           | [] -> 
-            (* All arguments provided - make the call *)
+            (* All arguments provided - make the call with collected type args *)
             let alpha = Ident.fresh () in
-            (* TODO: extract actual type instantiations *)
-            let ty_args = [] in
             CTm.Mu (alpha, CTm.Call (sym, List.map convert_typ ty_args, List.map convert provided_args, [CTm.Covar alpha]))
           | arg_ty :: rest_tys ->
             (* Create lambda for this argument *)

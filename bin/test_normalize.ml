@@ -18,18 +18,18 @@ let print_separator () =
 
 (** Build a basic extern environment with primitive operations *)
 let build_extern_env () : Cut.Terms.extern_env =
-  let open Cut.Terms in
   let open Common.Types.Prim in
   let open Common.Identifiers in
+  let int_ty = Cut.Types.TyPrim (int_sym, Cut.Types.KStar) in
   [ (* Integer literal: () -> (v: ext int) *)
     (Path.of_string "lit", 
-     ([], [[Ident.mk "v", Ext int_sym]]))
+     ([], [[Ident.mk "v", Cut.Types.Ext int_ty]]))
   ; (* Addition: (v1: ext int, v2: ext int) -> (result: ext int) *)
     (Path.of_string "add",
-     ([Ext int_sym; Ext int_sym], [[Ident.mk "result", Ext int_sym]]))
+     ([Cut.Types.Ext int_ty; Cut.Types.Ext int_ty], [[Ident.mk "result", Cut.Types.Ext int_ty]]))
   ; (* If-zero: (v: ext int) -> () | () (two branches, both with no bindings) *)
     (Path.of_string "ifz",
-     ([Ext int_sym], [[]; []]))
+     ([Cut.Types.Ext int_ty], [[]; []]))
   ]
 
 let test_case name input =
@@ -70,14 +70,18 @@ let test_case name input =
     
     (* Display Cut signatures *)
     print_endline "\n  Cut signatures:";
-    List.iter (fun (ty_sym, patterns) ->
+    List.iter (fun (ty_sym, (sig_def, _kind)) ->
       let ty_name = Common.Identifiers.Path.name ty_sym in
       print_endline (Printf.sprintf "    signature %s = {" ty_name);
-      List.iter (fun (ctor_sym, gamma) ->
-        let ctor_name = Common.Identifiers.Path.name ctor_sym in
-        let gamma_str = Cut.Terms.string_of_typ_env gamma in
-        print_endline (Printf.sprintf "      %s(%s)" ctor_name gamma_str)
-      ) patterns;
+      List.iter (fun (msig: Cut.Types.method_sig) ->
+        let method_name = Common.Identifiers.Path.name msig.symbol in
+        let prod_str = String.concat ", " (List.map Cut.Types.Pretty.typed_param_to_string msig.producers) in
+        let cons_str = String.concat ", " (List.map Cut.Types.Pretty.typed_param_to_string msig.consumers) in
+        let sig_str = if prod_str = "" && cons_str = "" then "()" 
+                     else if cons_str = "" then "(" ^ prod_str ^ ")" 
+                     else "(" ^ prod_str ^ " | " ^ cons_str ^ ")" in
+        print_endline (Printf.sprintf "      %s%s" method_name sig_str)
+      ) sig_def.Cut.Types.methods;
       print_endline "    }"
     ) cut_defs.Cut.Terms.signatures;
     

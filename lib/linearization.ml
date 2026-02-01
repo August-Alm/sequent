@@ -35,7 +35,7 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let branch_vars = List.concat_map free_vars_extern_branch branches in
     merge_var_counts var_counts branch_vars
   
-  | CutT.Let (v, _ctor, gamma, s') ->
+  | CutT.Let (v, _ctor, _type_args, gamma, s') ->
     (* Free vars in gamma environment *)
     let gamma_vars = List.map fst gamma in
     let gamma_counts = count_occurrences gamma_vars in
@@ -62,12 +62,12 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let branch_vars = List.concat_map free_vars_branch branches in
     merge_var_counts v_count branch_vars
   
-  | CutT.Invoke (v, _dtor, args) ->
+  | CutT.Invoke (v, _dtor, _type_args, args) ->
     (* The variable v and all args *)
     [(v, 1)] @ count_occurrences args
 
 (** Free variables in a branch *)
-and free_vars_branch ((_xtor, gamma, body): CutT.symbol * CutT.typ_env * CutT.statement) 
+and free_vars_branch ((_xtor, _type_args, gamma, body): CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement) 
     : (Ident.t * int) list =
   (* Variables bound in the pattern *)
   let bound_vars = List.map fst gamma in
@@ -169,7 +169,7 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
     let branches' = List.map (linearize_extern_branch env_after) branches in
     prepend_subst subst (CutT.Extern (f, vars, branches'))
   
-  | CutT.Let (v, ctor, gamma, s') ->
+  | CutT.Let (v, ctor, type_args, gamma, s') ->
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
     let free_in_cont = free_vars_statement s' in
@@ -179,7 +179,7 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
     (* After let, v is added to the environment *)
     let new_env = v :: current_env in
     let s_linearized = linearize_statement new_env s' in
-    prepend_subst subst (CutT.Let (v, ctor, gamma, s_linearized))
+    prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
   
   | CutT.New (v, ty, gamma, branches, s') ->
     (* Gamma lists variables in the new binding *)
@@ -210,24 +210,24 @@ let rec linearize_statement (current_env: Ident.t list) (s: CutT.statement)
     let branches' = List.map (linearize_branch env_after) branches in
     prepend_subst subst (CutT.Switch (v, branches'))
   
-  | CutT.Invoke (v, dtor, args) ->
+  | CutT.Invoke (v, dtor, type_args, args) ->
     (* Invoke uses variable v and all args, everything else is dropped *)
     (* INVOKE rule: Γ, v : cns T, so v comes first (rightmost = head) *)
     let needed = v :: args in
     let (subst, _env_after) = build_substitution current_env needed [] [] in
-    prepend_subst subst (CutT.Invoke (v, dtor, args))
+    prepend_subst subst (CutT.Invoke (v, dtor, type_args, args))
 
 (** Linearize a branch 
     The branch binds new variables in its pattern and has a body
 *)
 and linearize_branch (current_env: Ident.t list) 
-    ((xtor, gamma, body): CutT.symbol * CutT.typ_env * CutT.statement)
-    : CutT.symbol * CutT.typ_env * CutT.statement =
+    ((xtor, type_args, gamma, body): CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement)
+    : CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement =
   (* Variables bound by the pattern extend the environment *)
   let pattern_vars = List.map fst gamma in
   let new_env = pattern_vars @ current_env in
   let body' = linearize_statement new_env body in
-  (xtor, gamma, body')
+  (xtor, type_args, gamma, body')
 
 (** Linearize an extern branch
     Extern branches have (Γ) ⇒ s form
