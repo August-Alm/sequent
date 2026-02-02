@@ -25,8 +25,7 @@ module CutTypes = Cut.Types
 type collapse_context = {
   defs: CT.definitions;
   chirality_reqs: Shrinking.chirality_context;
-  signatures: CutTypes.signature_defs;
-}
+  signatures: CutTypes.signature_defs;  mutable switch_vars: Ident.t list;  (* Variables used as switch scrutinees *)}
 
 (** Simple dummy type for now - avoids infinite recursion in type conversion *)
 let dummy_type = CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)
@@ -102,6 +101,14 @@ let get_xtor_types (ctx: collapse_context) (xtor_symbol: Path.t) : (typ list * t
     | Prim _ -> None
   ) ctx.defs.type_defs
 
+(** Extract type arguments from an applied type *)
+let rec extract_type_args (type_defs: ty_defs) (ty: Common.Types.typ) : CutTypes.typ list =
+  match ty with
+  | Common.Types.TyApp (t1, t2) ->
+    (* Recursively extract type arguments from type applications *)
+    extract_type_args type_defs t1 @ [core_type_to_cut_type type_defs t2]
+  | _ -> []
+
 (** Look up method signature from extracted signatures and get the actual parameter identifiers *)
 let get_method_params (sigs: CutTypes.signature_defs) (method_symbol: Path.t) 
     : (CutTypes.typed_param list * CutTypes.typed_param list) option =
@@ -113,6 +120,39 @@ let get_method_params (sigs: CutTypes.signature_defs) (method_symbol: Path.t)
       else None
     ) sig_def.CutTypes.methods
   ) sigs
+
+
+(** Get method parameters with types instantiated using provided type arguments *)
+let get_method_params_instantiated (sigs: CutTypes.signature_defs) (method_symbol: Path.t) (type_args: CutTypes.typ list)
+    : (CutTypes.typed_param list * CutTypes.typed_param list) option =
+  match get_method_params sigs method_symbol with
+  | None -> None
+  | Some (prod_params, cons_params) ->
+    if type_args = [] then
+      Some (prod_params, cons_params)
+    else
+      (* Find the signature and method to get type parameters *)
+      let sig_and_method = List.find_map (fun (_, (sig_def, _)) ->
+        List.find_map (fun msig ->
+          if Path.equal msig.CutTypes.symbol method_symbol then
+            Some (sig_def, msig)
+          else None
+        ) sig_def.CutTypes.methods
+      ) sigs in
+      match sig_and_method with
+      | Some (sig_def, msig) ->
+        let sig_type_params = List.map fst sig_def.CutTypes.parameters in
+        let method_quants = List.map fst msig.CutTypes.quantified in
+        let all_type_params = sig_type_params @ method_quants in
+        if List.length all_type_params = List.length type_args then
+          let subst = List.combine all_type_params type_args in
+          let instantiate chi_ty = CutTypes.substitute_chirality subst chi_ty in
+          let new_prod_params = List.map (fun (id, chi_ty) -> (id, instantiate chi_ty)) prod_params in
+          let new_cons_params = List.map (fun (id, chi_ty) -> (id, instantiate chi_ty)) cons_params in
+          Some (new_prod_params, new_cons_params)
+        else
+          Some (prod_params, cons_params)
+      | None -> Some (prod_params, cons_params)
 
 
 
@@ -133,7 +173,10 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
     else CutT.Invoke (List.hd args, f, [], List.tl args)
 
 (** Collapse a cut into one of the 4 symmetric forms *)
-and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ) (c: CT.consumer) : CutT.statement =
+and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ) (c: CT.consumer) : CutT.statement =
+  (* Extract type arguments from the cut type for instantiation *)
+  let type_args = extract_type_args ctx.defs.type_defs ty in
+  
   match (p, c) with
   
   (* FORM 1: ⟨C(Γ) | µ˜x.s⟩ → let x = C(Γ); s 
@@ -165,9 +208,9 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
   | (CT.Var x, CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
       (* Build branch environment using pattern variables with types from signature *)
-      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
         | Some (prod_params, cons_params) ->
-          (* Use pattern variables with types from signature *)
+          (* Use pattern variables with instantiated types from signature *)
           (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
           (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
         | None ->
@@ -186,9 +229,9 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
   | (CT.Cocase patterns, CT.Covar alpha) ->
     let branches = List.map (fun (pat: CT.pattern) ->
       (* Build branch environment using pattern variables with types from signature *)
-      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
         | Some (prod_params, cons_params) ->
-          (* Use pattern variables with types from signature *)
+          (* Use pattern variables with instantiated types from signature *)
           (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
           (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
         | None ->
@@ -199,13 +242,15 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
+    (* Track that alpha is used as a switch scrutinee (needs to be producer) *)
+    ctx.switch_vars <- alpha :: ctx.switch_vars;
     CutT.Switch (alpha, branches)
   
   (* FORM 3: ⟨µα.s1 | case {C(Γ) ⇒ s2, ...}⟩ → new α = {C(Γ) ⇒ s2, ...}; s1 
      α is a CONSUMER *)
   | (CT.Mu (alpha, s1), CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
         | Some (prod_params, cons_params) ->
           (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
           (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
@@ -222,7 +267,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
      x is a CONSUMER *)
   | (CT.Cocase patterns, CT.MuTilde (x, s1)) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
         | Some (prod_params, cons_params) ->
           (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
           (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
@@ -261,12 +306,43 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
 let collapse_term_def (ctx: collapse_context) (name: Path.t) (def: CT.term_def) : CutT.label * CutT.typ_env * CutT.statement =
   let label = CutT.MkLabel name in
   
-  (* Build environment with chirality information - producers are Prd, consumers are Cns *)
-  let typ_env = 
-    (List.map (fun (v, ty) -> (v, CutTypes.Prd (core_type_to_cut_type ctx.defs.type_defs ty))) def.prod_args) @
-    (List.map (fun (v, ty) -> (v, CutTypes.Cns (core_type_to_cut_type ctx.defs.type_defs ty))) def.cons_args) in
-  
+  (* First collapse the body to discover which variables are used as switch scrutinees *)
   let body = collapse_statement ctx def.body in
+  
+  (* Helper to determine actual chirality based on requirements and switch usage *)
+  let get_chirality (v: Ident.t) (default_is_producer: bool) (ty: CutTypes.typ) : CutTypes.chirality_type =
+    (* Check if variable is used as a switch scrutinee *)
+    let is_switch_var = List.exists (Ident.equal v) ctx.switch_vars in
+    
+    (* Check if there's an explicit requirement for this variable *)
+    let req = List.find_opt (fun r ->
+      match r with
+      | Shrinking.MustBeProducer id -> Ident.equal id v
+      | Shrinking.MustBeConsumer id -> Ident.equal id v
+    ) ctx.chirality_reqs in
+    
+    match (req, is_switch_var) with
+    | (Some (Shrinking.MustBeProducer _), _) -> CutTypes.Prd ty
+    | (Some (Shrinking.MustBeConsumer _), _) -> CutTypes.Cns ty
+    | (None, true) -> CutTypes.Prd ty  (* Switch scrutinee must be producer *)
+    | (None, false) -> 
+      (* No requirement, use original chirality *)
+      if default_is_producer then
+        CutTypes.Prd ty
+      else
+        CutTypes.Cns ty
+  in
+  
+  (* Build environment with chirality information, respecting requirements *)
+  let typ_env = 
+    (List.map (fun (v, ty) -> 
+      let cut_ty = core_type_to_cut_type ctx.defs.type_defs ty in
+      (v, get_chirality v true cut_ty)
+    ) def.prod_args) @
+    (List.map (fun (v, ty) -> 
+      let cut_ty = core_type_to_cut_type ctx.defs.type_defs ty in
+      (v, get_chirality v false cut_ty)
+    ) def.cons_args) in
   
   (label, typ_env, body)
 
@@ -293,8 +369,11 @@ let extract_signatures_from_defs (defs: CT.definitions) : CutTypes.signature_def
 let collapse_definitions (defs: CT.definitions) (chirality_reqs: Shrinking.chirality_context) 
   : CutT.definitions =
   let signatures = extract_signatures_from_defs defs in
-  let ctx = { defs; chirality_reqs; signatures } in
+  let ctx = { defs; chirality_reqs; signatures; switch_vars = [] } in
   
-  let program = List.map (fun (name, def) -> collapse_term_def ctx name def) defs.term_defs in
+  let program = List.map (fun (name, def) -> 
+    ctx.switch_vars <- [];  (* Reset for each definition *)
+    collapse_term_def ctx name def
+  ) defs.term_defs in
   
   { CutT.signatures; program }

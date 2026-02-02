@@ -257,9 +257,8 @@ and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
   (* Look up the method signature to get the canonical parameter names *)
   match lookup_method_signature sigs xtor with
   | Some (_sig_def, msig) ->
-    (* Get signature parameters and their types *)
-    let sig_gamma = msig.CutTypes.producers @ msig.CutTypes.consumers in
-    let sig_params = List.map fst sig_gamma in
+    (* Get signature parameters (names only, NOT types) *)
+    let sig_params = (List.map fst msig.CutTypes.producers) @ (List.map fst msig.CutTypes.consumers) in
     
     (* Build substitution from pattern vars (target) to signature params (source) *)
     (* This transforms environment from [sig_params] @ current_env to [pattern_vars] @ current_env *)
@@ -274,8 +273,9 @@ and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
     (* Prepend the substitution to the body *)
     let final_body = prepend_subst full_subst body' in
     
-    (* Return branch with signature gamma (using signature identifiers) *)
-    (xtor, type_args, sig_gamma, final_body)
+    (* Return branch with gamma using signature identifiers but preserving instantiated types from collapsing *)
+    let gamma_with_sig_ids = List.map2 (fun sig_id (_, ty) -> (sig_id, ty)) sig_params gamma in
+    (xtor, type_args, gamma_with_sig_ids, final_body)
     
   | None ->
     (* No signature found - use pattern variables as-is *)

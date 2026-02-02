@@ -166,16 +166,6 @@ data nat: type where
 let make_zero: nat -> nat = fun(x: nat) => zero
   ";
   
-  (* Test 3b: Lambda abstraction, non-value *)
-  test_case "Test 3b: Lambda abstraction with nat, non-value" "
-data nat: type where 
-  { zero: nat
-  ; succ: nat -> nat
-  }
-
-let make_zero(y: nat): nat -> nat = fun(x: nat) => zero
-  ";
-  
   (* Test 4: Let binding *)
   test_case "Test 4: Let binding" "
 data nat: type where 

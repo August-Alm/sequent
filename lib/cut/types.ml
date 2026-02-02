@@ -180,10 +180,7 @@ module Type = struct
     let result = match t1, t2 with
     | TyVar x, TyVar y -> Ident.equal x y
     | TyApp (a, b), TyApp (c, d) -> equal a c && equal b d
-    | TySig s1, TySig s2 -> 
-      let eq = Path.equal s1.symbol s2.symbol in
-      Printf.fprintf stderr "  TySig comparison: %b\n%!" eq;
-      eq
+    | TySig s1, TySig s2 -> Path.equal s1.symbol s2.symbol
     | TyPrim (p1, _), TyPrim (p2, _) -> Path.equal p1 p2
     | _ -> false
     in
