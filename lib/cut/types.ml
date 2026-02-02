@@ -48,12 +48,15 @@ and signature =
 
 (** Method signatures unify constructors and destructors
     
-    In the data/codata distinction:
-    - Constructor C(x₁: A₁, ..., xₙ: Aₙ) : T becomes
-      method C with producers [(x₁, A₁), ..., (xₙ, Aₙ)] and no consumers
+    Like Lang and Core, method signatures have NO parameter names - only types.
+    Parameter names are introduced at use sites (in Let/Switch/New patterns).
     
-    - Destructor D(y₁: B₁, ..., yₘ: Bₘ) : T → S becomes  
-      method D with producers [(z, S)] (the result) and consumers [(y₁, B₁), ..., (yₘ, Bₘ)]
+    In the data/codata distinction:
+    - Constructor C : A₁ -> ... -> Aₙ -> T becomes
+      method C with producers [A₁, ..., Aₙ] and no consumers
+    
+    - Destructor D : T -> B₁ -> ... -> Bₘ -> S becomes  
+      method D with producers [S] (the result) and consumers [B₁, ..., Bₘ]
     
     For GADTs, the result_type can refine the type parameters with constraints.
 *)
@@ -63,10 +66,12 @@ and method_sig =
   ; symbol: Path.t
     (* Quantified type variables, e.g., [(a, KStar)] for polymorphic methods *)
   ; quantified: (Ident.t * kind) list
-    (* Producer arguments: what is given when invoking (data: ctor args, codata: result) *)
-  ; producers: typed_param list
-    (* Consumer arguments: what is needed when invoking (data: none, codata: dtor args) *)
-  ; consumers: typed_param list
+    (* Producer types: types given when invoking (data: ctor args, codata: result)
+       No names - names are provided by Let/Switch/New patterns *)
+  ; producers: chirality_type list
+    (* Consumer types: types needed when invoking (data: none, codata: dtor args)
+       No names - names are provided by Let/Switch/New patterns *)
+  ; consumers: chirality_type list
     (* Result type: how this method instantiates the parent signature's parameters
        For non-GADT: just applies TyVar to each parameter
        For GADT: can be more specific, imposing constraints *)
@@ -75,7 +80,8 @@ and method_sig =
   ; constraints: (Ident.t * typ) list
   }
 
-(** Typed parameter: variable with its chirality type *)
+(** Typed parameter: variable with its chirality type.
+    Used in statement environments (typ_env) where variables ARE named. *)
 and typed_param = Ident.t * chirality_type
 
 (** Chirality types for Cut's operational semantics
@@ -274,11 +280,11 @@ module Pretty = struct
     in
     let prod_str = 
       if m.producers = [] then ""
-      else "(" ^ String.concat ", " (List.map typed_param_to_string m.producers) ^ ")"
+      else "(" ^ String.concat ", " (List.map chirality_to_string m.producers) ^ ")"
     in
-    let cons_str =
+    let cons_str=
       if m.consumers = [] then ""
-      else " | (" ^ String.concat ", " (List.map typed_param_to_string m.consumers) ^ ")"
+      else " | (" ^ String.concat ", " (List.map chirality_to_string m.consumers) ^ ")"
     in
     let constr_str =
       if m.constraints = [] then ""
@@ -348,7 +354,7 @@ module TypeCheck = struct
     
     (* Check all producer types *)
     let check_producers =
-      List.fold_left (fun acc (_, chir) ->
+      List.fold_left (fun acc chir ->
         match acc with
         | Error e -> Error e
         | Ok () ->
@@ -359,7 +365,7 @@ module TypeCheck = struct
     
     (* Check all consumer types *)
     let check_consumers =
-      List.fold_left (fun acc (_, chir) ->
+      List.fold_left (fun acc chir ->
         match acc with
         | Error e -> Error e
         | Ok () ->

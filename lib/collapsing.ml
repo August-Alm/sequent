@@ -45,8 +45,8 @@ let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signatu
       CutTypes.parent = xtor.parent;
       symbol = xtor.symbol;
       quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
-      producers = List.map (fun ty -> (Ident.mk "_p", CutTypes.Prd (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))) xtor.producers;
-      consumers = List.map (fun ty -> (Ident.mk "_c", CutTypes.Cns (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))) xtor.consumers;
+      producers = List.map (fun ty -> CutTypes.Prd (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty)) xtor.producers;
+      consumers = List.map (fun ty -> CutTypes.Cns (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty)) xtor.consumers;
       result_type = (
         (* Build the parent type with arguments applied *)
         let parent_ty = List.fold_left (fun acc arg ->
@@ -111,20 +111,6 @@ and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
   | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
   | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
 
-(** Look up constructor/destructor and get typed parameters *)
-let get_xtor_types (ctx: collapse_context) (xtor_symbol: Path.t) : (typ list * typ list) option =
-  (* Search through all type definitions for the constructor/destructor *)
-  List.find_map (fun (_, (ty_def, _)) ->
-    match ty_def with
-    | Data td | Code td ->
-      List.find_map (fun xtor ->
-        if Path.equal xtor.symbol xtor_symbol then
-          Some (xtor.producers, xtor.consumers)
-        else None
-      ) td.xtors
-    | Prim _ -> None
-  ) ctx.defs.type_defs
-
 (** Extract type arguments from an applied type *)
 let rec extract_type_args (type_defs: ty_defs) (ty: Common.Types.typ) : CutTypes.typ list =
   match ty with
@@ -139,54 +125,6 @@ let rec extract_core_type_args (ty: Common.Types.typ) : Common.Types.typ list =
   | Common.Types.TyApp (t1, t2) ->
     extract_core_type_args t1 @ [t2]
   | _ -> []
-
-(** Look up method signature from extracted signatures and get the actual parameter identifiers *)
-let get_method_params (sigs: CutTypes.signature_defs) (method_symbol: Path.t) 
-    : (CutTypes.typed_param list * CutTypes.typed_param list) option =
-  (* Search through all signatures for the method *)
-  List.find_map (fun (_, (sig_def, _)) ->
-    List.find_map (fun msig ->
-      if Path.equal msig.CutTypes.symbol method_symbol then
-        Some (msig.CutTypes.producers, msig.CutTypes.consumers)
-      else None
-    ) sig_def.CutTypes.methods
-  ) sigs
-
-
-(** Get method parameters with types instantiated using provided type arguments *)
-let get_method_params_instantiated (sigs: CutTypes.signature_defs) (method_symbol: Path.t) (type_args: CutTypes.typ list)
-    : (CutTypes.typed_param list * CutTypes.typed_param list) option =
-  match get_method_params sigs method_symbol with
-  | None -> None
-  | Some (prod_params, cons_params) ->
-    if type_args = [] then
-      Some (prod_params, cons_params)
-    else
-      (* Find the signature and method to get type parameters *)
-      let sig_and_method = List.find_map (fun (_, (sig_def, _)) ->
-        List.find_map (fun msig ->
-          if Path.equal msig.CutTypes.symbol method_symbol then
-            Some (sig_def, msig)
-          else None
-        ) sig_def.CutTypes.methods
-      ) sigs in
-      match sig_and_method with
-      | Some (sig_def, msig) ->
-        let sig_type_params = List.map fst sig_def.CutTypes.parameters in
-        let method_quants = List.map fst msig.CutTypes.quantified in
-        let all_type_params = sig_type_params @ method_quants in
-        if List.length all_type_params = List.length type_args then
-          let subst = List.combine all_type_params type_args in
-          let instantiate chi_ty = CutTypes.substitute_chirality subst chi_ty in
-          let new_prod_params = List.map (fun (id, chi_ty) -> (id, instantiate chi_ty)) prod_params in
-          let new_cons_params = List.map (fun (id, chi_ty) -> (id, instantiate chi_ty)) cons_params in
-          Some (new_prod_params, new_cons_params)
-        else
-          None
-      | None -> None
-
-
-
 
 (** Main collapsing transformation *)
 let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.statement =

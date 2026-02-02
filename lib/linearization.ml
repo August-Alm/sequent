@@ -219,50 +219,23 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
     
-    (* Look up the method signature to get canonical parameter names *)
-    (match lookup_method_signature sigs ctor with
-    | Some (_sig_def, msig) ->
-      let sig_params = (List.map fst msig.CutTypes.producers) @ (List.map fst msig.CutTypes.consumers) in
-      
-      (* Build substitution for variable flow using actual Core variables *)
-      let free_in_cont = free_vars_statement s' in
-      let preserve = List.filter (fun var -> 
-        not (List.mem var gamma_vars) && 
-        not (Ident.equal var v) &&
-        List.mem var current_env
-      ) (List.map fst free_in_cont) in
-      (* Build flow substitution using gamma_vars (what's actually in the environment) *)
-      let (flow_subst, env_after) = build_substitution current_env gamma_vars preserve [] in
-      
-      (* Build rename substitution: sig_params (needed by Let) → gamma_vars (what we have) *)
-      let rename_subst = List.combine sig_params gamma_vars in
-      
-      (* Remove gamma_vars from flow_subst since they're handled by rename_subst *)
-      let flow_subst_filtered = List.filter (fun (target, _source) ->
-        not (List.mem target gamma_vars)
-      ) flow_subst in
-      
-      (* After let, v is added to the environment *)
-      let new_env = v :: env_after in
-      let s_linearized = linearize_statement sigs new_env s' in
-      (* Combine: rename first, then filtered flow substitution *)
-      let full_subst = rename_subst @ flow_subst_filtered in
-      (* Update gamma to use signature identifiers *)
-      let gamma_with_sig_ids = List.map2 (fun sig_id (_, ty) -> (sig_id, ty)) sig_params gamma in
-      prepend_subst full_subst (CutT.Let (v, ctor, type_args, gamma_with_sig_ids, s_linearized))
-      
-    | None ->
-      (* No signature found - use original behavior *)
-      let free_in_cont = free_vars_statement s' in
-      let preserve = List.filter (fun var -> 
-        not (List.mem var gamma_vars) && 
-        not (Ident.equal var v) &&
-        List.mem var current_env
-      ) (List.map fst free_in_cont) in
-      let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
-      let new_env = v :: env_after in
-      let s_linearized = linearize_statement sigs new_env s' in
-      prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized)))
+    (* Build substitution for variable flow using actual variables from gamma *)
+    let free_in_cont = free_vars_statement s' in
+    let preserve = List.filter (fun var -> 
+      not (List.mem var gamma_vars) && 
+      not (Ident.equal var v) &&
+      List.mem var current_env
+    ) (List.map fst free_in_cont) in
+    
+    (* Build flow substitution using gamma_vars (what's actually in the environment) *)
+    let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
+    
+    (* After let, v is added to the environment *)
+    let new_env = v :: env_after in
+    let s_linearized = linearize_statement sigs new_env s' in
+    
+    (* Prepend the substitution to handle variable flow *)
+    prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
   
   | CutT.New (v, ty, gamma, branches, s') ->
     (* Gamma lists variables in the new binding *)
@@ -318,34 +291,12 @@ and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
   (* Variables bound by the pattern extend the environment *)
   let pattern_vars = List.map fst gamma in
   
-  (* Look up the method signature to get the canonical parameter names *)
-  match lookup_method_signature sigs xtor with
-  | Some (_sig_def, msig) ->
-    (* Get signature parameters (names only, NOT types) *)
-    let sig_params = (List.map fst msig.CutTypes.producers) @ (List.map fst msig.CutTypes.consumers) in
-    
-    (* Build substitution from pattern vars (target) to signature params (source) *)
-    (* This transforms environment from [sig_params] @ current_env to [pattern_vars] @ current_env *)
-    let subst = List.combine pattern_vars sig_params in
-    let preserve_outer = List.map (fun id -> (id, id)) current_env in
-    let full_subst = subst @ preserve_outer in
-    
-    (* Linearize the body with pattern variables + outer environment *)
-    let new_env = pattern_vars @ current_env in
-    let body' = linearize_statement sigs new_env body in
-    
-    (* Prepend the substitution to the body *)
-    let final_body = prepend_subst full_subst body' in
-    
-    (* Return branch with gamma using signature identifiers but preserving instantiated types from collapsing *)
-    let gamma_with_sig_ids = List.map2 (fun sig_id (_, ty) -> (sig_id, ty)) sig_params gamma in
-    (xtor, type_args, gamma_with_sig_ids, final_body)
-    
-  | None ->
-    (* No signature found - use pattern variables as-is *)
-    let new_env = pattern_vars @ current_env in
-    let body' = linearize_statement sigs new_env body in
-    (xtor, type_args, gamma, body')
+  (* Linearize the body with pattern variables + outer environment *)
+  let new_env = pattern_vars @ current_env in
+  let body' = linearize_statement sigs new_env body in
+  
+  (* Return branch with original gamma (pattern variables and their types) *)
+  (xtor, type_args, gamma, body')
 
 (** Linearize an extern branch
     Extern branches have (Γ) ⇒ s form

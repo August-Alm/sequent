@@ -326,14 +326,20 @@ let rec check_statement
     let method_quants = List.map fst msig.Types.quantified in
     let subst = List.combine (sig_params @ method_quants) type_args in
     
-    (* Apply substitution to producer arguments *)
-    let expected_gamma0 = List.map (fun (var, chi_ty) ->
-      (var, Types.substitute_chirality subst chi_ty)
+    (* Apply substitution to producer types (no names in signature) *)
+    let expected_types = List.map (fun chi_ty ->
+      Types.substitute_chirality subst chi_ty
     ) msig.Types.producers in
     
-    (* Check that gamma0 matches expected *)
-    if not (Env.equal gamma0 expected_gamma0) then
-      raise (TypeError ("Let: producer arguments mismatch for " ^ Symbol.to_string m));
+    (* Check that gamma0 types match expected types by position *)
+    if List.length gamma0 <> List.length expected_types then
+      raise (TypeError (Printf.sprintf "Let: wrong number of producer arguments for %s (expected %d, got %d)"
+        (Symbol.to_string m) (List.length expected_types) (List.length gamma0)));
+    
+    List.iter2 (fun (_var, actual_ty) expected_ty ->
+      if not (Types.equal_chirality actual_ty expected_ty) then
+        raise (TypeError ("Let: producer argument type mismatch for " ^ Symbol.to_string m))
+    ) gamma0 expected_types;
     
     (* Split environment: Γ, Γ₀ *)
     let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
@@ -401,17 +407,21 @@ let rec check_statement
       let method_quants = List.map fst msig.Types.quantified in
       let subst = List.combine (sig_params @ method_quants) (type_args @ branch_type_args) in
       
-      (* Apply substitution to producer and consumer arguments *)
-      let expected_branch_gamma = 
-        List.map (fun (var, chi_ty) -> (var, Types.substitute_chirality subst chi_ty)) 
+      (* Apply substitution to producer and consumer types (no names in signature) *)
+      let expected_types = 
+        List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty) 
           (msig.Types.producers @ msig.Types.consumers)
       in
       
-      if not (Env.equal branch_gamma expected_branch_gamma) then
-        (Printf.eprintf "DEBUG: Branch environment mismatch for %s\n" (Symbol.to_string m_i);
-         Printf.eprintf "  branch_gamma: %s\n" (string_of_typ_env branch_gamma);
-         Printf.eprintf "  expected: %s\n" (string_of_typ_env expected_branch_gamma);
-         raise (TypeError ("New: branch environment mismatch for " ^ Symbol.to_string m_i)));
+      (* Check types match by position *)
+      if List.length branch_gamma <> List.length expected_types then
+        raise (TypeError (Printf.sprintf "New: wrong number of arguments in branch for %s (expected %d, got %d)"
+          (Symbol.to_string m_i) (List.length expected_types) (List.length branch_gamma)));
+      
+      List.iter2 (fun (_var, actual_ty) expected_ty ->
+        if not (Types.equal_chirality actual_ty expected_ty) then
+          raise (TypeError ("New: branch argument type mismatch for " ^ Symbol.to_string m_i))
+      ) branch_gamma expected_types;
       
       (* Check statement with Γᵖ, Γᶜ, Γ₀ *)
       let branch_env = branch_gamma @ gamma0 in
@@ -463,14 +473,21 @@ let rec check_statement
         let method_quants = List.map fst msig.Types.quantified in
         let subst = List.combine (sig_params @ method_quants) (type_args @ branch_type_args) in
         
-        (* Apply substitution to arguments *)
-        let expected_branch_gamma = 
-          List.map (fun (var, chi_ty) -> (var, Types.substitute_chirality subst chi_ty))
+        (* Apply substitution to argument types (no names in signature) *)
+        let expected_types = 
+          List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty)
             (msig.Types.producers @ msig.Types.consumers)
         in
         
-        if not (Env.equal branch_gamma expected_branch_gamma) then
-          raise (TypeError ("Switch: branch environment mismatch for " ^ Symbol.to_string m_i));
+        (* Check types match by position *)
+        if List.length branch_gamma <> List.length expected_types then
+          raise (TypeError (Printf.sprintf "Switch: wrong number of arguments in branch for %s (expected %d, got %d)"
+            (Symbol.to_string m_i) (List.length expected_types) (List.length branch_gamma)));
+        
+        List.iter2 (fun (_var, actual_ty) expected_ty ->
+          if not (Types.equal_chirality actual_ty expected_ty) then
+            raise (TypeError ("Switch: branch argument type mismatch for " ^ Symbol.to_string m_i))
+        ) branch_gamma expected_types;
         
         (* Check statement with Γ, Γᵖ, Γᶜ *)
         let branch_env = branch_gamma @ gamma_rest in
@@ -513,27 +530,28 @@ let rec check_statement
       let method_quants = List.map fst msig.Types.quantified in
       let subst = List.combine (sig_params @ method_quants) (sig_type_args @ type_args) in
       
-      (* Apply substitution to producer and consumer arguments *)
-      let expected_args = 
-        List.map (fun (var, chi_ty) -> (var, Types.substitute_chirality subst chi_ty))
+      (* Apply substitution to producer and consumer types (no names in signature) *)
+      let expected_types = 
+        List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty)
           (msig.Types.producers @ msig.Types.consumers)
       in
       
-      (* Build actual argument environment from args *)
-      let actual_args = List.map (fun arg ->
+      (* Build actual argument types from args *)
+      let actual_types = List.map (fun arg ->
         match List.assoc_opt arg gamma_rest with
-        | Some typ -> (arg, typ)
+        | Some typ -> typ
         | None -> raise (TypeError ("Invoke: variable " ^ Ident.name arg ^ " not in environment"))
       ) args in
       
-      (* Check that actual matches expected (compare types, not variable names) *)
-      if List.length actual_args <> List.length expected_args then
-        raise (TypeError ("Invoke: wrong number of arguments for " ^ Symbol.to_string m));
-      (* Pair up actual and expected, check types match *)
-      List.iter2 (fun (_, actual_ty) (_, expected_ty) ->
+      (* Check that actual types match expected types by position *)
+      if List.length actual_types <> List.length expected_types then
+        raise (TypeError (Printf.sprintf "Invoke: wrong number of arguments for %s (expected %d, got %d)"
+          (Symbol.to_string m) (List.length expected_types) (List.length actual_types)));
+      
+      List.iter2 (fun actual_ty expected_ty ->
         if not (Types.equal_chirality actual_ty expected_ty) then
           raise (TypeError ("Invoke: argument type mismatch for " ^ Symbol.to_string m))
-      ) actual_args expected_args
+      ) actual_types expected_types
     | (v', _) :: _ when Ident.equal v v' ->
       raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
     | _ ->
