@@ -182,25 +182,37 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
   (* FORM 1: ⟨C(Γ) | µ˜x.s⟩ → let x = C(Γ); s 
      x becomes a PRODUCER *)
   | (CT.Constructor (ctor, (_ty_args, prods, cons)), CT.MuTilde (x, s)) ->
-    let args_env = 
-      (List.map (fun p -> match p with 
-        | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-        | _ -> failwith "Expected variable") prods) @
-      (List.map (fun c -> match c with
-        | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-        | _ -> failwith "Expected covariable") cons) in
+    let args_env = match get_method_params_instantiated ctx.signatures ctor type_args with
+      | Some (prod_params, cons_params) ->
+        (* Use signature parameter identifiers with instantiated types *)
+        prod_params @ cons_params
+      | None ->
+        (* Fallback: use dummy types with actual variables *)
+        (List.map (fun p -> match p with 
+          | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
+          | _ -> failwith "Expected variable") prods) @
+        (List.map (fun c -> match c with
+          | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
+          | _ -> failwith "Expected covariable") cons)
+    in
     CutT.Let (x, ctor, [], args_env, collapse_statement ctx s)
   
   (* FORM 1: ⟨µα.s | D(Γ)⟩ → let α = D(Γ); s 
      α becomes a PRODUCER *)
   | (CT.Mu (alpha, s), CT.Destructor (dtor, (_ty_args, prods, cons))) ->
-    let args_env =
-      (List.map (fun p -> match p with
-        | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-        | _ -> failwith "Expected variable") prods) @
-      (List.map (fun c -> match c with
-        | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-        | _ -> failwith "Expected covariable") cons) in
+    let args_env = match get_method_params_instantiated ctx.signatures dtor type_args with
+      | Some (prod_params, cons_params) ->
+        (* Use signature parameter identifiers with instantiated types *)
+        prod_params @ cons_params
+      | None ->
+        (* Fallback: use dummy types with actual variables *)
+        (List.map (fun p -> match p with
+          | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
+          | _ -> failwith "Expected variable") prods) @
+        (List.map (fun c -> match c with
+          | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
+          | _ -> failwith "Expected covariable") cons)
+    in
     CutT.Let (alpha, dtor, [], args_env, collapse_statement ctx s)
   
   (* FORM 2: ⟨x | case {C(Γ) ⇒ s, ...}⟩ → switch x {C(Γ) ⇒ s, ...} 
