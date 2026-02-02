@@ -19,6 +19,4 @@ let normalize_definitions (defs: CT.definitions) : Cut.definitions =
   let collapsed_defs = Collapsing.collapse_definitions shrunken_defs chirality_reqs in
   
   (* Pass 3: Linearization - insert explicit substitutions *)
-  let linearized_program = Linearization.linearize_program collapsed_defs.Cut.program in
-  
-  { collapsed_defs with Cut.program = linearized_program }
+  Linearization.linearize_definitions collapsed_defs

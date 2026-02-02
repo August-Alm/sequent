@@ -25,6 +25,7 @@ module CutTypes = Cut.Types
 type collapse_context = {
   defs: CT.definitions;
   chirality_reqs: Shrinking.chirality_context;
+  signatures: CutTypes.signature_defs;
 }
 
 (** Simple dummy type for now - avoids infinite recursion in type conversion *)
@@ -87,6 +88,32 @@ and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
   | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
   | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
 
+(** Look up constructor/destructor and get typed parameters *)
+let get_xtor_types (ctx: collapse_context) (xtor_symbol: Path.t) : (typ list * typ list) option =
+  (* Search through all type definitions for the constructor/destructor *)
+  List.find_map (fun (_, (ty_def, _)) ->
+    match ty_def with
+    | Data td | Code td ->
+      List.find_map (fun xtor ->
+        if Path.equal xtor.symbol xtor_symbol then
+          Some (xtor.producers, xtor.consumers)
+        else None
+      ) td.xtors
+    | Prim _ -> None
+  ) ctx.defs.type_defs
+
+(** Look up method signature from extracted signatures and get the actual parameter identifiers *)
+let get_method_params (sigs: CutTypes.signature_defs) (method_symbol: Path.t) 
+    : (CutTypes.typed_param list * CutTypes.typed_param list) option =
+  (* Search through all signatures for the method *)
+  List.find_map (fun (_, (sig_def, _)) ->
+    List.find_map (fun msig ->
+      if Path.equal msig.CutTypes.symbol method_symbol then
+        Some (msig.CutTypes.producers, msig.CutTypes.consumers)
+      else None
+    ) sig_def.CutTypes.methods
+  ) sigs
+
 
 
 
@@ -137,10 +164,20 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
      x is a PRODUCER *)
   | (CT.Var x, CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env =
-        (List.map (fun v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))) pat.CT.variables) @
-        (List.map (fun a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))) pat.CT.covariables) in
-      (pat.CT.xtor, [], args_env, collapse_statement ctx pat.CT.statement)
+      (* Build branch environment using pattern variables with types from signature *)
+      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+        | Some (prod_params, cons_params) ->
+          (* Use pattern variables with types from signature *)
+          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
+          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
+        | None ->
+          (* Fallback: use pattern variables with dummy types *)
+          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
+          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      in
+      (* Collapse the statement - linearization will handle substitutions *)
+      let body = collapse_statement ctx pat.CT.statement in
+      (pat.CT.xtor, [], args_env, body)
     ) patterns in
     CutT.Switch (x, branches)
   
@@ -148,10 +185,19 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
      α (covariable) becomes variable and is a PRODUCER *)
   | (CT.Cocase patterns, CT.Covar alpha) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env =
-        (List.map (fun v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))) pat.CT.variables) @
-        (List.map (fun a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))) pat.CT.covariables) in
-      (pat.CT.xtor, [], args_env, collapse_statement ctx pat.CT.statement)
+      (* Build branch environment using pattern variables with types from signature *)
+      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+        | Some (prod_params, cons_params) ->
+          (* Use pattern variables with types from signature *)
+          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
+          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
+        | None ->
+          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
+          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      in
+      (* Collapse the statement - linearization will handle substitutions *)
+      let body = collapse_statement ctx pat.CT.statement in
+      (pat.CT.xtor, [], args_env, body)
     ) patterns in
     CutT.Switch (alpha, branches)
   
@@ -159,10 +205,16 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
      α is a CONSUMER *)
   | (CT.Mu (alpha, s1), CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env =
-        (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-        (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables) in
-      (pat.CT.xtor, [], args_env, collapse_statement ctx pat.CT.statement)
+      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+        | Some (prod_params, cons_params) ->
+          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
+          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
+        | None ->
+          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
+          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      in
+      let body = collapse_statement ctx pat.CT.statement in
+      (pat.CT.xtor, [], args_env, body)
     ) patterns in
     CutT.New (alpha, dummy_type, [], branches, collapse_statement ctx s1)
   
@@ -170,10 +222,16 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
      x is a CONSUMER *)
   | (CT.Cocase patterns, CT.MuTilde (x, s1)) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env =
-        (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-        (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables) in
-      (pat.CT.xtor, [], args_env, collapse_statement ctx pat.CT.statement)
+      let args_env = match get_method_params ctx.signatures pat.CT.xtor with
+        | Some (prod_params, cons_params) ->
+          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
+          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
+        | None ->
+          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
+          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      in
+      let body = collapse_statement ctx pat.CT.statement in
+      (pat.CT.xtor, [], args_env, body)
     ) patterns in
     CutT.New (x, dummy_type, [], branches, collapse_statement ctx s1)
   
@@ -234,9 +292,9 @@ let extract_signatures_from_defs (defs: CT.definitions) : CutTypes.signature_def
 (** Entry point *)
 let collapse_definitions (defs: CT.definitions) (chirality_reqs: Shrinking.chirality_context) 
   : CutT.definitions =
-  let ctx = { defs; chirality_reqs } in
-  
   let signatures = extract_signatures_from_defs defs in
+  let ctx = { defs; chirality_reqs; signatures } in
+  
   let program = List.map (fun (name, def) -> collapse_term_def ctx name def) defs.term_defs in
   
   { CutT.signatures; program }

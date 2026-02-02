@@ -83,17 +83,31 @@ and subst_pattern (subst: (Ident.t * Ident.t) list) (pat: CT.pattern) : CT.patte
   { pat with statement = subst_statement subst' pat.statement }
 
 (** Check if type is data (vs codata) *)
-let is_data_type (ty: typ) : bool option =
+let is_data_type (ctx: shrink_context) (ty: typ) : bool option =
   match ty with
   | TyDef (Data _) -> Some true
   | TyDef (Code _) -> Some false
+  | TySym path ->
+    (* Look up the type symbol in definitions *)
+    (match List.assoc_opt path ctx.defs.type_defs with
+    | Some (Data _, _) -> Some true
+    | Some (Code _, _) -> Some false
+    | Some (Prim _, _) -> None
+    | None -> None)
   | _ -> None
 
 (** Get constructors/destructors from type *)
-let get_xtors (ty: typ) : ty_xtor list option =
+let get_xtors (ctx: shrink_context) (ty: typ) : ty_xtor list option =
   match ty with
   | TyDef (Data td) -> Some td.xtors
   | TyDef (Code td) -> Some td.xtors
+  | TySym path ->
+    (* Look up the type symbol in definitions *)
+    (match List.assoc_opt path ctx.defs.type_defs with
+    | Some (Data td, _) -> Some td.xtors
+    | Some (Code td, _) -> Some td.xtors
+    | Some (Prim _, _) -> None
+    | None -> None)
   | _ -> None
 
 (** Main shrinking transformation *)
@@ -197,10 +211,10 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
   
   (* η-EXPANSION: ⟨x | α⟩ at data type → expand consumer *)
   | (CT.Var x, CT.Covar alpha) ->
-    (match is_data_type ty with
+    (match is_data_type ctx ty with
      | Some true ->
        (* data type: expand consumer with case *)
-       (match get_xtors ty with
+       (match get_xtors ctx ty with
         | Some xtors ->
           let patterns = List.map (fun xtor ->
             let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
@@ -223,7 +237,7 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
         | None -> CT.Cut (p, ty, c))
      | Some false ->
        (* codata type: expand producer with cocase *)
-       (match get_xtors ty with
+       (match get_xtors ctx ty with
         | Some xtors ->
           let patterns = List.map (fun xtor ->
             let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
@@ -248,10 +262,10 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
   
   (* CRITICAL PAIR: ⟨μα.s1 | μ̃x.s2⟩ at data type → expand μ̃ *)
   | (CT.Mu (alpha, s1), CT.MuTilde (x, s2)) ->
-    (match is_data_type ty with
+    (match is_data_type ctx ty with
      | Some true ->
        (* data type: expand μ̃ with case *)
-       (match get_xtors ty with
+       (match get_xtors ctx ty with
         | Some xtors ->
           let patterns = List.map (fun xtor ->
             let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
@@ -274,7 +288,7 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
         | None -> CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
      | Some false ->
        (* codata type: expand μ with cocase *)
-       (match get_xtors ty with
+       (match get_xtors ctx ty with
         | Some xtors ->
           let patterns = List.map (fun xtor ->
             let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
