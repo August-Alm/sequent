@@ -177,12 +177,30 @@ module Type = struct
   
   (** Check if two types are equal (structural equality) *)
   let rec equal (t1: typ) (t2: typ) : bool =
-    match t1, t2 with
+    let result = match t1, t2 with
     | TyVar x, TyVar y -> Ident.equal x y
     | TyApp (a, b), TyApp (c, d) -> equal a c && equal b d
-    | TySig s1, TySig s2 -> Path.equal s1.symbol s2.symbol
+    | TySig s1, TySig s2 -> 
+      let eq = Path.equal s1.symbol s2.symbol in
+      Printf.fprintf stderr "  TySig comparison: %b\n%!" eq;
+      eq
     | TyPrim (p1, _), TyPrim (p2, _) -> Path.equal p1 p2
     | _ -> false
+    in
+    if not result then begin
+      Printf.fprintf stderr "  Type mismatch: t1=%s, t2=%s\n%!"
+        (match t1 with
+         | TyVar _ -> "TyVar"
+         | TyApp _ -> "TyApp"
+         | TySig _ -> "TySig"
+         | TyPrim _ -> "TyPrim")
+        (match t2 with
+         | TyVar _ -> "TyVar"
+         | TyApp _ -> "TyApp"
+         | TySig _ -> "TySig"
+         | TyPrim _ -> "TyPrim")
+    end;
+    result
 end
 
 (** Chirality type operations *)

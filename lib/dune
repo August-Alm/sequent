@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules normalization linearization convert)
+ (modules shrinking collapsing linearization normalization convert)
  (libraries utility common lang core cut))

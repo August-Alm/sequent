@@ -517,9 +517,14 @@ let rec check_statement
         | None -> raise (TypeError ("Invoke: variable " ^ Ident.name arg ^ " not in environment"))
       ) args in
       
-      (* Check that actual matches expected *)
-      if not (Env.equal actual_args expected_args) then
-        raise (TypeError ("Invoke: argument environment mismatch for " ^ Symbol.to_string m))
+      (* Check that actual matches expected (compare types, not variable names) *)
+      if List.length actual_args <> List.length expected_args then
+        raise (TypeError ("Invoke: wrong number of arguments for " ^ Symbol.to_string m));
+      (* Pair up actual and expected, check types match *)
+      List.iter2 (fun (_, actual_ty) (_, expected_ty) ->
+        if not (Types.equal_chirality actual_ty expected_ty) then
+          raise (TypeError ("Invoke: argument type mismatch for " ^ Symbol.to_string m))
+      ) actual_args expected_args
     | (v', _) :: _ when Ident.equal v v' ->
       raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
     | _ ->

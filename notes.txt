@@ -2,3 +2,8 @@
 ⟨x | case {C(Γ) ⇒ s, ... }⟩    & ⟨cocase {D(Γ) ⇒ s, ... } | α⟩     → switch v {m(Γ) ⇒ s, ...}
 ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩ → new v = {m(Γ) ⇒ s, ...}; s
 ⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩                        → invoke v m(Γ)
+
+
+⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.⟨x | α⟩⟩
+
+new x = {m(Γ) ⇒ s, ...}; ⟨x | α⟩
