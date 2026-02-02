@@ -47,6 +47,7 @@ let rec token lexbuf =
   | "]" -> RBRACK
   | ":" -> COLON
   | "=" -> EQUAL
+  | "+" -> PLUS
   | "*" -> STAR
   | "|" -> PIPE
   | ";" -> SEMICOLON

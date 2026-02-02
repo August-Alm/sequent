@@ -115,6 +115,13 @@ let rec convert (tm: LTm.typed_term) : CTm.producer =
   | LTm.TyTmInt (n, _ty) ->
     CTm.Int n
 
+  | LTm.TyTmAdd (t1, t2, _ty) ->
+    (* Convert addition to Core: μα. add(t1', t2', α) *)
+    let alpha = Ident.fresh () in
+    let t1' = convert t1 in
+    let t2' = convert t2 in
+    CTm.Mu (alpha, CTm.Add (t1', t2', CTm.Covar alpha))
+
   | LTm.TyTmVar (x, _ty) ->
     CTm.Var x
 
@@ -377,6 +384,8 @@ let convert_term_def (td: LTm.typed_term_def) : CTm.term_def =
 let rec collect_forall_kinds (tm: LTm.typed_term) : CTy.kind list =
   match tm with
   | LTm.TyTmInt _ -> []
+  | LTm.TyTmAdd (t1, t2, _) ->
+    collect_forall_kinds t1 @ collect_forall_kinds t2
   | LTm.TyTmVar _ -> []
   | LTm.TyTmSym _ -> []
   | LTm.TyTmApp (t, u, _) ->

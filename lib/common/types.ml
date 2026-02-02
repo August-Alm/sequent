@@ -48,9 +48,10 @@ module Prim = struct
   let int_sym = Path.of_primitive 1 "int"
   let int_def = Prim (int_sym, KStar)
   let int_typ = TyDef int_def
+  let add_sym = Path.of_primitive 2 "add"
 
-  let fun_sym = Path.of_primitive 2 "$fun"
-  let app_dtor_sym = Path.of_primitive 3 "$app"
+  let fun_sym = Path.of_primitive 100 "$fun"
+  let app_dtor_sym = Path.of_primitive 101 "$app"
   let fun_def =
     let a = Ident.mk "a" in
     let b = Ident.mk "b" in
@@ -70,7 +71,7 @@ module Prim = struct
     }
   let fun_typ = TyDef fun_def
 
-  (* injective encoding of kinds as positive even integers above 100 *)
+  (* injective encoding of kinds as positive even integers above 1000 *)
   let to_int (k: kind) : int =
     (* Cantor's pair(x, y) = (x + y)(x + y + 1)/2 + y is bijection ℕ × ℕ → ℕ *)
     let rec go k =
@@ -81,8 +82,8 @@ module Prim = struct
         let n2 = go k2 in
         let sum = n1 + n2 in
         1 + (sum * (sum + 1)) / 2 + n2
-    (* double and shift to integers > 99 *)
-    in 100 + 2 * go k
+    (* double and shift to integers > 999 *)
+    in 1000 + 2 * go k
 
   (* inverse: decode integer back to kind; n >= 100 and even *)
   let of_int (n: int): kind =
@@ -95,7 +96,7 @@ module Prim = struct
       (x, y)
     in
     (* undo shift and doubling *)
-    let m = (n - 100) / 2 in
+    let m = (n - 1000) / 2 in
     let rec go m =
       if m = 0 then KStar
       else

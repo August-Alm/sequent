@@ -133,8 +133,8 @@ Syntax of states:
 
 Stepping relation:
 
-(let)     ⟨let v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v →{m; E0}⟩ where E0 : Γ0
-(new)     ⟨new v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v →{E0; b}⟩ where E0 : Γ0
+(let)     ⟨let v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0
+(new)     ⟨new v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b}⟩ where E0 : Γ0
 (switch)  ⟨switch v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩
 (invoke)  ⟨invoke v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
 (jump)    ⟨jump l ∥ E⟩ → ⟨P(l) ∥ E⟩

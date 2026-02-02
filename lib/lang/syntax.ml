@@ -18,6 +18,8 @@ type ast =
   | AST_Int of int
   (* x *)
   | AST_Var of string
+  (* t + u *)
+  | AST_Add of ast * ast
   (* t(u) *)
   | AST_App of ast * ast
   (* t{ty} *)
@@ -149,6 +151,8 @@ and typ_atom_to_string = function
 let rec ast_to_string (lvl: int) = function
   | AST_Int n -> string_of_int n
   | AST_Var x -> x
+  | AST_Add (t1, t2) ->
+    "(" ^ ast_to_string lvl t1 ^ " + " ^ ast_to_string lvl t2 ^ ")"
   | AST_App (t, u) ->
     ast_app_to_string lvl t ^ "(" ^ ast_to_string lvl u ^ ")"
   | AST_Ins (t, ty) ->
@@ -187,7 +191,7 @@ let rec ast_to_string (lvl: int) = function
     name ^ ty_args_str ^ tm_args_str
 
 and ast_app_to_string (lvl: int) = function
-  | AST_Int _ | AST_Var _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t -> ast_to_string lvl t
+  | AST_Int _ | AST_Var _ | AST_Add _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t -> ast_to_string lvl t
   | t -> "(" ^ ast_to_string lvl t ^ ")"
 
 and type_arg_to_string (x, k_opt) =
@@ -501,6 +505,9 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : term =
   match trm with
   | AST_Int n -> TmInt n
   
+  | AST_Add (t1, t2) ->
+    TmAdd (term_of_ast ctx t1, term_of_ast ctx t2)
+  
   | AST_Var x ->
     (* first try to look it up as a term variable *)
     (match lookup_term_var ctx x with
@@ -681,6 +688,13 @@ let to_term_def (ctx: conv_ctx) (def: ast_term_def) : (Path.t * term_def) =
 
 let to_definitions (ast_defs: ast_defs) : definitions =
   let ty_defs = build_ty_defs ast_defs in
+  
+  (* Add primitive int type to type definitions *)
+  let int_path = Common.Types.Prim.int_sym in
+  let int_def = (int_path, (Prim (int_path, Common.Types.KStar), Common.Types.KStar)) in
+  let ty_defs = if List.exists (fun (p, _) -> Path.equal p int_path) ty_defs 
+                then ty_defs 
+                else int_def :: ty_defs in
   
   (* Extract type symbol names from ty_defs *)
   let type_symbols = List.fold_left (fun acc (path, _) ->

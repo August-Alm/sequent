@@ -27,6 +27,7 @@ type token =
   | COLON
   | SEMICOLON
   | EQUAL
+  | PLUS
   | STAR
   | PIPE
   
@@ -59,6 +60,7 @@ let string_of_token = function
   | DBLARROW -> "=>"
   | COLON -> ":"
   | EQUAL -> "="
+  | PLUS -> "+"
   | STAR -> "*"
   | PIPE -> "|"
   | SEMICOLON -> ";"

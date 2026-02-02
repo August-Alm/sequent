@@ -1,6 +1,6 @@
 (executables
- (names main test_parser test_mutual test_convert test_normalize)
- (public_names sequent test_parser test_mutual test_convert test_normalize)
+ (names main test_parser test_mutual test_convert test_normalize test_semantics)
+ (public_names sequent test_parser test_mutual test_convert test_normalize test_semantics)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 

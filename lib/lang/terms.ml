@@ -10,6 +10,8 @@ open Types
 type term =
   (* n *)
   | TmInt of int
+  (* t + u *)
+  | TmAdd of term * term
   (* x *)
   | TmVar of Ident.t
   (* name *)
@@ -40,6 +42,7 @@ and clause =
 (* Typed terms: AST with type annotations *)
 type typed_term =
   | TyTmInt of int * typ
+  | TyTmAdd of typed_term * typed_term * typ
   | TyTmVar of Ident.t * typ
   | TyTmSym of Path.t * typ
   | TyTmApp of typed_term * typed_term * typ
@@ -58,6 +61,7 @@ and typed_clause =
 let get_type (tm: typed_term) : typ =
   match tm with
   | TyTmInt (_, ty) -> ty
+  | TyTmAdd (_, _, ty) -> ty
   | TyTmVar (_, ty) -> ty
   | TyTmSym (_, ty) -> ty
   | TyTmApp (_, _, ty) -> ty
@@ -123,6 +127,16 @@ let rec infer_typ
   | TmInt n -> 
     let ty = Prim.int_typ in
     (ty, TyTmInt (n, ty))
+  
+  | TmAdd (t1, t2) ->
+    let (ty1, tt1) = infer_typ defs ctx t1 in
+    let (ty2, tt2) = infer_typ defs ctx t2 in
+    (* Both operands must be int *)
+    if not (equivalent defs.type_defs ty1 Prim.int_typ) then
+      failwith ("Addition operand must be int, got " ^ typ_to_string false ty1);
+    if not (equivalent defs.type_defs ty2 Prim.int_typ) then
+      failwith ("Addition operand must be int, got " ^ typ_to_string false ty2);
+    (Prim.int_typ, TyTmAdd (tt1, tt2, Prim.int_typ))
     
   | TmVar x ->
     (match Ident.find_opt x ctx.types with

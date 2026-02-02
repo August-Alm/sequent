@@ -70,6 +70,7 @@ and subst_consumer (subst: (Ident.t * Ident.t) list) (c: CT.consumer) : CT.consu
 and subst_statement (subst: (Ident.t * Ident.t) list) (s: CT.statement) : CT.statement =
   match s with
   | CT.Cut (p, ty, c) -> CT.Cut (subst_producer subst p, ty, subst_consumer subst c)
+  | CT.Add (p1, p2, c) -> CT.Add (subst_producer subst p1, subst_producer subst p2, subst_consumer subst c)
   | CT.Call (f, ty_args, prods, cons) ->
     CT.Call (f, ty_args, 
             List.map (subst_producer subst) prods, 
@@ -114,6 +115,7 @@ let get_xtors (ctx: shrink_context) (ty: typ) : ty_xtor list option =
 let rec shrink_statement (ctx: shrink_context) (s: CT.statement) : CT.statement =
   match s with
   | CT.Cut (p, ty, c) -> shrink_cut ctx p ty c
+  | CT.Add _ as add -> add
   | CT.Call _ as call -> call
 
 (** Shrink a cut: apply reduction rules from normalization.txt *)

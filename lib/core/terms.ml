@@ -53,6 +53,7 @@ end
 type statement =
   | Cut of producer * Type.t * consumer
   | Call of Path.t * (Type.t list) * (producer list) * (consumer list)
+  | Add of producer * producer * consumer
 
 and producer =
   | Int of int
@@ -140,6 +141,11 @@ let rec statement_to_string ?(depth=0) (s: statement) : string =
   | Cut (p, _, c) ->
     "⟨" ^ producer_to_string ~depth p ^ " | " ^ 
     consumer_to_string ~depth c ^ "⟩"
+  
+  | Add (p1, p2, c) ->
+    "add(" ^ producer_to_string ~depth p1 ^ ", " ^
+    producer_to_string ~depth p2 ^ ", " ^
+    consumer_to_string ~depth c ^ ")"
   
   | Call (f, ty_args, prods, cons) ->
     let f_name = Path.name f in
@@ -297,6 +303,13 @@ let rec check_statement
              ", got " ^ Type.to_string t);
     check_producer defs ctx p ty |> ignore;
     check_consumer defs ctx c ty |> ignore;
+    ctx
+  | Add (p1, p2, c) ->
+    (* Check both producers are int type *)
+    check_producer defs ctx p1 CT.Prim.int_typ |> ignore;
+    check_producer defs ctx p2 CT.Prim.int_typ |> ignore;
+    (* Check consumer is int type *)
+    check_consumer defs ctx c CT.Prim.int_typ |> ignore;
     ctx
   | Call (sym, ty_args, prods, cons) ->
     (* Look up the function definition to get its type *)
@@ -543,6 +556,12 @@ and infer_statement
   | Cut (p, ty, c) ->
     check_producer defs ctx p ty |> ignore;
     check_consumer defs ctx c ty |> ignore;
+  | Add (p1, p2, c) ->
+    (* Check both producers are int type *)
+    check_producer defs ctx p1 CT.Prim.int_typ |> ignore;
+    check_producer defs ctx p2 CT.Prim.int_typ |> ignore;
+    (* Check consumer is int type *)
+    check_consumer defs ctx c CT.Prim.int_typ |> ignore;
   | Call (sym, ty_args, prods, cons) ->
     (* Look up the function definition to get its type *)
     let def = 

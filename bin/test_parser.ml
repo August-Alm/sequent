@@ -158,6 +158,7 @@ let bar (y: nat): nat = foo(succ(y))
       | Terms.TmVar id -> Printf.sprintf "TmVar(%s)" (I.name id)
       | Terms.TmSym path -> Printf.sprintf "TmSym(%s)" (P.name path)
       | Terms.TmInt n -> Printf.sprintf "TmInt(%d)" n
+      | Terms.TmAdd (t1, t2) -> Printf.sprintf "TmAdd(%s, %s)" (show_term t1) (show_term t2)
       | Terms.TmApp (t1, t2) -> Printf.sprintf "TmApp(%s, %s)" (show_term t1) (show_term t2)
       | Terms.TmIns (t, _ty) -> Printf.sprintf "TmIns(%s, _)" (show_term t)
       | Terms.TmLam (id, _ty, body) -> 

@@ -130,6 +130,22 @@ let rec extract_core_type_args (ty: Common.Types.typ) : Common.Types.typ list =
 let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.statement =
   match s with
   | CT.Cut (p, ty, c) -> collapse_cut ctx p ty c
+  | CT.Add (p1, p2, c) ->
+    (* Convert Add statement to extern call: add(n1, n2, α) *)
+    let n1 = (match p1 with
+      | CT.Int n -> n
+      | CT.Var x -> failwith ("Expected integer literal in Add, got variable " ^ Ident.name x)
+      | _ -> failwith "Expected integer literal in Add after shrinking") in
+    let n2 = (match p2 with
+      | CT.Int n -> n
+      | CT.Var x -> failwith ("Expected integer literal in Add, got variable " ^ Ident.name x)
+      | _ -> failwith "Expected integer literal in Add after shrinking") in
+    let v = Ident.fresh () in
+    let n = Ident.mk (string_of_int (n1 + n2)) in
+    let int_ty = Common.Types.TyDef (Common.Types.Prim.int_def) in
+    let int_ty_cut = CutTypes.Prim.int_typ in
+    let s = collapse_cut ctx (CT.Var n) int_ty c in
+    CutT.Extern (Common.Types.Prim.add_sym, [v], [[(n, CutTypes.Ext int_ty_cut)], s])
   | CT.Call (f, _ty_args, prods, cons) ->
     let args = (List.map (function 
       | CT.Var x -> x 

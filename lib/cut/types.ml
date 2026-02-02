@@ -104,14 +104,8 @@ type type_env = (Ident.t * kind) list
 
 (** Primitive types *)
 module Prim = struct
-  let int_sym = Path.of_primitive 1 "Int"
-  let int_sig = 
-    { symbol = int_sym
-    ; parameters = []
-    ; methods = []
-    }
-  let int_kind = KStar
-  let int_typ = TySig int_sig
+  let int_sym = Common.Types.Prim.int_sym
+  let int_typ = TyPrim (int_sym, KStar)
   
   (** Utility: check if a type is a primitive *)
   let is_primitive (sym: Path.t) : bool =

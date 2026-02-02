@@ -5,12 +5,13 @@
 (* Token declarations *)
 %token KW_FUN KW_LET KW_IN KW_MATCH KW_WITH KW_NEW KW_DATA KW_CODE KW_WHERE KW_END KW_TYPE
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
-%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR PIPE
+%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR PIPE PLUS
 %token <string> IDENT
 %token <int> INT
 %token EOF
 
 (* Precedence and associativity *)
+%left PLUS
 %right ARROW
 %nonassoc KW_IN
 %nonassoc KW_WITH
@@ -68,6 +69,8 @@ expr:
     { AST_Lam (ty_args, tm_args, body) }
   | KW_LET x = IDENT EQUAL t = expr KW_IN u = expr
     { AST_Let (x, t, u) }
+  | t1 = expr PLUS t2 = expr
+    { AST_Add (t1, t2) }
   | KW_MATCH t = expr KW_WITH LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
     { AST_Match (t, clauses) }
   | KW_NEW LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
