@@ -30,13 +30,65 @@ type collapse_context = {
 (** Simple dummy type for now - avoids infinite recursion in type conversion *)
 let dummy_type = CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)
 
-(** Dummy chirality - just use Prd for everything *)
-let dummy_chirality = CutTypes.Prd dummy_type
+(** Convert Core kind to Cut kind *)
+let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =
+  match k with
+  | KStar -> CutTypes.KStar
+  | KArrow (k1, k2) -> CutTypes.KArrow (core_kind_to_cut_kind k1, core_kind_to_cut_kind k2)
 
-(** Infer chirality from context - use simple heuristic for now *)
-let infer_chirality (_ctx: collapse_context) (_var: Ident.t) (_ty: typ) : CutTypes.chirality_type =
-  (* Default: producers are eager (Prd) *)
-  dummy_chirality
+(** Extract Cut signature from Core type declaration *)
+let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signature =
+  { symbol = td.symbol
+  ; parameters = List.filter_map (fun (ty_opt, k) ->
+      match ty_opt with
+      | Some (TyVar id) -> Some (id, core_kind_to_cut_kind k)
+      | _ -> None
+    ) td.arguments
+  ; methods = List.map (fun xtor -> {
+      CutTypes.parent = xtor.parent;
+      symbol = xtor.symbol;
+      quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
+      producers = List.map (fun ty -> (Ident.mk "_p", CutTypes.Prd (core_type_to_cut_type_inner ty_defs ty))) xtor.producers;
+      consumers = List.map (fun ty -> (Ident.mk "_c", CutTypes.Cns (core_type_to_cut_type_inner ty_defs ty))) xtor.consumers;
+      result_type = (match xtor.arguments with
+        | ty :: _ -> core_type_to_cut_type_inner ty_defs ty
+        | [] -> dummy_type);
+      constraints = [];
+    }) td.xtors
+  }
+
+(** Convert Core type to Cut type - used for types appearing inside signatures *)
+and core_type_to_cut_type_inner (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
+  match ty with
+  | TySym path -> 
+    (* When appearing inside signatures, just convert to type application or primitive *)
+    (match List.assoc_opt path ty_defs with
+    | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
+    | _ -> CutTypes.TyPrim (path, CutTypes.KStar))  (* Keep as primitive reference *)
+  | TyVar id -> CutTypes.TyVar id
+  | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type_inner ty_defs t1, core_type_to_cut_type_inner ty_defs t2)
+  | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
+  | TyDef (Data td) -> CutTypes.TyPrim (td.symbol, CutTypes.KStar)  (* Don't recurse *)
+  | TyDef (Code td) -> CutTypes.TyPrim (td.symbol, CutTypes.KStar)  (* Don't recurse *)
+
+(** Convert Core type to Cut type *)
+and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
+  match ty with
+  | TySym path ->
+    (* Look up the type symbol in definitions *)
+    (match List.assoc_opt path ty_defs with
+    | Some (Data td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+    | Some (Code td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+    | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
+    | None -> dummy_type)  (* Unknown type, use dummy *)
+  | TyVar id -> CutTypes.TyVar id
+  | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type ty_defs t1, core_type_to_cut_type ty_defs t2)
+  | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
+  | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+  | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+
+
+
 
 (** Main collapsing transformation *)
 let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.statement =
@@ -141,25 +193,43 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (_ty: Common.Types.typ
       (List.map (function CT.Covar a -> a | _ -> failwith "Expected covariable") cons) in
     CutT.Invoke (x, dtor, [], args)
   
+  (* Fallback: Should have been handled by shrinking phase *)
+  | (CT.Var x, CT.Covar alpha) ->
+    failwith (Printf.sprintf "Unexpected cut form: ⟨%s | %s⟩ - should have been η-expanded in shrinking"
+      (Ident.name x) (Ident.name alpha))
   | _ -> failwith "Unexpected cut form after shrinking"
 
 (** Collapse a term definition into a Cut label definition *)
 let collapse_term_def (ctx: collapse_context) (name: Path.t) (def: CT.term_def) : CutT.label * CutT.typ_env * CutT.statement =
   let label = CutT.MkLabel name in
   
-  (* Build environment with chirality information *)
+  (* Build environment with chirality information - producers are Prd, consumers are Cns *)
   let typ_env = 
-    (List.map (fun (v, ty) -> (v, infer_chirality ctx v ty)) def.prod_args) @
-    (List.map (fun (v, ty) -> (v, infer_chirality ctx v ty)) def.cons_args) in
+    (List.map (fun (v, ty) -> (v, CutTypes.Prd (core_type_to_cut_type ctx.defs.type_defs ty))) def.prod_args) @
+    (List.map (fun (v, ty) -> (v, CutTypes.Cns (core_type_to_cut_type ctx.defs.type_defs ty))) def.cons_args) in
   
   let body = collapse_statement ctx def.body in
   
   (label, typ_env, body)
 
 (** Extract signatures from Core type definitions *)
-let extract_signatures_from_defs (_defs: CT.definitions) : CutTypes.signature_defs =
-  (* TODO: Proper signature extraction - for now return empty *)
-  []
+let extract_signatures_from_defs (defs: CT.definitions) : CutTypes.signature_defs =
+  List.filter_map (fun (_, (ty_def, _)) ->
+    match ty_def with
+    | Data td -> 
+      let sig_def = extract_cut_signature defs.type_defs td in
+      let kind = List.fold_right (fun (_, k) acc -> 
+        CutTypes.KArrow (core_kind_to_cut_kind k, acc)
+      ) td.arguments CutTypes.KStar in
+      Some (td.symbol, (sig_def, kind))
+    | Code td -> 
+      let sig_def = extract_cut_signature defs.type_defs td in
+      let kind = List.fold_right (fun (_, k) acc -> 
+        CutTypes.KArrow (core_kind_to_cut_kind k, acc)
+      ) td.arguments CutTypes.KStar in
+      Some (td.symbol, (sig_def, kind))
+    | Prim _ -> None
+  ) defs.type_defs
 
 (** Entry point *)
 let collapse_definitions (defs: CT.definitions) (chirality_reqs: Shrinking.chirality_context) 
