@@ -190,12 +190,12 @@ module Type = struct
          | TyVar _ -> "TyVar"
          | TyApp _ -> "TyApp"
          | TySig _ -> "TySig"
-         | TyPrim _ -> "TyPrim")
+         | TyPrim (p, _) -> "TyPrim(" ^ Path.name p ^ ")")
         (match t2 with
          | TyVar _ -> "TyVar"
          | TyApp _ -> "TyApp"
          | TySig _ -> "TySig"
-         | TyPrim _ -> "TyPrim")
+         | TyPrim (p, _) -> "TyPrim(" ^ Path.name p ^ ")")
     end;
     result
 end

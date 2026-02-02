@@ -337,8 +337,17 @@ let rec check_statement
     
     (* Split environment: Γ, Γ₀ *)
     let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
-    if not (Env.equal gamma0 gamma0_actual) then
-      raise (TypeError "Let: environment split mismatch");
+    if not (Env.equal gamma0 gamma0_actual) then begin
+      Printf.eprintf "DEBUG Let environment split mismatch:\n";
+      Printf.eprintf "  Checking equality for %d pairs\n" (List.length gamma0);
+      List.iter2 (fun (v1, ty1) (v2, ty2) ->
+        Printf.eprintf "    %s vs %s: ID equal=%b, Type equal=%b\n"
+          (Ident.name v1) (Ident.name v2)
+          (Ident.equal v1 v2)
+          (Types.equal_chirality ty1 ty2)
+      ) gamma0 gamma0_actual;
+      raise (TypeError "Let: environment split mismatch")
+    end;
     
     (* Result type: prd (θ(τᵣ)) *)
     let result_ty = Types.Type.substitute subst msig.Types.result_type in

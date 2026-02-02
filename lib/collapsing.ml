@@ -27,9 +27,6 @@ type collapse_context = {
   chirality_reqs: Shrinking.chirality_context;
   signatures: CutTypes.signature_defs;  mutable switch_vars: Ident.t list;  (* Variables used as switch scrutinees *)}
 
-(** Simple dummy type for now - avoids infinite recursion in type conversion *)
-let dummy_type = CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)
-
 (** Convert Core kind to Cut kind *)
 let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =
   match k with
@@ -48,28 +45,55 @@ let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signatu
       CutTypes.parent = xtor.parent;
       symbol = xtor.symbol;
       quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
-      producers = List.map (fun ty -> (Ident.mk "_p", CutTypes.Prd (core_type_to_cut_type_inner ty_defs ty))) xtor.producers;
-      consumers = List.map (fun ty -> (Ident.mk "_c", CutTypes.Cns (core_type_to_cut_type_inner ty_defs ty))) xtor.consumers;
-      result_type = (match xtor.arguments with
-        | ty :: _ -> core_type_to_cut_type_inner ty_defs ty
-        | [] -> dummy_type);
+      producers = List.map (fun ty -> (Ident.mk "_p", CutTypes.Prd (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))) xtor.producers;
+      consumers = List.map (fun ty -> (Ident.mk "_c", CutTypes.Cns (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))) xtor.consumers;
+      result_type = (
+        (* Build the parent type with arguments applied *)
+        let parent_ty = List.fold_left (fun acc arg ->
+          Common.Types.TyApp (acc, arg)
+        ) (Common.Types.TySym xtor.parent) xtor.arguments in
+        core_type_to_cut_type_inner ty_defs (Some td.symbol) parent_ty
+      );
       constraints = [];
     }) td.xtors
   }
 
-(** Convert Core type to Cut type - used for types appearing inside signatures *)
-and core_type_to_cut_type_inner (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
+(** Convert Core type to Cut type - used for types appearing inside signatures
+    @param ty_defs Type definitions
+    @param inside_decl If Some(symbol), we're inside this type declaration and shouldn't expand it
+    @param ty The type to convert
+*)
+and core_type_to_cut_type_inner (ty_defs: ty_defs) (inside_decl: Path.t option) (ty: typ) : CutTypes.typ =
   match ty with
   | TySym path -> 
-    (* When appearing inside signatures, just convert to type application or primitive *)
-    (match List.assoc_opt path ty_defs with
-    | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
-    | _ -> CutTypes.TyPrim (path, CutTypes.KStar))  (* Keep as primitive reference *)
+    (* Check if this is the type we're currently defining - if so, create shallow reference *)
+    (match inside_decl with
+    | Some parent when Path.equal path parent ->
+      (* We're referencing the parent type from inside its own declaration - use shallow signature *)
+      (match List.assoc_opt path ty_defs with
+      | Some (Data td, _) | Some (Code td, _) -> 
+        CutTypes.TySig { symbol = td.symbol
+                       ; parameters = List.filter_map (fun (ty_opt, k) ->
+                           match ty_opt with
+                           | Some (TyVar id) -> Some (id, core_kind_to_cut_kind k)
+                           | _ -> None
+                         ) td.arguments
+                       ; methods = []  (* Empty to avoid infinite recursion *)
+                       }
+      | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
+      | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path)))
+    | _ ->
+      (* Different type or not inside a declaration - expand normally *)
+      (match List.assoc_opt path ty_defs with
+      | Some (Data td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+      | Some (Code td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+      | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
+      | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path))))
   | TyVar id -> CutTypes.TyVar id
-  | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type_inner ty_defs t1, core_type_to_cut_type_inner ty_defs t2)
+  | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type_inner ty_defs inside_decl t1, core_type_to_cut_type_inner ty_defs inside_decl t2)
   | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
-  | TyDef (Data td) -> CutTypes.TyPrim (td.symbol, CutTypes.KStar)  (* Don't recurse *)
-  | TyDef (Code td) -> CutTypes.TyPrim (td.symbol, CutTypes.KStar)  (* Don't recurse *)
+  | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+  | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
 
 (** Convert Core type to Cut type *)
 and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
@@ -80,7 +104,7 @@ and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
     | Some (Data td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
     | Some (Code td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
     | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
-    | None -> dummy_type)  (* Unknown type, use dummy *)
+    | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path)))
   | TyVar id -> CutTypes.TyVar id
   | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type ty_defs t1, core_type_to_cut_type ty_defs t2)
   | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
@@ -107,6 +131,13 @@ let rec extract_type_args (type_defs: ty_defs) (ty: Common.Types.typ) : CutTypes
   | Common.Types.TyApp (t1, t2) ->
     (* Recursively extract type arguments from type applications *)
     extract_type_args type_defs t1 @ [core_type_to_cut_type type_defs t2]
+  | _ -> []
+
+(** Extract type arguments from a type, keeping them as Core types for substitution *)
+let rec extract_core_type_args (ty: Common.Types.typ) : Common.Types.typ list =
+  match ty with
+  | Common.Types.TyApp (t1, t2) ->
+    extract_core_type_args t1 @ [t2]
   | _ -> []
 
 (** Look up method signature from extracted signatures and get the actual parameter identifiers *)
@@ -151,8 +182,8 @@ let get_method_params_instantiated (sigs: CutTypes.signature_defs) (method_symbo
           let new_cons_params = List.map (fun (id, chi_ty) -> (id, instantiate chi_ty)) cons_params in
           Some (new_prod_params, new_cons_params)
         else
-          Some (prod_params, cons_params)
-      | None -> Some (prod_params, cons_params)
+          None
+      | None -> None
 
 
 
@@ -175,62 +206,94 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
 (** Collapse a cut into one of the 4 symmetric forms *)
 and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ) (c: CT.consumer) : CutT.statement =
   (* Extract type arguments from the cut type for instantiation *)
-  let type_args = extract_type_args ctx.defs.type_defs ty in
+  let type_args_cut = extract_type_args ctx.defs.type_defs ty in
+  let type_args_core = extract_core_type_args ty in
   
   match (p, c) with
   
   (* FORM 1: ⟨C(Γ) | µ˜x.s⟩ → let x = C(Γ); s 
      x becomes a PRODUCER *)
   | (CT.Constructor (ctor, (_ty_args, prods, cons)), CT.MuTilde (x, s)) ->
-    let args_env = match get_method_params_instantiated ctx.signatures ctor type_args with
-      | Some (prod_params, cons_params) ->
-        (* Use signature parameter identifiers with instantiated types *)
-        prod_params @ cons_params
-      | None ->
-        (* Fallback: use dummy types with actual variables *)
-        (List.map (fun p -> match p with 
-          | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-          | _ -> failwith "Expected variable") prods) @
-        (List.map (fun c -> match c with
-          | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-          | _ -> failwith "Expected covariable") cons)
+    (* Get constructor info from Core type definitions *)
+    let xtor_decl = CT.get_xtor ctx.defs ctor in
+    (* Build type substitution from quantified variables to provided type_args *)
+    let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+      List.fold_left2 (fun acc (tv, _) ty ->
+        Ident.add tv ty acc
+      ) Ident.emptytbl xtor_decl.quantified type_args_core
+    else
+      Ident.emptytbl
     in
-    CutT.Let (x, ctor, [], args_env, collapse_statement ctx s)
+    (* Apply substitution to producer and consumer types *)
+    let prod_types = List.map (Type.subst ty_subst) xtor_decl.producers in
+    let cons_types = List.map (Type.subst ty_subst) xtor_decl.consumers in
+    (* Convert to Cut types *)
+    let prod_types_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) prod_types in
+    let cons_types_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) cons_types in
+    (* Get Core variable identifiers *)
+    let prod_ids = List.map (fun p -> match p with 
+      | CT.Var v -> v
+      | _ -> failwith "Expected variable") prods in
+    let cons_ids = List.map (fun c -> match c with
+      | CT.Covar a -> a
+      | _ -> failwith "Expected covariable") cons in
+    (* Pair Core IDs with instantiated types *)
+    let args_env = (List.map2 (fun id ty -> (id, CutTypes.Prd ty)) prod_ids prod_types_cut) @
+                   (List.map2 (fun id ty -> (id, CutTypes.Cns ty)) cons_ids cons_types_cut) in
+    CutT.Let (x, ctor, type_args_cut, args_env, collapse_statement ctx s)
   
   (* FORM 1: ⟨µα.s | D(Γ)⟩ → let α = D(Γ); s 
      α becomes a PRODUCER *)
   | (CT.Mu (alpha, s), CT.Destructor (dtor, (_ty_args, prods, cons))) ->
-    let args_env = match get_method_params_instantiated ctx.signatures dtor type_args with
-      | Some (prod_params, cons_params) ->
-        (* Use signature parameter identifiers with instantiated types *)
-        prod_params @ cons_params
-      | None ->
-        (* Fallback: use dummy types with actual variables *)
-        (List.map (fun p -> match p with
-          | CT.Var v -> (v, CutTypes.Prd (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-          | _ -> failwith "Expected variable") prods) @
-        (List.map (fun c -> match c with
-          | CT.Covar a -> (a, CutTypes.Cns (CutTypes.TyPrim (Path.of_primitive 0 "_", CutTypes.KStar)))
-          | _ -> failwith "Expected covariable") cons)
+    (* Get destructor info from Core type definitions *)
+    let xtor_decl = CT.get_xtor ctx.defs dtor in
+    (* Build type substitution from quantified variables to provided type_args *)
+    let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+      List.fold_left2 (fun acc (tv, _) ty ->
+        Ident.add tv ty acc
+      ) Ident.emptytbl xtor_decl.quantified type_args_core
+    else
+      Ident.emptytbl
     in
-    CutT.Let (alpha, dtor, [], args_env, collapse_statement ctx s)
+    (* Apply substitution to producer and consumer types *)
+    let prod_types = List.map (Type.subst ty_subst) xtor_decl.producers in
+    let cons_types = List.map (Type.subst ty_subst) xtor_decl.consumers in
+    (* Convert to Cut types *)
+    let prod_types_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) prod_types in
+    let cons_types_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) cons_types in
+    (* Get Core variable identifiers *)
+    let prod_ids = List.map (fun p -> match p with 
+      | CT.Var v -> v
+      | _ -> failwith "Expected variable") prods in
+    let cons_ids = List.map (fun c -> match c with
+      | CT.Covar a -> a
+      | _ -> failwith "Expected covariable") cons in
+    (* Pair Core IDs with instantiated types *)
+    let args_env = (List.map2 (fun id ty -> (id, CutTypes.Prd ty)) prod_ids prod_types_cut) @
+                   (List.map2 (fun id ty -> (id, CutTypes.Cns ty)) cons_ids cons_types_cut) in
+    CutT.Let (alpha, dtor, type_args_cut, args_env, collapse_statement ctx s)
   
   (* FORM 2: ⟨x | case {C(Γ) ⇒ s, ...}⟩ → switch x {C(Γ) ⇒ s, ...} 
      x is a PRODUCER *)
   | (CT.Var x, CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      (* Build branch environment using pattern variables with types from signature *)
-      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
-        | Some (prod_params, cons_params) ->
-          (* Use pattern variables with instantiated types from signature *)
-          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
-          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
-        | None ->
-          (* Fallback: use pattern variables with dummy types *)
-          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      (* Get constructor info from Core type definitions *)
+      let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
+      (* Build type substitution *)
+      let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+        List.fold_left2 (fun acc (tv, _) ty ->
+          Ident.add tv ty acc
+        ) Ident.emptytbl xtor_decl.quantified type_args_core
+      else
+        Ident.emptytbl
       in
-      (* Collapse the statement - linearization will handle substitutions *)
+      (* Apply substitution and convert to Cut types *)
+      let prod_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.producers in
+      let cons_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.consumers in
+      (* Build args_env *)
+      let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
+                     (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
+      (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
@@ -240,17 +303,23 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
      α (covariable) becomes variable and is a PRODUCER *)
   | (CT.Cocase patterns, CT.Covar alpha) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      (* Build branch environment using pattern variables with types from signature *)
-      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
-        | Some (prod_params, cons_params) ->
-          (* Use pattern variables with instantiated types from signature *)
-          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
-          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
-        | None ->
-          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      (* Get destructor info from Core type definitions *)
+      let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
+      (* Build type substitution *)
+      let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+        List.fold_left2 (fun acc (tv, _) ty ->
+          Ident.add tv ty acc
+        ) Ident.emptytbl xtor_decl.quantified type_args_core
+      else
+        Ident.emptytbl
       in
-      (* Collapse the statement - linearization will handle substitutions *)
+      (* Apply substitution and convert to Cut types *)
+      let prod_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.producers in
+      let cons_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.consumers in
+      (* Build args_env *)
+      let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
+                     (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
+      (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
@@ -262,35 +331,55 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
      α is a CONSUMER *)
   | (CT.Mu (alpha, s1), CT.Case patterns) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
-        | Some (prod_params, cons_params) ->
-          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
-          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
-        | None ->
-          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      (* Get constructor info from Core type definitions *)
+      let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
+      (* Build type substitution *)
+      let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+        List.fold_left2 (fun acc (tv, _) ty ->
+          Ident.add tv ty acc
+        ) Ident.emptytbl xtor_decl.quantified type_args_core
+      else
+        Ident.emptytbl
       in
+      (* Apply substitution and convert to Cut types *)
+      let prod_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.producers in
+      let cons_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.consumers in
+      (* Build args_env *)
+      let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
+                     (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
+      (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
-    CutT.New (alpha, dummy_type, [], branches, collapse_statement ctx s1)
+    let result_ty = core_type_to_cut_type ctx.defs.type_defs ty in
+    CutT.New (alpha, result_ty, [], branches, collapse_statement ctx s1)
   
   (* FORM 3: ⟨cocase {D(Γ) ⇒ s2, ...} | µ˜x.s1⟩ → new x = {D(Γ) ⇒ s2, ...}; s1 
      x is a CONSUMER *)
   | (CT.Cocase patterns, CT.MuTilde (x, s1)) ->
     let branches = List.map (fun (pat: CT.pattern) ->
-      let args_env = match get_method_params_instantiated ctx.signatures pat.CT.xtor type_args with
-        | Some (prod_params, cons_params) ->
-          (List.map2 (fun v (_, chi_ty) -> (v, chi_ty)) pat.CT.variables prod_params) @
-          (List.map2 (fun a (_, chi_ty) -> (a, chi_ty)) pat.CT.covariables cons_params)
-        | None ->
-          (List.map (fun v -> (v, CutTypes.Prd dummy_type)) pat.CT.variables) @
-          (List.map (fun a -> (a, CutTypes.Cns dummy_type)) pat.CT.covariables)
+      (* Get destructor info from Core type definitions *)
+      let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
+      (* Build type substitution *)
+      let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
+        List.fold_left2 (fun acc (tv, _) ty ->
+          Ident.add tv ty acc
+        ) Ident.emptytbl xtor_decl.quantified type_args_core
+      else
+        Ident.emptytbl
       in
+      (* Apply substitution and convert to Cut types *)
+      let prod_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.producers in
+      let cons_types_cut = List.map (fun ty -> core_type_to_cut_type ctx.defs.type_defs (Type.subst ty_subst ty)) xtor_decl.consumers in
+      (* Build args_env *)
+      let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
+                     (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
+      (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
-    CutT.New (x, dummy_type, [], branches, collapse_statement ctx s1)
+    let result_ty = core_type_to_cut_type ctx.defs.type_defs ty in
+    CutT.New (x, result_ty, [], branches, collapse_statement ctx s1)
   
   (* FORM 4: ⟨C(Γ) | α⟩ → invoke α C(Γ) 
      α (covariable) becomes variable and is a CONSUMER *)

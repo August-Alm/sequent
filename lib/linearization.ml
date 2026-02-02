@@ -150,6 +150,39 @@ and free_vars_branches_max (branches: (Ident.t * int) list list) : (Ident.t * in
   | first :: rest ->
     List.fold_left merge_var_counts_max first rest
 
+(** Deduplicate substitution pairs, keeping first occurrence of each target *)
+let deduplicate_subst (subst: CutT.substitutions) : CutT.substitutions =
+  let rec aux seen acc = function
+    | [] -> List.rev acc
+    | (target, source) :: rest ->
+      if List.exists (fun t -> Ident.equal t target) seen then
+        aux seen acc rest
+      else
+        aux (target :: seen) ((target, source) :: acc) rest
+  in
+  aux [] [] subst
+
+(** Prepend a substitution to a statement if non-empty *)
+let prepend_subst (subst: CutT.substitutions) (s: CutT.statement) : CutT.statement =
+  if subst = [] then s
+  else 
+    (* First deduplicate the substitution itself *)
+    let subst_deduped = deduplicate_subst subst in
+    match s with
+    | CutT.Substitute (inner_subst, _s') ->
+      (* If continuation already has a substitution, avoid duplicating variables *)
+      let inner_targets = List.map fst inner_subst in
+      let subst_filtered = List.filter (fun (target, _) ->
+        not (List.mem target inner_targets)
+      ) subst_deduped in
+      if subst_filtered = [] then
+        (* All our substitutions are redundant, just use inner *)
+        s
+      else
+        CutT.Substitute (subst_filtered, s)
+    | _ ->
+      CutT.Substitute (subst_deduped, s)
+
 (** Linearize a statement by inserting explicit substitutions
     
     @param sigs The signature definitions for looking up constructor/destructor signatures
@@ -185,20 +218,51 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
   | CutT.Let (v, ctor, type_args, gamma, s') ->
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
-    let free_in_cont = free_vars_statement s' in
-    (* Only preserve variables that are:
-       1. Not consumed by the constructor (not in gamma_vars)
-       2. Actually in current_env (not future variables like v itself) *)
-    let preserve = List.filter (fun var -> 
-      not (List.mem var gamma_vars) && 
-      not (Ident.equal var v) &&
-      List.mem var current_env
-    ) (List.map fst free_in_cont) in
-    let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
-    (* After let, v is added to the environment *)
-    let new_env = v :: env_after in
-    let s_linearized = linearize_statement sigs new_env s' in
-    prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
+    
+    (* Look up the method signature to get canonical parameter names *)
+    (match lookup_method_signature sigs ctor with
+    | Some (_sig_def, msig) ->
+      let sig_params = (List.map fst msig.CutTypes.producers) @ (List.map fst msig.CutTypes.consumers) in
+      
+      (* Build substitution for variable flow using actual Core variables *)
+      let free_in_cont = free_vars_statement s' in
+      let preserve = List.filter (fun var -> 
+        not (List.mem var gamma_vars) && 
+        not (Ident.equal var v) &&
+        List.mem var current_env
+      ) (List.map fst free_in_cont) in
+      (* Build flow substitution using gamma_vars (what's actually in the environment) *)
+      let (flow_subst, env_after) = build_substitution current_env gamma_vars preserve [] in
+      
+      (* Build rename substitution: sig_params (needed by Let) → gamma_vars (what we have) *)
+      let rename_subst = List.combine sig_params gamma_vars in
+      
+      (* Remove gamma_vars from flow_subst since they're handled by rename_subst *)
+      let flow_subst_filtered = List.filter (fun (target, _source) ->
+        not (List.mem target gamma_vars)
+      ) flow_subst in
+      
+      (* After let, v is added to the environment *)
+      let new_env = v :: env_after in
+      let s_linearized = linearize_statement sigs new_env s' in
+      (* Combine: rename first, then filtered flow substitution *)
+      let full_subst = rename_subst @ flow_subst_filtered in
+      (* Update gamma to use signature identifiers *)
+      let gamma_with_sig_ids = List.map2 (fun sig_id (_, ty) -> (sig_id, ty)) sig_params gamma in
+      prepend_subst full_subst (CutT.Let (v, ctor, type_args, gamma_with_sig_ids, s_linearized))
+      
+    | None ->
+      (* No signature found - use original behavior *)
+      let free_in_cont = free_vars_statement s' in
+      let preserve = List.filter (fun var -> 
+        not (List.mem var gamma_vars) && 
+        not (Ident.equal var v) &&
+        List.mem var current_env
+      ) (List.map fst free_in_cont) in
+      let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
+      let new_env = v :: env_after in
+      let s_linearized = linearize_statement sigs new_env s' in
+      prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized)))
   
   | CutT.New (v, ty, gamma, branches, s') ->
     (* Gamma lists variables in the new binding *)
@@ -348,11 +412,6 @@ and build_substitution (_current_env: Ident.t list) (needed: Ident.t list)
 (** Generate n fresh variables based on a base variable *)
 and generate_fresh_vars (_base: Ident.t) (n: int) : Ident.t list =
   List.init n (fun _ -> Ident.fresh ())
-
-(** Prepend a substitution to a statement if non-empty *)
-and prepend_subst (subst: CutT.substitutions) (s: CutT.statement) : CutT.statement =
-  if subst = [] then s
-  else CutT.Substitute (subst, s)
 
 (** Main entry point: linearize a Cut program *)
 let linearize_program (sigs: CutTypes.signature_defs) (prog: CutT.program) : CutT.program =
