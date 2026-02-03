@@ -2,18 +2,15 @@
   Module: Collapsing
   Pass 2: Collapsing (Core -> Cut)
   
-  Applies the 4 symmetric transformation rules from normalization.txt:
+  ⟨C(Γ) | µ˜x.s ⟩                    → let_prd v = m(Γ); s
+  ⟨x | case {C(Γ) ⇒ s, ... }⟩        → switch_prd v {m(Γ) ⇒ s, ...}
+  ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩     → new_cns v = {m(Γ) ⇒ s, ...}; s
+  ⟨C(Γ) | α⟩                         → invoke_cns v m(Γ)
   
-  ⟨C(Γ) | µ˜x.s ⟩                & ⟨µα.s |D(Γ)⟩                      → let v = m(Γ); s
-  ⟨x | case {C(Γ) ⇒ s, ... }⟩    & ⟨cocase {D(Γ) ⇒ s, ... } | α⟩     → switch v {m(Γ) ⇒ s, ...}
-  ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩ → new v = {m(Γ) ⇒ s, ...}; s
-  ⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩                        → invoke v m(Γ)
-  
-  Key insight: Variables change chirality during collapse:
-  - let v = ... → v is Prd (producer)
-  - switch v ... → v is Prd (producer)  
-  - new v = ... → v is Cns (consumer)
-  - invoke v ... → v is Cns (consumer)
+  ⟨µα.s |D(Γ)⟩                       → let_cns v = m(Γ); s
+  ⟨cocase {D(Γ) ⇒ s, ... } | α⟩      → switch_cns v {m(Γ) ⇒ s, ...}
+  ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩  → new_prd v = {m(Γ) ⇒ s, ...}; s
+  ⟨x | D(Γ)⟩                         → invoke_prd v m(Γ)
 *)
 
 open Common.Identifiers
@@ -201,7 +198,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     (* Pair Core IDs with instantiated types *)
     let args_env = (List.map2 (fun id ty -> (id, CutTypes.Prd ty)) prod_ids prod_types_cut) @
                    (List.map2 (fun id ty -> (id, CutTypes.Cns ty)) cons_ids cons_types_cut) in
-    CutT.Let (x, ctor, type_args_cut, args_env, collapse_statement ctx s)
+    CutT.LetPrd (x, ctor, type_args_cut, args_env, collapse_statement ctx s)
   
   (* FORM 1b: ⟨µα.s | D(Γ)⟩ → letcns α = D(Γ); s 
      α becomes a CONSUMER (dual of Form 1a) *)
@@ -258,7 +255,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       let body = collapse_statement ctx pat.CT.statement in
       (pat.CT.xtor, type_args_cut, args_env, body)
     ) patterns in
-    CutT.Switch (x, branches)
+    CutT.SwitchPrd (x, branches)
   
   (* FORM 2b: ⟨cocase {D(Γ) ⇒ s, ...} | α⟩ → switchcns α {D(Γ) ⇒ s, ...} 
      α (covariable) becomes variable and is a CONSUMER (dual of Form 2a) *)
@@ -327,7 +324,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
     let result_ty = core_type_to_cut_type ctx.defs.type_defs ty in
-    CutT.New (alpha, result_ty, gamma, branches, collapse_statement ctx s1)
+    CutT.NewCns (alpha, result_ty, gamma, branches, collapse_statement ctx s1)
   
   (* FORM 3b: ⟨cocase {D(Γ) ⇒ s2, ...} | µ˜x.s1⟩ → newprd x = {D(Γ) ⇒ s2, ...}; s1 
      x is a PRODUCER (MuTilde in consumer position binds producer) *)
@@ -377,7 +374,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     let args =
       (List.map (function CT.Var v -> v | _ -> failwith "Expected variable") prods) @
       (List.map (function CT.Covar a -> a | _ -> failwith "Expected covariable") cons) in
-    CutT.Invoke (x, dtor, [], args)
+    CutT.InvokeCns (x, dtor, [], args)
   
   (* FORM 4b: ⟨C(Γ) | α⟩ → invoke α C(Γ) 
      α (covariable) is a CONSUMER (receives data value) *)
@@ -385,7 +382,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     let args = 
       (List.map (function CT.Var v -> v | _ -> failwith "Expected variable") prods) @
       (List.map (function CT.Covar a -> a | _ -> failwith "Expected covariable") cons) in
-    CutT.Invoke (alpha, ctor, [], args)
+    CutT.InvokeCns (alpha, ctor, [], args)
   
   (* These should have been handled by shrinking *)
   | (CT.Mu (_alpha, _s), CT.Covar _k) ->

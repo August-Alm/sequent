@@ -15,9 +15,8 @@ open Common.Identifiers
 open Common.Types
 module CT = Core.Terms
 
-type shrink_context = {
-  defs: CT.definitions;
-}
+type shrink_context =
+  { defs: CT.definitions }
 
 let fresh_var =
   let counter = ref 0 in
@@ -166,23 +165,23 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
   (* KNOWN CUT: ⟨C(Γ0) | case {..., C(Γ) ⇒ s, ...}⟩ → s{Γ → Γ0} *)
   | (CT.Constructor (ctor, (_, prods, cons)), CT.Case patterns) ->
     (match List.find_opt (fun (pat: CT.pattern) -> Path.equal pat.xtor ctor) patterns with
-     | Some pat ->
-       (* Extract variables from arguments *)
-       let prod_vars = List.map (function CT.Var x -> x | _ -> failwith "Expected variables after naming") prods in
-       let cons_vars = List.map (function CT.Covar a -> a | _ -> failwith "Expected covariables after naming") cons in
-       let subst = List.combine (pat.variables @ pat.covariables) (prod_vars @ cons_vars) in
-       shrink_statement ctx (subst_statement subst pat.statement)
-     | None -> failwith "No matching pattern in case")
+    | Some pat ->
+      (* Extract variables from arguments *)
+      let prod_vars = List.map (function CT.Var x -> x | _ -> failwith "Expected variables after naming") prods in
+      let cons_vars = List.map (function CT.Covar a -> a | _ -> failwith "Expected covariables after naming") cons in
+      let subst = List.combine (pat.variables @ pat.covariables) (prod_vars @ cons_vars) in
+      shrink_statement ctx (subst_statement subst pat.statement)
+    | None -> failwith "No matching pattern in case")
   
   (* KNOWN CUT: ⟨cocase {..., D(Γ) ⇒ s, ...} | D(Γ0)⟩ → s{Γ → Γ0} *)
   | (CT.Cocase patterns, CT.Destructor (dtor, (_, prods, cons))) ->
     (match List.find_opt (fun (pat: CT.pattern) -> Path.equal pat.xtor dtor) patterns with
-     | Some pat ->
-       let prod_vars = List.map (function CT.Var x -> x | _ -> failwith "Expected variables") prods in
-       let cons_vars = List.map (function CT.Covar a -> a | _ -> failwith "Expected covariables") cons in
-       let subst = List.combine (pat.variables @ pat.covariables) (prod_vars @ cons_vars) in
-       shrink_statement ctx (subst_statement subst pat.statement)
-     | None -> failwith "No matching pattern in cocase")
+    | Some pat ->
+      let prod_vars = List.map (function CT.Var x -> x | _ -> failwith "Expected variables") prods in
+      let cons_vars = List.map (function CT.Covar a -> a | _ -> failwith "Expected covariables") cons in
+      let subst = List.combine (pat.variables @ pat.covariables) (prod_vars @ cons_vars) in
+      shrink_statement ctx (subst_statement subst pat.statement)
+    | None -> failwith "No matching pattern in cocase")
   
   (* NAMING: Lift non-variable arguments in constructors *)
   | (CT.Constructor (ctor, (ty_args, prods, cons)), c) 
@@ -247,110 +246,110 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
   (* η-EXPANSION: ⟨x | α⟩ at data type → expand consumer *)
   | (CT.Var x, CT.Covar alpha) ->
     (match is_data_type ctx ty with
-     | Some true ->
-       (* data type: expand consumer with case *)
-       (match get_xtors ctx ty with
-        | Some xtors ->
-          let patterns = List.map (fun xtor ->
-            let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
-            let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
-            {
-              CT.xtor = xtor.symbol;
-              type_vars = List.map fst xtor.quantified;
-              variables = vars;
-              covariables = covars;
-              statement = CT.Cut (
-                CT.Constructor (xtor.symbol, ([], 
-                                             List.map (fun v -> CT.Var v) vars,
-                                             List.map (fun a -> CT.Covar a) covars)),
-                ty,
-                CT.Covar alpha
-              )
-            }
-          ) xtors in
-          shrink_statement ctx (CT.Cut (CT.Var x, ty, CT.Case patterns))
-        | None -> CT.Cut (p, ty, c))
-     | Some false ->
-       (* codata type: expand producer with cocase *)
-       (match get_xtors ctx ty with
-        | Some xtors ->
-          let patterns = List.map (fun xtor ->
-            let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
-            let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
-            {
-              CT.xtor = xtor.symbol;
-              type_vars = List.map fst xtor.quantified;
-              variables = vars;
-              covariables = covars;
-              statement = CT.Cut (
-                CT.Var x,
-                ty,
-                CT.Destructor (xtor.symbol, ([],
-                                            List.map (fun v -> CT.Var v) vars,
-                                            List.map (fun a -> CT.Covar a) covars))
-              )
-            }
-          ) xtors in
-          shrink_statement ctx (CT.Cut (CT.Cocase patterns, ty, CT.Covar alpha))
-        | None -> CT.Cut (p, ty, c))
-     | None -> CT.Cut (p, ty, c))
+    | Some true ->
+      (* data type: expand consumer with case *)
+      (match get_xtors ctx ty with
+      | Some xtors ->
+        let patterns = List.map (fun xtor ->
+          let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
+          let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
+          {
+            CT.xtor = xtor.symbol;
+            type_vars = List.map fst xtor.quantified;
+            variables = vars;
+            covariables = covars;
+            statement = CT.Cut (
+              CT.Constructor (xtor.symbol, ([], 
+                                           List.map (fun v -> CT.Var v) vars,
+                                           List.map (fun a -> CT.Covar a) covars)),
+              ty,
+              CT.Covar alpha
+            )
+          }
+        ) xtors in
+        shrink_statement ctx (CT.Cut (CT.Var x, ty, CT.Case patterns))
+      | None -> CT.Cut (p, ty, c))
+    | Some false ->
+      (* codata type: expand producer with cocase *)
+      (match get_xtors ctx ty with
+      | Some xtors ->
+        let patterns = List.map (fun xtor ->
+          let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
+          let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
+          {
+            CT.xtor = xtor.symbol;
+            type_vars = List.map fst xtor.quantified;
+            variables = vars;
+            covariables = covars;
+            statement = CT.Cut (
+              CT.Var x,
+              ty,
+              CT.Destructor (xtor.symbol, ([],
+                                          List.map (fun v -> CT.Var v) vars,
+                                          List.map (fun a -> CT.Covar a) covars))
+            )
+          }
+        ) xtors in
+        shrink_statement ctx (CT.Cut (CT.Cocase patterns, ty, CT.Covar alpha))
+      | None -> CT.Cut (p, ty, c))
+    | None -> CT.Cut (p, ty, c))
   
   (* CRITICAL PAIR: ⟨μα.s1 | μ̃x.s2⟩ at data type → expand μ̃ *)
   | (CT.Mu (alpha, s1), CT.MuTilde (x, s2)) ->
     (match is_data_type ctx ty with
-     | Some true ->
-       (* data type: expand μ̃ with case *)
-       (match get_xtors ctx ty with
-        | Some xtors ->
-          let patterns = List.map (fun xtor ->
-            let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
-            let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
-            {
-              CT.xtor = xtor.symbol;
-              type_vars = List.map fst xtor.quantified;
-              variables = vars;
-              covariables = covars;
-              statement = CT.Cut (
-                CT.Constructor (xtor.symbol, ([],
-                                             List.map (fun v -> CT.Var v) vars,
-                                             List.map (fun a -> CT.Covar a) covars)),
-                ty,
-                CT.MuTilde (x, shrink_statement ctx s2)
-              )
-            }
-          ) xtors in
-          shrink_statement ctx (CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.Case patterns))
-        | None -> 
-          Printf.eprintf "Warning: Critical pair but no xtors for type\n%!";
-          CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
-     | Some false ->
-       (* codata type: expand μ with cocase *)
-       (match get_xtors ctx ty with
-        | Some xtors ->
-          let patterns = List.map (fun xtor ->
-            let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
-            let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
-            {
-              CT.xtor = xtor.symbol;
-              type_vars = List.map fst xtor.quantified;
-              variables = vars;
-              covariables = covars;
-              statement = CT.Cut (
-                CT.Mu (alpha, shrink_statement ctx s1),
-                ty,
-                CT.Destructor (xtor.symbol, ([],
-                                            List.map (fun v -> CT.Var v) vars,
-                                            List.map (fun a -> CT.Covar a) covars))
-              )
-            }
-          ) xtors in
-          shrink_statement ctx (CT.Cut (CT.Cocase patterns, ty, CT.MuTilde (x, shrink_statement ctx s2)))
-        | None -> 
-          Printf.eprintf "Warning: Critical pair but no xtors for codata type\n%!";
-          CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
-     | None -> 
-       Printf.eprintf "Warning: Critical pair but type is not recognized\n%!";
-       CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+    | Some true ->
+      (* data type: expand μ̃ with case *)
+      (match get_xtors ctx ty with
+      | Some xtors ->
+        let patterns = List.map (fun xtor ->
+          let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
+          let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
+          {
+            CT.xtor = xtor.symbol;
+            type_vars = List.map fst xtor.quantified;
+            variables = vars;
+            covariables = covars;
+            statement = CT.Cut (
+              CT.Constructor (xtor.symbol, ([],
+                                           List.map (fun v -> CT.Var v) vars,
+                                           List.map (fun a -> CT.Covar a) covars)),
+              ty,
+              CT.MuTilde (x, shrink_statement ctx s2)
+            )
+          }
+        ) xtors in
+        shrink_statement ctx (CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.Case patterns))
+      | None -> 
+        Printf.eprintf "Warning: Critical pair but no xtors for type\n%!";
+        CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+    | Some false ->
+      (* codata type: expand μ with cocase *)
+      (match get_xtors ctx ty with
+      | Some xtors ->
+        let patterns = List.map (fun xtor ->
+          let vars = List.map (fun _ -> fresh_var ()) xtor.producers in
+          let covars = List.map (fun _ -> fresh_covar ()) xtor.consumers in
+          {
+            CT.xtor = xtor.symbol;
+            type_vars = List.map fst xtor.quantified;
+            variables = vars;
+            covariables = covars;
+            statement = CT.Cut (
+              CT.Mu (alpha, shrink_statement ctx s1),
+              ty,
+              CT.Destructor (xtor.symbol, ([],
+                                          List.map (fun v -> CT.Var v) vars,
+                                          List.map (fun a -> CT.Covar a) covars))
+            )
+          }
+        ) xtors in
+        shrink_statement ctx (CT.Cut (CT.Cocase patterns, ty, CT.MuTilde (x, shrink_statement ctx s2)))
+      | None -> 
+        Printf.eprintf "Warning: Critical pair but no xtors for codata type\n%!";
+        CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+    | None -> 
+      Printf.eprintf "Warning: Critical pair but type is not recognized\n%!";
+      CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
   
   (* All other forms: recursively shrink subterms *)
   | (CT.Mu (alpha, s), _) -> 

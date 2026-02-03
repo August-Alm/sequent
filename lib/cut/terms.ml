@@ -49,19 +49,19 @@ type statement =
   (* extern m(v, ...){(Γ) ⇒ s, ...} *)
   | Extern of symbol * variable list * extern_branches
   (* let v = m[τ, ...](Γ); s - from ⟨C(Γ) | µ˜x.s⟩, v : prd T *)
-  | Let of variable * symbol * typ list * typ_env * statement
+  | LetPrd of variable * symbol * typ list * typ_env * statement
   (* letcns v = m[τ, ...](Γ); s - from ⟨µα.s | D(Γ)⟩, v : cns T *)
   | LetCns of variable * symbol * typ list * typ_env * statement
   (* new v : T[τ, ...] = (Γ)b; s - from ⟨cocase {...} | µ˜x.s⟩, v : cns T *)
-  | New of variable * typ * typ_env * branches * statement
+  | NewCns of variable * typ * typ_env * branches * statement
   (* newprd v : T[τ, ...] = (Γ)b; s - from ⟨µα.s | case {...}⟩, v : prd T *)
   | NewPrd of variable * typ * typ_env * branches * statement
   (* switch v b - from ⟨x | case {...}⟩, v : prd T *)
-  | Switch of variable * branches
+  | SwitchPrd of variable * branches
   (* switchcns v b - from ⟨cocase {...} | α⟩, v : cns T *)
   | SwitchCns of variable * branches
   (* invoke v m[τ, ...](v, ...) - from ⟨x | D(Γ)⟩, v : cns T *)
-  | Invoke of variable * symbol * typ list * variable list
+  | InvokeCns of variable * symbol * typ list * variable list
   (* invokeprd v m[τ, ...](v, ...) - from ⟨C(Γ) | α⟩, v : prd T *)
   | InvokePrd of variable * symbol * typ list * variable list
 
@@ -127,7 +127,7 @@ let rec string_of_statement ?(indent=0) s =
     string_of_extern_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "}"
   
-  | Let (v, m, tys, gamma, s') ->
+  | LetPrd (v, m, tys, gamma, s') ->
     ind ^ "let " ^ Ident.name v ^ " = " ^ Symbol.to_string m ^
     string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ");\n" ^
     string_of_statement ~indent s'
@@ -137,7 +137,7 @@ let rec string_of_statement ?(indent=0) s =
     string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ");\n" ^
     string_of_statement ~indent s'
   
-  | New (v, ty, gamma, branches, s') ->
+  | NewCns (v, ty, gamma, branches, s') ->
     ind ^ "new " ^ Ident.name v ^ " : " ^ string_of_typ ty ^
     " = (" ^ string_of_typ_env gamma ^ ") {\n" ^
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
@@ -151,7 +151,7 @@ let rec string_of_statement ?(indent=0) s =
     ind ^ "};\n" ^
     string_of_statement ~indent s'
   
-  | Switch (v, branches) ->
+  | SwitchPrd (v, branches) ->
     ind ^ "switch " ^ Ident.name v ^ " {\n" ^
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "}"
@@ -161,7 +161,7 @@ let rec string_of_statement ?(indent=0) s =
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "}"
   
-  | Invoke (v, m, tys, args) ->
+  | InvokeCns (v, m, tys, args) ->
     let arg_str = if args = [] then "" else "(" ^ String.concat ", " (List.map Ident.name args) ^ ")" in
     ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m ^ string_of_typ_list tys ^ arg_str
   
@@ -321,13 +321,13 @@ let rec check_statement
       | Jump _ -> "Jump"
       | Return _ -> "Return"
       | Substitute _ -> "Substitute"
-      | Let _ -> "Let"
+      | LetPrd _ -> "LetPrd"
       | LetCns _ -> "LetCns"
-      | New _ -> "New"
+      | NewCns _ -> "NewCns"
       | NewPrd _ -> "NewPrd"
-      | Switch _ -> "Switch"
+      | SwitchPrd _ -> "SwitchPrd"
       | SwitchCns _ -> "SwitchCns"
-      | Invoke _ -> "Invoke"
+      | InvokeCns _ -> "InvokeCns"
       | InvokePrd _ -> "InvokePrd"
       | Extern _ -> "Extern");
   end;
@@ -426,7 +426,7 @@ let rec check_statement
       check_statement sigs delta theta extern_env extended_gamma s_i
     ) branches output_clauses
 
-  | Let (v, m, type_args, gamma0, s') ->
+  | LetPrd (v, m, type_args, gamma0, s') ->
     (* Rule [LET]: Let binds a producer
        signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
        θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]
@@ -493,7 +493,7 @@ let rec check_statement
     let new_gamma = (v, v_ty) :: gamma_rest in
     check_statement sigs delta theta extern_env new_gamma s'
 
-  | New (v, ty, gamma0, branches, s') ->
+  | NewCns (v, ty, gamma0, branches, s') ->
     (* Rule [NEW]: New binds a consumer
        signature T : κ = {m₁, ..., mₖ} ∈ Σ
        For each mᵢ: θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ], check Γᵢ', Γ₀ ⊢ sᵢ
@@ -578,7 +578,7 @@ let rec check_statement
     let new_gamma = (v, v_ty) :: gamma_rest in
     check_statement sigs delta theta extern_env new_gamma s'
 
-  | Switch (v, branches) ->
+  | SwitchPrd (v, branches) ->
     (* Rule [SWITCH]: Pattern matching on a producer
        signature T : κ = {m₁, ..., mₖ} ∈ Σ
        Γ_ctx(v) = prd (T[τ̄])
@@ -651,7 +651,7 @@ let rec check_statement
     | _ ->
       raise (TypeError ("Switch: variable " ^ Ident.name v ^ " not at front of environment")))
 
-  | Invoke (v, m, type_args, args) ->
+  | InvokeCns (v, m, type_args, args) ->
     (* Rule [INVOKE]: Invoking a method on a consumer
        signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
        Γ_ctx(v) = cns (T[τ̄])

@@ -94,7 +94,7 @@ let step (config: config) : config option =
   match config.statement with
   
   (* (let) ⟨let v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 *)
-  | CutT.Let (v, symbol, _type_args, gamma, stmt) ->
+  | CutT.LetPrd (v, symbol, _type_args, gamma, stmt) ->
     let (env_gamma, env_rest) = split_env config.env gamma in
     let new_value = Producer (symbol, env_gamma) in
     Some { config with
@@ -103,7 +103,7 @@ let step (config: config) : config option =
     }
   
   (* (new) ⟨new v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b}⟩ where E0 : Γ0 *)
-  | CutT.New (v, _typ, gamma, branches_list, stmt) ->
+  | CutT.NewCns (v, _typ, gamma, branches_list, stmt) ->
     let (env_gamma, env_rest) = split_env config.env gamma in
     (* Convert branches from Cut syntax to runtime branches *)
     let runtime_branches = List.map (fun (symbol, _type_args, _branch_gamma, branch_stmt) ->
@@ -116,7 +116,7 @@ let step (config: config) : config option =
     }
   
   (* (switch) ⟨switch v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ *)
-  | CutT.Switch (v, branches_list) ->
+  | CutT.SwitchPrd (v, branches_list) ->
     let producer_value = lookup_var config.env v in
     (match producer_value with
     | Producer (symbol, field_env) ->
@@ -134,7 +134,7 @@ let step (config: config) : config option =
     | _ -> raise (RuntimeError (Printf.sprintf "Expected producer value for switch on %s" (Ident.name v))))
   
   (* (invoke) ⟨invoke v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ *)
-  | CutT.Invoke (v, symbol, _type_args, _args) ->
+  | CutT.InvokeCns (v, symbol, _type_args, _args) ->
     let consumer_value = lookup_var config.env v in
     (match consumer_value with
     | Consumer (closure_env, branches) ->
