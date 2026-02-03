@@ -4,10 +4,14 @@ Statements s ::=
     jump l
   | substitute [v → v, ...]; s
   | extern m(v, ...){(Γ) ⇒ s, ...}
-  | let v = m(Γ); s
-  | new v = (Γ)b; s
-  | switch v b
-  | invoke v m(Γ)
+  | let_prd v = m(Γ); s
+  | new_prd v = (Γ)b; s
+  | switch_prd v b
+  | invoke_prd v m(Γ)
+  | let_cns v = m(Γ); s
+  | new_cns v = (Γ)b; s
+  | switch_cns v b
+  | invoke_cns v m(Γ)
 
 Programs P ::= define l : Γ = s, ...
 

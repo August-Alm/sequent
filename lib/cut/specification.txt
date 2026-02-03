@@ -1,0 +1,576 @@
+## Syntax
+
+Statements s ::=
+    jump l (τ, ...)
+  | substitute [v → v, ...]; s
+  | extern m(v, ...){(Γ) ⇒ s, ...}
+  | let_prd v = m(Γ); s
+  | new_prd v = (Γ)b; s
+  | switch_prd v b
+  | invoke_prd v m(Γ)
+  | let_cns v = m(Γ); s
+  | new_cns v = (Γ)b; s
+  | switch_cns v b
+  | invoke_cns v m(Γ)
+
+Programs P ::= define l : Γ = s, ...
+
+Branches b ::= {m(Γ) ⇒ s, ...}
+
+Labels l ::= f | g | ...
+
+Variables v ::= x | y | j | k | ...
+
+Term symbols m ::= nil | true | apply ...
+
+Kinds κ ::= type | κ → κ
+
+Types
+  τ ::= α                           (type variable)
+      | τ(τ)                        (type application)
+      | T                           (signature reference)
+      | prd τ | cns τ | ext τ       (chirality types)
+
+Type Environments
+  Δ ::= α : κ, ...                  (type variable environment)
+  Γ ::= v : τ, ...                  (term variable environment)
+
+Signatures
+  Σ ::= signature T : κ = {m₁, ..., mₖ}, ...
+
+Methods (in signatures)
+  m ::= symbol : ∀β₁:κ₁, ..., βₘ:κₘ. Γ : τ where C
+
+Label Environment
+  Θ ::= l : (Δ, Γ), ...
+
+Type equality constraints
+  C ::= [α = τ, ...]
+
+Notes:
+  - Γ is a type environment (v₁ : τ₁, ..., vₙ : τₙ) where each τᵢ is a polarized type
+  - τ is the polarized result type (prd T, cns T, or ext T)
+  - C is a list of type equality constraints (for GADTs)
+  - The polarity of τ determines if this is a constructor (prd) or destructor (cns)
+
+In new statements, which bind (co)pattern matches, we explicitly annotate the closure
+environment Γ, because it is operationally relevant. In contrast, invoke does not mention
+arguments since we require the environment to match at the call site. We define a separate
+syntactic category of branches b that contain one clause m(Γ) ⇒ s for each symbol in a
+signature and symmetrically occur in switch and new statements. As we have unified data
+and codata types, we collect all names for constructors and destructors in the syntactic
+category m of term-level symbols, which also contains the names of extern statements.
+Similarly, the syntactic category T of type-level symbols contains signature names as well
+as names of external types. All signatures are collected in a global map Σ which maps
+signature names to a list of symbols m, and each symbol to a list of parameters Γ. Finally,
+a label environment Θ maps labels to the type environments they assume.
+
+Extern statements and extern (ext) types are a general extension mechanism for primitive
+operations. Extern statements have a name m, zero or more arguments v, and zero or more
+clauses {(Γ1) ⇒ s1, ...}, each with zero or more parameters described by Γ. For example,
+the addition statement is expressed as extern add(v1, v2) {(v) ⇒ s}, which adds the
+machine integers given by v1 and v2, and makes the result available as v in the remaining
+statement s. While add has one clause to continue execution, in general, externs can have
+multiple clauses, e.g., a conditional statement, or even no clauses, e.g., a terminating
+statement.  Extern statements generally operate on external types, such as the type Int of
+machine integers in the above example of add.
+
+## Typing Rules for Cut with Higher-Kinded Types and GADTs
+
+- Higher-kinded types and type application
+- Polymorphic methods with quantification
+- GADTs with type constraints
+- Full type inference and checking
+
+Programs are typed with signatures Σ and with labels Θ. The statement for each label
+must be well-typed in the annotated type environment Γ. The only typing rule that
+refers to the label environment is JUMP. It ensures that the current type environment
+exactly matches the one assumed by the label. We omit the signatures Σ and the label
+environment Θ from the rules, since they do not change. Rule SUBSTITUTE for explicit
+substitutions makes the structural rules of weakening, contraction, and exchange explicit.
+It is the only place where sharing and erasing of variables can occur and also the only
+way to reorder variables in the environment for the subsequent statement s. All other
+typing rules, except for rule EXTERN, follow the rules of ordered logic. Extern
+statements, such as add, do not consume the variables they use and it does not matter at
+which positions in the environment these variables occur. Rule EXTERN merely checks that
+the variables vi are of the correct type and adds the bound variables (Γi ) to the type
+environment in each statement si, but otherwise does not change the environment. Which
+assumptions and consequences an external symbol m has is defined outside the system.
+They usually only involve external types.
+
+### Judgments
+
+We use several judgment forms:
+
+  Δ ⊢ τ : κ                        (type τ has kind κ)
+  Δ ⊢ τ₁ ≡ τ₂ : κ                  (types are equal at kind κ)
+  Δ ⊢ C                            (constraints C are satisfied)
+  Σ; Δ; Θ; Γ ⊢ s                   (statement s is well-typed)
+  Σ; Δ ⊢ Θ                         (label environment is well-formed)
+  Σ Θ ⊢ P                          (program P is well-typed)
+
+### Kinding Rules
+
+Type variables have their kinds from the type environment:
+
+  α : κ ∈ Δ
+  --------- [K-VAR]
+  Δ ⊢ α : κ
+
+Signatures have kinds determined by their parameters:
+
+  signature T(α₁ : κ₁, ..., αₙ : κₙ) ∈ Σ
+  --------------------------------------- [K-SIG]
+  Δ ⊢ T : κ₁ → ... → κₙ → type
+
+Type application applies a constructor to an argument:
+
+  Δ ⊢ τ₁ : κ → κ'    Δ ⊢ τ₂ : κ
+  -------------------------------- [K-APP]
+  Δ ⊢ τ₁(τ₂) : κ'
+
+Chirality types are always proper types:
+
+  Δ ⊢ τ : type
+  ---------------- [K-PRD]
+  Δ ⊢ prd τ : type
+
+  Δ ⊢ τ : type
+  ---------------- [K-CNS]
+  Δ ⊢ cns τ : type
+
+  Δ ⊢ τ : type
+  ---------------- [K-EXT]
+  Δ ⊢ ext τ : type
+
+Primitive types have their annotated kinds:
+
+  prim P : κ
+  ---------- [K-PRIM]
+  Δ ⊢ P : κ
+
+### Type Equality
+
+Reflexivity, symmetry, and transitivity:
+
+  Δ ⊢ τ : κ
+  ------------- [EQ-REFL]
+  Δ ⊢ τ ≡ τ : κ
+
+  Δ ⊢ τ₂ ≡ τ₁ : κ
+  ---------------- [EQ-SYM]
+  Δ ⊢ τ₁ ≡ τ₂ : κ
+
+  Δ ⊢ τ₁ ≡ τ₂ : κ    Δ ⊢ τ₂ ≡ τ₃ : κ
+  ----------------------------------- [EQ-TRANS]
+  Δ ⊢ τ₁ ≡ τ₃ : κ
+
+Congruence for type application:
+
+  Δ ⊢ τ₁ ≡ τ₁' : κ → κ'    Δ ⊢ τ₂ ≡ τ₂' : κ
+  ------------------------------------------- [EQ-APP]
+  Δ ⊢ τ₁(τ₂) ≡ τ₁'(τ₂') : κ'
+
+Constraints provide equations:
+
+  (α = τ) ∈ C    Δ ⊢ C    Δ ⊢ τ : κ    α : κ ∈ Δ
+  ------------------------------------------------ [EQ-CONSTR]
+  Δ ⊢ α ≡ τ : κ
+
+### Constraint Satisfaction
+
+Empty constraints are satisfied:
+
+  -------- [C-EMPTY]
+  Δ ⊢ []
+
+Constraints extend with equations:
+
+  Δ ⊢ C    Δ ⊢ τ₁ ≡ τ₂ : κ    α : κ ∈ Δ
+  ---------------------------------------- [C-CONS]
+  Δ ⊢ [(α = τ₁), ...C] when α = τ₂
+
+### Type Environment Lookup
+
+Variables have their types from the environment:
+
+  (v : τ) ∈ Γ
+  ----------- [ENV-LOOKUP]
+  Γ(v) = τ
+
+Type environment concatenation (Γ₁, Γ₂) adds Γ₂ to the right (head) of Γ₁.
+
+Type environment extension Γ, v : τ adds v : τ to the head of Γ.
+
+### Statement Typing Rules
+
+The key insight: methods are polymorphic, so we must instantiate their quantified
+type variables when using them. We write θ for a type substitution that instantiates
+quantified variables.
+
+---
+
+**[PROGRAM]** - Programs are collections of labeled definitions
+
+  Σ; ∅ ⊢ Θ    Θ(l) = Γ    Σ; ∅; Θ; Γ ⊢ s    (for each label l)
+  ---------------------------------------------------------------
+  Σ Θ ⊢ define l₁ : Γ₁ = s₁, ..., lₙ : Γₙ = sₙ
+
+Programs are typed in the empty type variable environment (∅) since they must be
+closed. Each label's statement must type check in its declared environment.
+
+---
+
+**[JUMP]** - Jumping to a label with type instantiation
+
+  Θ(l) = (Δ_l, Γ_l)
+  
+  θ = [ᾱ ↦ τ̄]    (instantiate the label's quantified type variables)
+  
+  Δ ⊢ τ̄ : κ̄      (type arguments are well-kinded in the current type environment)
+  
+  Γ = θ(Γ_l)      (term environment must match after instantiation)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ ⊢ jump l[τ̄]
+
+**Intuition:** A jump selects a top-level definition by label and may instantiate
+its polymorphic type variables with explicit type arguments τ̄. The current term
+environment Γ must exactly match the instantiated label environment.
+
+---
+
+**[SUBSTITUTE]** - Explicit substitutions reorder/duplicate/erase variables
+
+  Γ'(v'ᵢ) = τᵢ    Γ(vᵢ) = τᵢ    (for each i)    Γ' ⊢ s
+  -------------------------------------------------------
+  Γ ⊢ substitute [v'₁ → v₁, ..., v'ₙ → vₙ]; s
+
+Each substitution pair must preserve types, and the body must type check in the
+reordered environment.
+
+---
+
+**[EXTERN]** - External operations with multiple continuations
+
+  extern m : (τ₁, ..., τₙ) ⇒ [(Γ₁), ..., (Γₖ)]    (signature of extern)
+  Γ(vᵢ) = τᵢ    (for each argument i)
+  Γ, Γⱼ ⊢ sⱼ    (for each clause j)
+  --------------------------------------------------
+  Γ ⊢ extern m(v₁, ..., vₙ){(Γ₁) ⇒ s₁, ..., (Γₖ) ⇒ sₖ}
+
+External operations are typed separately and their signatures specify argument
+types and continuation environments.
+
+---
+
+**[LET_PRD]** - Binding a producer (data constructor or let-bound producer)
+
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (type substitution instantiating parameters and quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints in signature must be satisfiable)
+  
+  Γ' = θ(Γ)    (method's environment, instantiated)
+  
+  τ_v = θ(prd τᵣ)    (the bound variable's type)
+  
+  Δ ⊢ τ_v : type    (result type is well-kinded)
+  
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound variable)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, Γ' ⊢ let_prd v = m[σ̄](Γ'); s
+
+**Intuition:** Let binds a producer value. The method m may be polymorphic (∀β̄),
+so we must provide type arguments to instantiate it. The pattern arguments Γ'
+are consumed from the environment. The result type (after substitution) becomes
+the type of the bound producer variable v.
+
+**Note:** When T has no type parameters and m has no quantified variables and C 
+is empty, this reduces to the simpler form.
+
+---
+
+**[LET_CNS]** - Binding a consumer (codata destructor or let-bound consumer)
+
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (type substitution instantiating parameters and quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints in signature must be satisfiable)
+  
+  Γ' = θ(Γ)    (method's environment, instantiated)
+  
+  τ_v = θ(cns τᵣ)    (the bound variable's type)
+  
+  Δ ⊢ τ_v : type    (result type is well-kinded)
+  
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound variable)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, Γ' ⊢ let_cns v = m[σ̄](Γ'); s
+
+**Intuition:** LetCns binds a consumer value. The method m may be polymorphic (∀β̄),
+so we must provide type arguments to instantiate it. The pattern arguments Γ'
+are consumed from the environment. The result type (after substitution) becomes
+the type of the bound consumer variable v.
+
+---
+
+**[NEW_CNS]** - Binding a consumer (codata destructor or new-bound consumer)
+
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : cns τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (instantiation for this method)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints must be satisfiable)
+    
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
+    
+    Σ; Δ; Θ; Γᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
+  
+  τ_v = cns (T[τ̄])    (the bound consumer has the instantiated signature type)
+  
+  Δ ⊢ τ_v : type
+  
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound consumer)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, Γ₀ ⊢ new_cns v : T[τ̄] = (Γ₀){m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}; s
+
+**Intuition:** New binds a consumer value by creating a cocase with branches for
+all methods in the signature. The closure environment Γ₀ is captured and available
+in each branch. Each method's environment Γᵢ contains all its arguments (with
+polarized types indicating whether they're producers, consumers, or external values).
+
+---
+
+**[NEW_PRD]** - Binding a producer (data constructor or new-bound producer)
+
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : prd τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (instantiation for this method)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints must be satisfiable)
+    
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
+    
+    Σ; Δ; Θ; Γᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
+  
+  τ_v = prd (T[τ̄])    (the bound producer has the instantiated signature type)
+  
+  Δ ⊢ τ_v : type
+  
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound producer)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, Γ₀ ⊢ new_prd v : T[τ̄] = (Γ₀){m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}; s
+
+**Intuition:** NewPrd binds a producer value by creating a case with branches for
+all methods in the signature. The closure environment Γ₀ is captured and available
+in each branch. Each method's environment Γᵢ contains all its arguments (with
+polarized types indicating whether they're producers, consumers, or external values).
+
+---
+
+**[SWITCH_PRD]** - Pattern matching on a producer
+
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
+  
+  Γ_ctx(v) = prd (T[τ̄])    (switching on a producer of instantiated signature type)
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : prd τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (must instantiate signature parameters consistently)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints satisfied)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(prd τᵣᵢ) ≡ prd (T[τ̄]) : type    (result type matches)
+    
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
+    
+    Σ; Δ; Θ; Γ_ctx, Γᵢ' ⊢ sᵢ    (each branch has method's arguments available)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, v : prd (T[τ̄]) ⊢ switch_prd v {m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}
+
+**Intuition:** Switch pattern matches on a producer value. The branches must cover
+all methods in the signature. Each method's arguments become available in the
+corresponding branch. The signature is instantiated at the type arguments of v.
+
+**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T[τ̄].
+For non-GADT constructors this is automatic, but for GADT constructors this
+provides type refinement - the constraints Cᵢ may refine the type parameters
+based on which constructor matched.
+
+---
+
+**[SWITCH_CNS]** - Pattern matching on a consumer
+
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
+  
+  Γ_ctx(v) = cns (T[τ̄])    (switching on a consumer of instantiated signature type)
+  
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : cns τᵣᵢ where Cᵢ:
+  
+    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (must instantiate signature parameters consistently)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints satisfied)
+    
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(cns τᵣᵢ) ≡ cns (T[τ̄]) : type    (result type matches)
+    
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
+    
+    Σ; Δ; Θ; Γ_ctx, Γᵢ' ⊢ sᵢ    (each branch has method's arguments available)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ_ctx, v : cns (T[τ̄]) ⊢ switch_cns v {m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}
+
+**Intuition:** SwitchCns pattern matches on a consumer value. The branches must cover
+all methods in the signature. Each method's arguments become available in the
+corresponding branch. The signature is instantiated at the type arguments of v.
+
+**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T[τ̄].
+For GADT observations, constraints Cᵢ refine the type parameters based on the
+observed method.
+
+---
+
+**[INVOKE_CNS]** - Invoking a method on a consumer
+
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
+  
+  Γ_ctx(v) = cns (T[τ̄])    (invoking method on consumer of instantiated type)
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (instantiate signature parameters and method quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints satisfied)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(cns τᵣ) ≡ cns (T[τ̄]) : type    (result type matches)
+  
+  Γ' = θ(Γ)    (instantiated method environment)
+  
+  Γ_ctx = (Γ', v : cns (T[τ̄]))    (environment must match exactly)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ', v : cns (T[τ̄]) ⊢ invoke_cns v m[σ̄](Γ')
+
+**Intuition:** Invoke calls a method on a consumer. The method may be polymorphic,
+so we instantiate its quantified variables. The environment must contain exactly
+the method's arguments (with polarized types) plus the consumer being invoked.
+
+**Key for GADTs:** The result type must match the consumer's type after applying
+constraints, enabling type refinement based on which method is being invoked.
+
+---
+
+**[INVOKE_PRD]** - Invoking a method on a producer
+
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
+  
+  Γ_ctx(v) = prd (T[τ̄])    (invoking method on producer of instantiated type)
+  
+  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (instantiate signature parameters and method quantifiers)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints satisfied)
+  
+  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(prd τᵣ) ≡ prd (T[τ̄]) : type    (result type matches)
+  
+  Γ' = θ(Γ)    (instantiated method environment)
+  
+  Γ_ctx = (Γ', v : prd (T[τ̄]))    (environment must match exactly)
+  ---------------------------------------------------------------
+  Σ; Δ; Θ; Γ', v : prd (T[τ̄]) ⊢ invoke_prd v m[σ̄](Γ')
+
+**Intuition:** InvokePrd calls a method on a producer. The method may be polymorphic,
+so we instantiate its quantified variables. The environment must contain exactly
+the method's arguments (with polarized types) plus the producer being invoked.
+
+**Key for GADTs:** The result type must match the producer's type after applying
+constraints, enabling type refinement based on which method is being invoked.
+
+---
+
+### Type Inference Strategy
+
+For type checking with polymorphism and GADTs:
+
+1. **Signature lookup**: Given method symbol m, find parent signature T(ᾱ : κ̄)
+   
+2. **Parameter inference**: At usage site, infer or check type arguments τ̄
+   - For let: τ̄ comes from result type unification
+   - For switch: τ̄ comes from scrutinee type
+   - For invoke: τ̄ comes from consumer type
+   
+3. **Quantifier instantiation**: For method's ∀β̄:κ̄', generate fresh unification
+   variables or infer from context
+   
+4. **Constraint solving**: Check that constraints C are satisfiable under the
+   instantiation θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]
+   
+5. **Type checking**: Apply θ to method's signature and check that:
+   - Argument environments match
+   - Result type matches expected type
+   - All types are well-kinded
+
+## Semantics
+
+Syntax of states:
+
+  Values V ::=
+              {m; E}        producers
+            | {E; b}        consumers
+            | 0 | 1 | ...   literals of external types (e.g. ext Int)
+
+  Environments E ::= x → V, ...
+
+  Configurations M ::= ⟨s ∥ E ∥ P⟩
+
+Stepping relation:
+
+(let_prd)  ⟨let_prd v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0
+(let_cns)  ⟨let_cns v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b_m}⟩ where E0 : Γ0
+
+(new_prd)  ⟨new_prd v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 and b = {m(Γm) ⇒ sm, ...}
+(new_cns)  ⟨new_cns v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b}⟩ where E0 : Γ0
+
+(switch_prd) ⟨switch_prd v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩
+(switch_cns) ⟨switch_cns v b ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ where b has clause m
+
+(invoke_prd) ⟨invoke_prd v m ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ where b is the branch set carried by v
+(invoke_cns) ⟨invoke_cns v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
+
+(jump)    ⟨jump l[τ̄] ∥ E⟩ → ⟨P(l) ∥ E⟩
+(subst)   ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
+(lit)     ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩
+(add)     ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
+(ifz)     ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
+
+A machine configuration consists of a statement s under execution, a value environment E
+mapping variables to values, and a program P. The latter is required for jumping to labels
+and does not change during execution. We hence omit it from the definition of the individual
+steps. Values are either producers {m; E} consisting of a symbol and a field environment,
+consumers {E; b} consisting of a closure environment and branches, or machine integers.
+
+Above listing defines the evaluation steps of the abstract machine. There is one rule for
+each kind of statement, which mirrors its typing rule. Rule (let_prd) constructs a producer
+by removing the part E0, corresponding to the variable environment Γ0 of the symbol m, from
+the value environment, and then adding a binding of producer {m; E0} to E. Dually, rule
+(let_cns) constructs a consumer; it packages the closure environment E0 together with the
+branches b_m carried by the method m. Rule (new_prd) constructs a producer value directly
+from the branch set b, while rule (new_cns) constructs a consumer value by storing the
+closure environment E0 alongside b. Rule (switch_prd) destructs a producer by looking up
+the symbol m in the value environment and selecting the corresponding statement b(m). Rule
+(switch_cns) destructs a consumer by selecting a clause in its branch set. Rule (invoke_prd)
+and rule (invoke_cns) apply a method by selecting the corresponding clause and extending
+the value environment with the stored closure environment E0. Rule (jump) transfers
+execution to the statement P(l) of label l (type arguments are erased at runtime). Rule
+(subst) creates a new value environment by looking up each variable in the bindings of the
+old value environment. We list rules (lit), (add), and (ifz) as examples of the semantics
+of extern statements. Generally, the representation of external types and the semantics of
+extern statements are dependent on the platform the program runs on.
+
+The only place where parts of the value environment are reordered, duplicated, or dropped
+is in rule (subst) for explicit substitutions. Moreover, besides direct transfer of control
+in rule (jump), there are two kinds of indirect transfer of control: rule (switch) where
+the symbol is unknown but the clauses are known, and rule (invoke) where the symbol is
+known but the clauses are unknown. Finally, extern statements have control over if and how
+to continue execution.

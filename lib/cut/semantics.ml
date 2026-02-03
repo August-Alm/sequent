@@ -16,7 +16,7 @@ module CutTypes = Types
 
 (** Values in the abstract machine *)
 type value =
-  | Producer of Path.t * value_env  (* {m; E} - symbol and field environment *)
+  | Producer of Path.t * value_env   (* {m; E} - symbol and field environment *)
   | Consumer of value_env * branches (* {E; b} - closure environment and branches *)
   | Literal of int                   (* Machine integers for external types *)
 
@@ -174,7 +174,7 @@ let step (config: config) : config option =
       env = new_env
     }
   
-  (* (letcns) ⟨letcns v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b_m}⟩ where E0 : Γ0 *)
+  (* (let_cns) ⟨let_cns v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b_m}⟩ where E0 : Γ0 *)
   (* Dual of let: creates a consumer instead of a producer *)
   | CutT.LetCns (v, symbol, _type_args, gamma, stmt) ->
     let (env_gamma, env_rest) = split_env config.env gamma in
@@ -185,11 +185,11 @@ let step (config: config) : config option =
       env = (v, new_value) :: env_rest
     }
   
-  (* (newprd) ⟨newprd v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 *)
+  (* (new_prd) ⟨new_prd v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 *)
   (* Dual of new: creates a producer instead of a consumer *)
   | CutT.NewPrd (v, _typ, gamma, branches_list, stmt) ->
     let (env_gamma, env_rest) = split_env config.env gamma in
-    (* For newprd, we create a producer - but producers only have one method,
+    (* For new_prd, we create a producer - but producers only have one method,
        so we'll use the first branch's symbol *)
     let (first_symbol, _, _, _) = List.hd branches_list in
     let new_value = Producer (first_symbol, env_gamma) in
@@ -198,7 +198,7 @@ let step (config: config) : config option =
       env = (v, new_value) :: env_rest
     }
   
-  (* (switchcns) ⟨switchcns v b ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ *)
+  (* (switch_cns) ⟨switch_cns v b ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ *)
   (* Dual of switch: pattern matching on a consumer *)
   | CutT.SwitchCns (v, branches_list) ->
     let consumer_value = lookup_var config.env v in
@@ -215,9 +215,9 @@ let step (config: config) : config option =
         statement = branch_stmt;
         env = closure_env @ env_without_v
       }
-    | _ -> raise (RuntimeError (Printf.sprintf "Expected consumer value for switchcns on %s" (Ident.name v))))
+    | _ -> raise (RuntimeError (Printf.sprintf "Expected consumer value for switch_cns on %s" (Ident.name v))))
   
-  (* (invokeprd) ⟨invokeprd v m ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ *)
+  (* (invoke_prd) ⟨invoke_prd v m ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ *)
   (* Dual of invoke: invoking a method on a producer *)
   | CutT.InvokePrd (v, symbol, _type_args, _args) ->
     let producer_value = lookup_var config.env v in
