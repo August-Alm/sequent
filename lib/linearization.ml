@@ -186,25 +186,29 @@ let prepend_subst (subst: CutT.substitutions) (s: CutT.statement) : CutT.stateme
 (** Linearize a statement by inserting explicit substitutions
     
     @param sigs The signature definitions for looking up constructor/destructor signatures
+    @param prog The program with all label definitions
     @param current_env The current environment (list of available variables)
     @param s The statement to linearize
     @return A linearized statement with explicit substitutions
 *)
-let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.t list) (s: CutT.statement) 
+let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program) (current_env: Ident.t list) (s: CutT.statement) 
     : CutT.statement =
   match s with
   | CutT.Jump (label, type_args) ->
-    (* Jump doesn't need variables, so drop all *)
-    if current_env = [] then
-      CutT.Jump (label, type_args)
-    else
-      (* Empty substitution effectively drops all variables *)
-      CutT.Substitute ([], CutT.Jump (label, type_args))
+    (* Look up the target label's expected environment *)
+    let target_env = 
+      match List.find_opt (fun (l, _, _) -> CutT.Label.to_string l = CutT.Label.to_string label) prog with
+      | Some (_, gamma, _) -> List.map fst gamma
+      | None -> failwith ("Jump to undefined label: " ^ CutT.Label.to_string label)
+    in
+    (* Build substitution mapping target params to current env vars *)
+    let subst = List.combine target_env current_env in
+    CutT.Substitute (subst, CutT.Jump (label, type_args))
   
   | CutT.Substitute (_pairs, s') ->
     (* This shouldn't appear in input from collapsing, but handle it anyway *)
     (* Just process the inner statement with current environment *)
-    linearize_statement sigs current_env s'
+    linearize_statement sigs prog current_env s'
   
   | CutT.Extern (f, vars, branches) ->
     (* Build substitution for extern statement *)
@@ -212,7 +216,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
     let preserve = List.filter (fun v -> not (List.mem v vars)) 
       (List.map fst free_in_branches) in
     let (subst, env_after) = build_substitution current_env vars preserve [] in
-    let branches' = List.map (linearize_extern_branch sigs env_after) branches in
+    let branches' = List.map (linearize_extern_branch sigs prog env_after) branches in
     prepend_subst subst (CutT.Extern (f, vars, branches'))
   
   | CutT.Let (v, ctor, type_args, gamma, s') ->
@@ -232,7 +236,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
     
     (* After let, v is added to the environment *)
     let new_env = v :: env_after in
-    let s_linearized = linearize_statement sigs new_env s' in
+    let s_linearized = linearize_statement sigs prog new_env s' in
     
     (* Prepend the substitution to handle variable flow *)
     prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
@@ -256,10 +260,10 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
     ) (List.map fst all_free) in
     let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
     (* Linearize branches with their own environments *)
-    let branches' = List.map (linearize_branch sigs env_after_gamma) branches in
+    let branches' = List.map (linearize_branch sigs prog env_after_gamma) branches in
     (* After new, v is added to environment *)
     let new_env = v :: env_after_gamma in
-    let s_linearized = linearize_statement sigs new_env s' in
+    let s_linearized = linearize_statement sigs prog new_env s' in
     prepend_subst subst (CutT.New (v, ty, gamma, branches', s_linearized))
   
   | CutT.Switch (v, branches) ->
@@ -272,7 +276,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
     let (subst, env_after) = build_substitution current_env [v] preserve [] in
     (* Remove v from env_after since it's consumed by the switch *)
     let env_for_branches = List.filter (fun w -> not (Ident.equal w v)) env_after in
-    let branches' = List.map (linearize_branch sigs env_for_branches) branches in
+    let branches' = List.map (linearize_branch sigs prog env_for_branches) branches in
     prepend_subst subst (CutT.Switch (v, branches'))
   
   | CutT.Invoke (v, dtor, type_args, args) ->
@@ -285,7 +289,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.
 (** Linearize a branch 
     The branch binds new variables in its pattern and has a body
 *)
-and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list) 
+and linearize_branch (sigs: CutTypes.signature_defs) (prog: CutT.program) (current_env: Ident.t list) 
     ((xtor, type_args, gamma, body): CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement)
     : CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement =
   (* Variables bound by the pattern extend the environment *)
@@ -293,7 +297,7 @@ and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
   
   (* Linearize the body with pattern variables + outer environment *)
   let new_env = pattern_vars @ current_env in
-  let body' = linearize_statement sigs new_env body in
+  let body' = linearize_statement sigs prog new_env body in
   
   (* Return branch with original gamma (pattern variables and their types) *)
   (xtor, type_args, gamma, body')
@@ -301,13 +305,13 @@ and linearize_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
 (** Linearize an extern branch
     Extern branches have (Γ) ⇒ s form
 *)
-and linearize_extern_branch (sigs: CutTypes.signature_defs) (current_env: Ident.t list)
+and linearize_extern_branch (sigs: CutTypes.signature_defs) (prog: CutT.program) (current_env: Ident.t list)
     ((gamma, body): CutT.typ_env * CutT.statement)
     : CutT.typ_env * CutT.statement =
   (* Variables bound by the pattern extend the environment *)
   let pattern_vars = List.map fst gamma in
   let new_env = pattern_vars @ current_env in
-  let body' = linearize_statement sigs new_env body in
+  let body' = linearize_statement sigs prog new_env body in
   (gamma, body')
 
 (** Build a substitution to transform current_env to support the needed variables
@@ -369,7 +373,7 @@ let linearize_program (sigs: CutTypes.signature_defs) (prog: CutT.program) : Cut
   List.map (fun (label, gamma, body) ->
     (* Start with the environment defined by the function signature *)
     let initial_env = List.map fst gamma in
-    let body' = linearize_statement sigs initial_env body in
+    let body' = linearize_statement sigs prog initial_env body in
     (label, gamma, body')
   ) prog
 
