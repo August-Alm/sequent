@@ -291,8 +291,21 @@ let rec check_statement
       | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
     in
     (* TODO: Check type_args are well-kinded and apply type substitution θ to expected_gamma *)
-    if not (Env.equal sigs gamma expected_gamma) then
+    if not (Env.equal sigs gamma expected_gamma) then begin
+      Printf.eprintf "\n=== Jump environment mismatch for label %s ===\n" (Label.to_string l);
+      Printf.eprintf "Expected environment (from label definition): [";
+      List.iter (fun (v, ty) -> 
+        Printf.eprintf "%s:%s; " (Ident.name v) (string_of_chirality ty)
+      ) expected_gamma;
+      Printf.eprintf "]\n";
+      Printf.eprintf "Actual environment (current context): [";
+      List.iter (fun (v, ty) -> 
+        Printf.eprintf "%s:%s; " (Ident.name v) (string_of_chirality ty)
+      ) gamma;
+      Printf.eprintf "]\n";
+      Printf.eprintf "=============================================\n\n";
       raise (TypeError ("Jump: environment mismatch for label " ^ Label.to_string l))
+    end
   
   | Return (x, k) ->
     (* Rule [RETURN]: Γ(x) = prd τ    Γ(k) = cns τ

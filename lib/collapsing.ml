@@ -145,11 +145,22 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
     let int_ty_cut = CutTypes.Ext.int_typ in
     let s = collapse_cut ctx (CT.Var n) int_ty c in
     CutT.Extern (Common.Types.Prim.add_sym, [v], [[(n, CutTypes.Ext int_ty_cut)], s])
-  | CT.Call (f, ty_args, _prods, _cons) ->
-    (* Call f[τ̄](x̄, ᾱ) compiles to: jump f[τ̄]
-       Linearization will insert Substitute to match environments *)
+  | CT.Call (f, ty_args, prods, cons) ->
+    (* Call f[τ̄](x̄, ᾱ) compiles to: substitute [params → args]; jump f[τ̄] *)
     let ty_args_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) ty_args in
-    CutT.Jump (CutT.MkLabel f, ty_args_cut)
+    (* Extract actual argument variables *)
+    let arg_vars = (List.map (function 
+      | CT.Var x -> x 
+      | _ -> failwith "Expected variable after shrinking") prods) @
+      (List.map (function 
+      | CT.Covar a -> a 
+      | _ -> failwith "Expected covariable after shrinking") cons) in
+    (* Look up target function's parameter names *)
+    let target_def = List.assoc f ctx.defs.term_defs in
+    let target_params = (List.map fst target_def.prod_args) @ (List.map fst target_def.cons_args) in
+    (* Build substitution: target params ← actual args *)
+    let subst = List.combine target_params arg_vars in
+    CutT.Substitute (subst, CutT.Jump (CutT.MkLabel f, ty_args_cut))
 
 (** Collapse a cut into one of the 4 symmetric forms *)
 and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ) (c: CT.consumer) : CutT.statement =
@@ -344,6 +355,13 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       (List.map (function CT.Var v -> v | _ -> failwith "Expected variable") prods) @
       (List.map (function CT.Covar a -> a | _ -> failwith "Expected covariable") cons) in
     CutT.Invoke (x, dtor, [], args)
+  
+  (* These should have been handled by shrinking *)
+  | (CT.Mu (_alpha, _s), CT.Covar _k) ->
+    failwith "⟨µα.s | k⟩ should have been eliminated by shrinking"
+  
+  | (CT.Var _x, CT.MuTilde (_y, _s)) ->
+    failwith "⟨x | µ˜y.s⟩ should have been eliminated by shrinking"
   
   (* Fallback: ⟨x | k⟩ where types don't support eta-expansion *)
   | (CT.Var x, CT.Covar alpha) ->

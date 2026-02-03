@@ -197,25 +197,34 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     : CutT.statement =
   match s with
   | CutT.Jump (label, type_args) ->
-    (* Look up the target label's expected environment *)
+    (* Jump without preceding Substitute - environment should already match *)
+    (* This case shouldn't normally happen after collapsing, but handle it *)
     let target_env = 
       match List.find_opt (fun (l, _, _) -> CutT.Label.to_string l = CutT.Label.to_string label) prog with
       | Some (_, gamma, _) -> List.map fst gamma
       | None -> failwith ("Jump to undefined label: " ^ CutT.Label.to_string label)
     in
-    (* Build substitution mapping target params to current env vars *)
-    let subst = List.combine target_env current_env in
-    CutT.Substitute (subst, CutT.Jump (label, type_args))
+    if current_env = target_env then
+      CutT.Jump (label, type_args)
+    else
+      failwith (Printf.sprintf "Jump to %s: environment mismatch (expected %s, have %s)"
+        (CutT.Label.to_string label)
+        (String.concat "," (List.map Ident.name target_env))
+        (String.concat "," (List.map Ident.name current_env)))
   
   | CutT.Return (x, k) ->
     (* Return uses both x and k, everything else is dropped *)
     let (subst, _env_after) = build_substitution current_env [x; k] [] [] in
     prepend_subst subst (CutT.Return (x, k))
   
-  | CutT.Substitute (_pairs, s') ->
-    (* This shouldn't appear in input from collapsing, but handle it anyway *)
-    (* Just process the inner statement with current environment *)
-    linearize_statement sigs prog current_env s'
+  | CutT.Substitute (pairs, s') ->
+    (* Substitution already present (from collapsing or explicit) *)
+    (* The pairs map LHS (new names) to RHS (old names) *)
+    (* After this substitution, the environment becomes the LHS names *)
+    let env_after_subst = List.map fst pairs in
+    (* Linearize the inner statement with the new environment *)
+    let s'' = linearize_statement sigs prog env_after_subst s' in
+    CutT.Substitute (pairs, s'')
   
   | CutT.Extern (f, vars, branches) ->
     (* Build substitution for extern statement *)
