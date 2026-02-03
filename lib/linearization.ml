@@ -30,6 +30,8 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
   match s with
   | CutT.Jump (_label, _type_args) -> []
   
+  | CutT.Return (x, k) -> count_occurrences [x; k]
+  
   | CutT.Substitute (pairs, s') ->
     (* Free variables are those on the right-hand side of substitution pairs *)
     let rhs_vars = List.map snd pairs in
@@ -204,6 +206,11 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     (* Build substitution mapping target params to current env vars *)
     let subst = List.combine target_env current_env in
     CutT.Substitute (subst, CutT.Jump (label, type_args))
+  
+  | CutT.Return (x, k) ->
+    (* Return uses both x and k, everything else is dropped *)
+    let (subst, _env_after) = build_substitution current_env [x; k] [] [] in
+    prepend_subst subst (CutT.Return (x, k))
   
   | CutT.Substitute (_pairs, s') ->
     (* This shouldn't appear in input from collapsing, but handle it anyway *)

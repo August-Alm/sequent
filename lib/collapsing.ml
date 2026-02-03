@@ -345,10 +345,10 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       (List.map (function CT.Covar a -> a | _ -> failwith "Expected covariable") cons) in
     CutT.Invoke (x, dtor, [], args)
   
-  (* Fallback: Should have been handled by shrinking phase *)
+  (* Fallback: ⟨x | k⟩ where types don't support eta-expansion *)
   | (CT.Var x, CT.Covar alpha) ->
-    failwith (Printf.sprintf "Unexpected cut form: ⟨%s | %s⟩ - should have been η-expanded in shrinking"
-      (Ident.name x) (Ident.name alpha))
+    (* Polymorphic or external type - emit Return statement *)
+    CutT.Return (x, alpha)
   | _ -> failwith "Unexpected cut form after shrinking"
 
 (** Collapse a term definition into a Cut label definition *)

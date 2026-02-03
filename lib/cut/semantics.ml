@@ -152,6 +152,17 @@ let step (config: config) : config option =
     let (_gamma, stmt) = lookup_label config.program label in
     Some { config with statement = stmt }
   
+  (* (return) ⟨return x to k ∥ E⟩ → ⟨k.apply(x) ∥ E⟩ *)
+  | CutT.Return (x, k) ->
+    let _x_val = lookup_var config.env x in
+    (match lookup_var config.env k with
+    | Consumer (_closure_env, _branches) ->
+      (* Return is a tail call - for now, just treat as not implemented *)
+      (* Full implementation would invoke the continuation with x_val *)
+      raise (RuntimeError "Return statement not yet fully implemented in semantics")
+    | _ ->
+      raise (RuntimeError (Printf.sprintf "Expected consumer value for return to %s" (Ident.name k))))
+  
   (* (subst) ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩ *)
   | CutT.Substitute (subst, stmt) ->
     let new_env = List.map (fun (target, source) ->

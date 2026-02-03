@@ -42,6 +42,8 @@ type substitutions = (variable * variable) list
 type statement =
   (* jump l[τ, ...] *)
   | Jump of label * typ list
+  (* return x to k *)
+  | Return of variable * variable
   (* substitute [v → v', ...]; s *)
   | Substitute of substitutions * statement
   (* extern m(v, ...){(Γ) ⇒ s, ...} *)
@@ -104,6 +106,8 @@ let rec string_of_statement ?(indent=0) s =
   let ind = String.make (indent * 2) ' ' in
   match s with
   | Jump (l, tys) -> ind ^ "jump " ^ Label.to_string l ^ string_of_typ_list tys
+  
+  | Return (x, k) -> ind ^ "return " ^ Ident.name x ^ " to " ^ Ident.name k
   
   | Substitute (subst, s') ->
     ind ^ "substitute " ^ string_of_substitutions subst ^ ";\n" ^
@@ -289,6 +293,22 @@ let rec check_statement
     (* TODO: Check type_args are well-kinded and apply type substitution θ to expected_gamma *)
     if not (Env.equal sigs gamma expected_gamma) then
       raise (TypeError ("Jump: environment mismatch for label " ^ Label.to_string l))
+  
+  | Return (x, k) ->
+    (* Rule [RETURN]: Γ(x) = prd τ    Γ(k) = cns τ
+                      ----------------------------
+                      Γ ⊢ return x to k *)
+    let x_ty = Env.lookup_exn x gamma in
+    let k_ty = Env.lookup_exn k gamma in
+    (match (x_ty, k_ty) with
+    | (Types.Prd tx, Types.Cns tk) ->
+      if not (Types.Type.equivalent sigs tx tk) then
+        raise (TypeError (Printf.sprintf "Return: type mismatch - x has type prd %s but k expects cns %s"
+          (string_of_typ tx) (string_of_typ tk)))
+    | (Types.Prd _, _) ->
+      raise (TypeError ("Return: second argument must be a consumer, got " ^ string_of_chirality k_ty))
+    | _ ->
+      raise (TypeError ("Return: first argument must be a producer, got " ^ string_of_chirality x_ty)))
 
   | Substitute (pairs, s') ->
     (* Rule [SUBSTITUTE]: Γ'(v′ᵢ) = τᵢ    Γ(vᵢ) = τᵢ    Γ' ⊢ s
