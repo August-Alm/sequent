@@ -41,21 +41,34 @@ let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signatu
       | Some (TyVar id) -> Some (id, core_kind_to_cut_kind k)
       | _ -> None
     ) td.arguments
-  ; methods = List.map (fun xtor -> {
-      CutTypes.parent = xtor.parent;
-      symbol = xtor.symbol;
-      quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
-      producers = List.map (fun ty -> CutTypes.Prd (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty)) xtor.producers;
-      consumers = List.map (fun ty -> CutTypes.Cns (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty)) xtor.consumers;
-      result_type = (
-        (* Build the parent type with arguments applied *)
-        let parent_ty = List.fold_left (fun acc arg ->
+  ; methods = List.map (fun xtor -> 
+      (* Build unified environment with polarized types *)
+      let prod_env = List.mapi (fun i ty -> 
+        let var_name = Ident.mk (Printf.sprintf "p%d" i) in
+        (var_name, CutTypes.Prd (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))
+      ) xtor.producers in
+      let cons_env = List.mapi (fun i ty ->
+        let var_name = Ident.mk (Printf.sprintf "c%d" i) in
+        (var_name, CutTypes.Cns (core_type_to_cut_type_inner ty_defs (Some td.symbol) ty))
+      ) xtor.consumers in
+      (* Build polarized result type *)
+      let parent_ty = List.fold_left (fun acc arg ->
           Common.Types.TyApp (acc, arg)
         ) (Common.Types.TySym xtor.parent) xtor.arguments in
-        core_type_to_cut_type_inner ty_defs (Some td.symbol) parent_ty
-      );
-      constraints = [];
-    }) td.xtors
+      let result_cut_type = core_type_to_cut_type_inner ty_defs (Some td.symbol) parent_ty in
+      (* Determine if this is a constructor (producers, prd result) or destructor (consumers, cns result) *)
+      let result_chirality = 
+        if xtor.consumers = [] then CutTypes.Prd result_cut_type  (* constructor *)
+        else CutTypes.Cns result_cut_type  (* destructor *)
+      in
+      {
+        CutTypes.parent = xtor.parent;
+        symbol = xtor.symbol;
+        quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
+        environment = prod_env @ cons_env;
+        result_type = result_chirality;
+        constraints = [];
+      }) td.xtors
   }
 
 (** Convert Core type to Cut type - used for types appearing inside signatures

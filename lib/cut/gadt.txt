@@ -28,16 +28,16 @@ We extend the notation from description.txt:
   Γ ::= v : τ, ...                  (term variable environment)
 
 **Signatures:**
-  Σ ::= signature T(α₁ : κ₁, ..., αₙ : κₙ) = {m₁, ..., mₖ}, ...
+  Σ ::= signature T : κ = {m₁, ..., mₖ}, ...
 
 **Methods (in signatures):**
-  m ::= symbol : ∀β₁:κ₁, ..., βₘ:κₘ. (v₁ : τ₁, ...) | (w₁ : τ'₁, ...) : τᵣ where C
+  m ::= symbol : ∀β₁:κ₁, ..., βₘ:κₘ. Γ : τ where C
 
 Where:
-  - (v₁ : τ₁, ...) are producer arguments
-  - (w₁ : τ'₁, ...) are consumer arguments  
-  - τᵣ is the result type (how method instantiates parent signature)
+  - Γ is a type environment (v₁ : τ₁, ..., vₙ : τₙ) where each τᵢ is a polarized type
+  - τ is the polarized result type (prd T, cns T, or ext T)
   - C is a list of type equality constraints (for GADTs)
+  - The polarity of τ determines if this is a constructor (prd) or destructor (cns)
 
 **Label Environment:**
   Θ ::= l : Γ, ...
@@ -204,137 +204,116 @@ signatures specify argument types and continuation environments.
 
 **[LET]** - Binding a producer (data constructor or let-bound producer)
 
-  signature T(ᾱ : κ̄) = {..., m : ∀β̄:κ̄'. (v₁:τ₁,...,vₙ:τₙ) | () : τᵣ where C, ...} ∈ Σ
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
   
   θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (type substitution instantiating parameters and quantifiers)
   
   ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints in signature must be satisfiable)
   
-  Γ₀ = (v₁ : θ(τ₁), ..., vₙ : θ(τₙ))    (method's producer arguments, instantiated)
+  Γ' = θ(Γ)    (method's environment, instantiated)
   
-  τ_v = prd (θ(τᵣ))    (the bound variable's type)
+  τ_v = θ(prd τᵣ)    (the bound variable's type)
   
   Δ ⊢ τ_v : type    (result type is well-kinded)
   
-  Σ; Δ; Θ; Γ, v : τ_v ⊢ s    (continuation with bound variable)
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound variable)
   ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ, Γ₀ ⊢ let v = m(Γ₀); s
+  Σ; Δ; Θ; Γ_ctx, Γ' ⊢ let v = m[σ̄](Γ'); s
 
 **Intuition:** Let binds a producer value. The method m may be polymorphic (∀β̄),
-so we must provide type arguments to instantiate it. The pattern arguments Γ₀
+so we must provide type arguments to instantiate it. The pattern arguments Γ'
 are consumed from the environment. The result type (after substitution) becomes
 the type of the bound producer variable v.
 
-**Note:** When T has no type parameters (kind type), and m has no quantified
-variables, and C is empty, this reduces to the old rule:
-  Σ(T) = {..., m(Γ₀), ...}    Γ, v : prd T ⊢ s
-  ---------------------------------------------
-  Γ, Γ₀ ⊢ let v = m(Γ₀); s
+**Note:** When T has no type parameters and m has no quantified variables and C 
+is empty, this reduces to the simpler form.
 
 ---
 
 **[NEW]** - Binding a consumer (codata destructor or new-bound consumer)
 
-  signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
   
-  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. (Γᵖᵢ) | (Γᶜᵢ) : τᵣᵢ where Cᵢ:
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : cns τᵣᵢ where Cᵢ:
   
     θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (instantiation for this method)
     
     ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints must be satisfiable)
     
-    Γᵖᵢ' = θᵢ(Γᵖᵢ), Γᶜᵢ' = θᵢ(Γᶜᵢ)    (instantiated producer/consumer environments)
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
     
-    Σ; Δ; Θ; Γᵖᵢ', Γᶜᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
+    Σ; Δ; Θ; Γᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
   
-  τ_v = cns (T(τ̄))    (the bound consumer has the instantiated signature type)
+  τ_v = cns (T[τ̄])    (the bound consumer has the instantiated signature type)
   
   Δ ⊢ τ_v : type
   
-  Σ; Δ; Θ; Γ, v : τ_v ⊢ s    (continuation with bound consumer)
+  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound consumer)
   ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ, Γ₀ ⊢ new v = (Γ₀){m₁(Γᵖ₁', Γᶜ₁') ⇒ s₁, ..., mₖ(Γᵖₖ', Γᶜₖ') ⇒ sₖ}; s
+  Σ; Δ; Θ; Γ_ctx, Γ₀ ⊢ new v : T[τ̄] = (Γ₀){m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}; s
 
 **Intuition:** New binds a consumer value by creating a cocase with branches for
 all methods in the signature. The closure environment Γ₀ is captured and available
-in each branch. Each method may have both producer arguments (the result) and
-consumer arguments (the destructor's inputs).
-
-**Note:** When T : type, no quantification, and no constraints, this reduces to:
-  Σ(T) = {m₁(Γ₁), ...}    Γ, v : cns T ⊢ s    Γ₁, Γ₀ ⊢ s₁ ...
-  ------------------------------------------------------------
-  Γ, Γ₀ ⊢ new v = (Γ₀){m₁(Γ₁) ⇒ s₁, ...}; s
+in each branch. Each method's environment Γᵢ contains all its arguments (with
+polarized types indicating whether they're producers, consumers, or external values).
 
 ---
 
 **[SWITCH]** - Pattern matching on a producer
 
-  signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
+  signature T : κ = {m₁, ..., mₖ} ∈ Σ
   
-  Γ(v) = prd (T(τ̄))    (switching on a producer of instantiated signature type)
+  Γ_ctx(v) = prd (T[τ̄])    (switching on a producer of instantiated signature type)
   
-  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. (Γᵖᵢ) | (Γᶜᵢ) : τᵣᵢ where Cᵢ:
+  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : prd τᵣᵢ where Cᵢ:
   
     θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (must instantiate signature parameters consistently)
     
     ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints satisfied)
     
-    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(τᵣᵢ) ≡ T(τ̄) : type    (result type matches)
+    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(prd τᵣᵢ) ≡ prd (T[τ̄]) : type    (result type matches)
     
-    Γᵖᵢ' = θᵢ(Γᵖᵢ), Γᶜᵢ' = θᵢ(Γᶜᵢ)    (instantiated arguments)
+    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
     
-    Σ; Δ; Θ; Γ, Γᵖᵢ', Γᶜᵢ' ⊢ sᵢ    (each branch has method's arguments available)
+    Σ; Δ; Θ; Γ_ctx, Γᵢ' ⊢ sᵢ    (each branch has method's arguments available)
   ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ, v : prd (T(τ̄)) ⊢ switch v {m₁(Γᵖ₁', Γᶜ₁') ⇒ s₁, ..., mₖ(Γᵖₖ', Γᶜₖ') ⇒ sₖ}
+  Σ; Δ; Θ; Γ_ctx, v : prd (T[τ̄]) ⊢ switch v {m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}
 
 **Intuition:** Switch pattern matches on a producer value. The branches must cover
 all methods in the signature. Each method's arguments become available in the
 corresponding branch. The signature is instantiated at the type arguments of v.
 
-**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T(τ̄).
+**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T[τ̄].
 For non-GADT constructors this is automatic, but for GADT constructors this
 provides type refinement - the constraints Cᵢ may refine the type parameters
 based on which constructor matched.
-
-**Note:** When T : type, no quantification, no constraints, reduces to:
-  Σ(T) = {m₁(Γ₁), ...}    Γ, Γ₁ ⊢ s₁ ...
-  ----------------------------------------
-  Γ, v : prd T ⊢ switch v {m₁(Γ₁) ⇒ s₁, ...}
 
 ---
 
 **[INVOKE]** - Invoking a method on a consumer
 
-  signature T(ᾱ : κ̄) = {..., m : ∀β̄:κ̄'. (Γᵖ) | (Γᶜ) : τᵣ where C, ...} ∈ Σ
+  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
   
-  Γ(v) = cns (T(τ̄))    (invoking method on consumer of instantiated type)
+  Γ_ctx(v) = cns (T[τ̄])    (invoking method on consumer of instantiated type)
   
   θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (instantiate signature parameters and method quantifiers)
   
   ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints satisfied)
   
-  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(τᵣ) ≡ T(τ̄) : type    (result type matches)
+  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(cns τᵣ) ≡ cns (T[τ̄]) : type    (result type matches)
   
-  Γᵖ' = θ(Γᵖ), Γᶜ' = θ(Γᶜ)    (instantiated argument environments)
+  Γ' = θ(Γ)    (instantiated method environment)
   
-  Γ = (Γᵖ', Γᶜ', v : cns (T(τ̄)))    (environment must match exactly)
+  Γ_ctx = (Γ', v : cns (T[τ̄]))    (environment must match exactly)
   ---------------------------------------------------------------
-  Σ; Δ; Θ; Γᵖ', Γᶜ', v : cns (T(τ̄)) ⊢ invoke v m(Γᵖ', Γᶜ')
+  Σ; Δ; Θ; Γ', v : cns (T[τ̄]) ⊢ invoke v m[σ̄](Γ')
 
 **Intuition:** Invoke calls a method on a consumer. The method may be polymorphic,
 so we instantiate its quantified variables. The environment must contain exactly
-the method's arguments (both producers and consumers after instantiation) plus
-the consumer being invoked.
+the method's arguments (with polarized types) plus the consumer being invoked.
 
 **Key for GADTs:** The result type must match the consumer's type after applying
 constraints, enabling type refinement based on which method is being invoked.
-
-**Note:** When T : type, no quantification, no constraints, reduces to:
-  Σ(T) = {..., m(Γ), ...}
-  ------------------------
-  Γ, v : cns T ⊢ invoke v m
-
-Where Γ matches the method signature exactly.
 
 ---
 
@@ -366,18 +345,18 @@ For type checking with polymorphism and GADTs:
 
 Signature:
 ```
-signature List(a : type) = {
-  nil  : ∀. () | () : List(a)
-  cons : ∀. (prd a, prd List(a)) | () : List(a)
+signature List : type -> type = {
+  nil  : ∀a:type. () : prd List(a)
+  cons : ∀a:type. (x : prd a, xs : prd List(a)) : prd List(a)
 }
 ```
 
 Typing a switch:
 ```
-Γ, xs : prd List(Nat) ⊢ 
+Γ_ctx, xs : prd List(Nat) ⊢ 
   switch xs {
-    nil() ⇒ ...                              [θ₁ = [a ↦ Nat]]
-    cons(y : prd Nat, ys : prd List(Nat)) ⇒ ... [θ₂ = [a ↦ Nat]]
+    nil[Nat]() ⇒ ...
+    cons[Nat](y : prd Nat, ys : prd List(Nat)) ⇒ ...
   }
 ```
 
@@ -389,23 +368,23 @@ Both branches instantiate a to Nat, matching xs's type.
 
 Signature:
 ```
-signature Vec(a : type, n : Nat) = {
-  vnil  : ∀. () | () : Vec(a, Zero) 
+signature Vec : type -> Nat -> type = {
+  vnil  : ∀a:type. () : prd Vec(a, Zero) 
          where []
          
-  vcons : ∀m:Nat. (prd a, prd Vec(a,m)) | () : Vec(a, Succ(m))
+  vcons : ∀a:type, m:Nat. (x : prd a, xs : prd Vec(a,m)) : prd Vec(a, Succ(m))
          where []
 }
 ```
 
 Typing a switch with refinement:
 ```
-Γ, v : prd Vec(Int, n) ⊢
+Γ_ctx, v : prd Vec(Int, n) ⊢
   switch v {
-    vnil() ⇒ 
+    vnil[Int]() ⇒ 
       (* Here we know n ≡ Zero *)
       ...
-    vcons(x : prd Int, xs : prd Vec(Int, m)) ⇒
+    vcons[Int, m](x : prd Int, xs : prd Vec(Int, m)) ⇒
       (* Here we know n ≡ Succ(m) *)
       ...
   }
@@ -420,18 +399,18 @@ branch, n must be Succ(m) for some m.
 
 Signature:
 ```
-signature Stream(a : type) = {
-  head : ∀. (prd a) | (cns Stream(a)) : Stream(a)
-  tail : ∀. (prd Stream(a)) | (cns Stream(a)) : Stream(a)
+signature Stream : type -> type = {
+  head : ∀a:type. (s : prd Stream(a), k : cns a) : cns Stream(a)
+  tail : ∀a:type. (s : prd Stream(a), k : cns Stream(a)) : cns Stream(a)
 }
 ```
 
 Creating a stream:
 ```
-Γ ⊢ new s = (){
-      head(x : prd Nat) | (α : cns Stream(Nat)) ⇒ ...
-      tail(xs : prd Stream(Nat)) | (α : cns Stream(Nat)) ⇒ ...
-    }; s
+Γ_ctx ⊢ new s : Stream(Nat) = (){
+      head[Nat](s : prd Stream(Nat), k : cns Nat) ⇒ ...
+      tail[Nat](s : prd Stream(Nat), k : cns Stream(Nat)) ⇒ ...
+    }; ...
 ```
 
 Here s : cns Stream(Nat). Each method's type is instantiated with a ↦ Nat.
@@ -448,15 +427,15 @@ to the rules in description.txt.
 - When T : type (no parameters), τ̄ = [] and θ just instantiates ᾱ = []
 - When methods have ∀. (no quantifiers), β̄ = [] and θ instantiates β̄ = []  
 - When C = [] (no constraints), constraint checking is trivial
-- The result type T(τ̄) = T simplifies to just T
-- Type application T(τ̄) is just T when τ̄ = []
-- The instantiated environments Γ' = θ(Γ) = Γ when no substitution needed
+- The result type T[τ̄] = T simplifies to just T
+- Type application T[τ̄] is just T when τ̄ = []
+- The instantiated environment Γ' = θ(Γ) = Γ when no substitution needed
 
 Therefore each rule reduces:
-- [LET] reduces to: Σ(T) = {..., m(Γ₀), ...} Γ,v:prd T ⊢ s / Γ,Γ₀ ⊢ let v=m(Γ₀);s
-- [NEW] reduces to: Σ(T) = {m₁(Γ₁),...} Γ,v:cns T ⊢ s Γ₁,Γ₀ ⊢ s₁... / Γ,Γ₀ ⊢ new v=(Γ₀)b;s
-- [SWITCH] reduces to: Σ(T) = {m₁(Γ₁),...} Γ,Γ₁ ⊢ s₁... / Γ,v:prd T ⊢ switch v b
-- [INVOKE] reduces to: Σ(T) = {...,m(Γ),...} / Γ,v:cns T ⊢ invoke v m
+- [LET] reduces to: Σ(T) = {..., m : Γ : prd T, ...} Γ_ctx,v:prd T ⊢ s / Γ_ctx,Γ ⊢ let v=m(Γ);s
+- [NEW] reduces to: Σ(T) = {m₁:Γ₁:cns T,...} Γ_ctx,v:cns T ⊢ s Γ₁,Γ₀ ⊢ s₁... / Γ_ctx,Γ₀ ⊢ new v:(Γ₀){m₁(Γ₁)⇒s₁,...};s
+- [SWITCH] reduces to: Σ(T) = {m₁:Γ₁:prd T,...} Γ_ctx,Γ₁ ⊢ s₁... / Γ_ctx,v:prd T ⊢ switch v {m₁(Γ₁)⇒s₁,...}
+- [INVOKE] reduces to: Σ(T) = {...,m:Γ:cns T,...} / Γ,v:cns T ⊢ invoke v m(Γ)
 
 Which match the rules in description.txt exactly. ∎
 

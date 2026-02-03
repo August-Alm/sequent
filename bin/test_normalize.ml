@@ -85,12 +85,11 @@ let test_case name input =
       print_endline (Printf.sprintf "    signature %s = {" ty_name);
       List.iter (fun (msig: Cut.Types.method_sig) ->
         let method_name = Common.Identifiers.Path.name msig.symbol in
-        let prod_str = String.concat ", " (List.map Cut.Types.Pretty.chirality_to_string msig.producers) in
-        let cons_str = String.concat ", " (List.map Cut.Types.Pretty.chirality_to_string msig.consumers) in
-        let sig_str = if prod_str = "" && cons_str = "" then "()" 
-                     else if cons_str = "" then "(" ^ prod_str ^ ")" 
-                     else "(" ^ prod_str ^ " | " ^ cons_str ^ ")" in
-        print_endline (Printf.sprintf "      %s%s" method_name sig_str)
+        let env_str = String.concat ", " (List.map (fun (v, chir) ->
+          Common.Identifiers.Ident.name v ^ ":" ^ Cut.Types.Pretty.chirality_to_string chir
+        ) msig.environment) in
+        let result_str = Cut.Types.Pretty.chirality_to_string msig.result_type in
+        print_endline (Printf.sprintf "      %s : (%s) : %s" method_name env_str result_str)
       ) sig_def.Cut.Types.methods;
       print_endline "    }"
     ) cut_defs.Cut.Terms.signatures;

@@ -298,12 +298,12 @@ let rec check_statement
 
   | Let (v, m, type_args, gamma0, s') ->
     (* Rule [LET]: Let binds a producer
-       signature T(ᾱ : κ̄) = {..., m : ∀β̄. (Γᵖ) | () : τᵣ where C, ...} ∈ Σ
+       signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
        θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]
-       Γ₀ = θ(Γᵖ)    τ_v = prd (θ(τᵣ))
-       Γ, v : τ_v ⊢ s
+       Γ' = θ(Γ)    τ_v = θ(prd τᵣ)
+       Γ_ctx, v : τ_v ⊢ s
        -------------------------------------------------
-       Γ, Γ₀ ⊢ let v = m[τ̄, σ̄](Γ₀); s
+       Γ_ctx, Γ' ⊢ let v = m[σ̄](Γ'); s
     *)
     (* Find which signature contains method m *)
     let (sig_def, _sig_kind) = 
@@ -326,10 +326,10 @@ let rec check_statement
     let method_quants = List.map fst msig.Types.quantified in
     let subst = List.combine (sig_params @ method_quants) type_args in
     
-    (* Apply substitution to producer types (no names in signature) *)
-    let expected_types = List.map (fun chi_ty ->
+    (* Apply substitution to environment types *)
+    let expected_types = List.map (fun (_name, chi_ty) ->
       Types.substitute_chirality subst chi_ty
-    ) msig.Types.producers in
+    ) msig.Types.environment in
     
     (* Check that gamma0 types match expected types by position *)
     if List.length gamma0 <> List.length expected_types then
@@ -355,9 +355,8 @@ let rec check_statement
       raise (TypeError "Let: environment split mismatch")
     end;
     
-    (* Result type: prd (θ(τᵣ)) *)
-    let result_ty = Types.Type.substitute subst msig.Types.result_type in
-    let v_ty = Types.Prd result_ty in
+    (* Result type is already polarized in the method signature *)
+    let v_ty = Types.substitute_chirality subst msig.Types.result_type in
     
     (* Check continuation with Γ, v : τ_v *)
     let new_gamma = (v, v_ty) :: gamma_rest in
@@ -365,12 +364,12 @@ let rec check_statement
 
   | New (v, ty, gamma0, branches, s') ->
     (* Rule [NEW]: New binds a consumer
-       signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
-       For each mᵢ: θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ], check Γᵖᵢ', Γᶜᵢ', Γ₀ ⊢ sᵢ
-       τ_v = cns (T(τ̄))
-       Γ, v : τ_v ⊢ s
+       signature T : κ = {m₁, ..., mₖ} ∈ Σ
+       For each mᵢ: θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ], check Γᵢ', Γ₀ ⊢ sᵢ
+       τ_v = cns (T[τ̄])
+       Γ_ctx, v : τ_v ⊢ s
        -------------------------------------------------
-       Γ, Γ₀ ⊢ new v : T(τ̄) = (Γ₀){m₁[...] ⇒ s₁, ...}; s
+       Γ_ctx, Γ₀ ⊢ new v : T[τ̄] = (Γ₀){m₁[σ̄₁](Γ₁') ⇒ s₁, ...}; s
     *)
     (* Extract signature from type *)
     let (sig_sym, type_args) = match ty with
@@ -407,10 +406,10 @@ let rec check_statement
       let method_quants = List.map fst msig.Types.quantified in
       let subst = List.combine (sig_params @ method_quants) (type_args @ branch_type_args) in
       
-      (* Apply substitution to producer and consumer types (no names in signature) *)
+      (* Apply substitution to environment types *)
       let expected_types = 
-        List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty) 
-          (msig.Types.producers @ msig.Types.consumers)
+        List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty) 
+          msig.Types.environment
       in
       
       (* Check types match by position *)
@@ -437,11 +436,11 @@ let rec check_statement
 
   | Switch (v, branches) ->
     (* Rule [SWITCH]: Pattern matching on a producer
-       signature T(ᾱ : κ̄) = {m₁, ..., mₖ} ∈ Σ
-       Γ(v) = prd (T(τ̄))
-       For each mᵢ: θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ], check Γ, Γᵖᵢ', Γᶜᵢ' ⊢ sᵢ
+       signature T : κ = {m₁, ..., mₖ} ∈ Σ
+       Γ_ctx(v) = prd (T[τ̄])
+       For each mᵢ: θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ], check Γ_ctx, Γᵢ' ⊢ sᵢ
        -------------------------------------------------
-       Γ, v : prd (T(τ̄)) ⊢ switch v {m₁[...](Γᵖ₁', Γᶜ₁') ⇒ s₁, ...}
+       Γ_ctx, v : prd (T[τ̄]) ⊢ switch v {m₁[σ̄₁](Γ₁') ⇒ s₁, ...}
     *)
     (match gamma with
     | (v', Types.Prd ty) :: gamma_rest when Ident.equal v v' ->
@@ -473,10 +472,10 @@ let rec check_statement
         let method_quants = List.map fst msig.Types.quantified in
         let subst = List.combine (sig_params @ method_quants) (type_args @ branch_type_args) in
         
-        (* Apply substitution to argument types (no names in signature) *)
+        (* Apply substitution to environment types *)
         let expected_types = 
-          List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty)
-            (msig.Types.producers @ msig.Types.consumers)
+          List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty)
+            msig.Types.environment
         in
         
         (* Check types match by position *)
@@ -500,12 +499,13 @@ let rec check_statement
 
   | Invoke (v, m, type_args, args) ->
     (* Rule [INVOKE]: Invoking a method on a consumer
-       signature T(ᾱ : κ̄) = {..., m : ∀β̄. (Γᵖ) | (Γᶜ) : τᵣ where C, ...} ∈ Σ
-       Γ(v) = cns (T(τ̄))
+       signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
+       Γ_ctx(v) = cns (T[τ̄])
        θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]
-       Γ = (Γᵖ', Γᶜ', v : cns (T(τ̄)))
+       Γ' = θ(Γ)
+       Γ_ctx = (Γ', v : cns (T[τ̄]))
        -------------------------------------------------
-       Γᵖ', Γᶜ', v : cns (T(τ̄)) ⊢ invoke v m[τ̄, σ̄](args)
+       Γ', v : cns (T[τ̄]) ⊢ invoke v m[σ̄](Γ')
     *)
     (match gamma with
     | (v', Types.Cns ty) :: gamma_rest when Ident.equal v v' ->
@@ -530,10 +530,10 @@ let rec check_statement
       let method_quants = List.map fst msig.Types.quantified in
       let subst = List.combine (sig_params @ method_quants) (sig_type_args @ type_args) in
       
-      (* Apply substitution to producer and consumer types (no names in signature) *)
+      (* Apply substitution to environment types *)
       let expected_types = 
-        List.map (fun chi_ty -> Types.substitute_chirality subst chi_ty)
-          (msig.Types.producers @ msig.Types.consumers)
+        List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty)
+          msig.Types.environment
       in
       
       (* Build actual argument types from args *)

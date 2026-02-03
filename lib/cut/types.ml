@@ -48,15 +48,15 @@ and signature =
 
 (** Method signatures unify constructors and destructors
     
-    Like Lang and Core, method signatures have NO parameter names - only types.
-    Parameter names are introduced at use sites (in Let/Switch/New patterns).
+    Each method has a single environment Γ containing all its arguments with
+    polarized types. The polarity (prd/cns/ext) indicates the role:
+    - prd: producer argument (eagerly evaluated)
+    - cns: consumer argument (lazily evaluated, continuation-like)
+    - ext: external argument (opaque platform value)
     
-    In the data/codata distinction:
-    - Constructor C : A₁ -> ... -> Aₙ -> T becomes
-      method C with producers [A₁, ..., Aₙ] and no consumers
-    
-    - Destructor D : T -> B₁ -> ... -> Bₘ -> S becomes  
-      method D with producers [S] (the result) and consumers [B₁, ..., Bₘ]
+    The result_type is also polarized and determines the method's role:
+    - prd T: constructor-like (Let binds, Switch matches)
+    - cns T: destructor-like (New binds, Invoke calls)
     
     For GADTs, the result_type can refine the type parameters with constraints.
 *)
@@ -66,16 +66,13 @@ and method_sig =
   ; symbol: Path.t
     (* Quantified type variables, e.g., [(a, KStar)] for polymorphic methods *)
   ; quantified: (Ident.t * kind) list
-    (* Producer types: types given when invoking (data: ctor args, codata: result)
-       No names - names are provided by Let/Switch/New patterns *)
-  ; producers: chirality_type list
-    (* Consumer types: types needed when invoking (data: none, codata: dtor args)
-       No names - names are provided by Let/Switch/New patterns *)
-  ; consumers: chirality_type list
-    (* Result type: how this method instantiates the parent signature's parameters
-       For non-GADT: just applies TyVar to each parameter
-       For GADT: can be more specific, imposing constraints *)
-  ; result_type: typ
+    (* Method environment: all arguments with their polarized types
+       Example: [(x, Prd ty1); (k, Cns ty2)] for a method taking producer x and consumer k *)
+  ; environment: (Ident.t * chirality_type) list
+    (* Result type: polarized type indicating method's role
+       - prd T for constructors: Let binds the result, Switch pattern matches
+       - cns T for destructors: New binds the consumer, Invoke calls it *)
+  ; result_type: chirality_type
     (* Type constraints for GADTs, e.g., (a, TySym Nat) means a must equal Nat *)
   ; constraints: (Ident.t * typ) list
   }
@@ -272,21 +269,17 @@ module Pretty = struct
       else "∀" ^ String.concat " " (List.map (fun (x, k) ->
         Ident.name x ^ ":" ^ Kind.to_string k) m.quantified) ^ ". "
     in
-    let prod_str = 
-      if m.producers = [] then ""
-      else "(" ^ String.concat ", " (List.map chirality_to_string m.producers) ^ ")"
-    in
-    let cons_str=
-      if m.consumers = [] then ""
-      else " | (" ^ String.concat ", " (List.map chirality_to_string m.consumers) ^ ")"
+    let env_str = 
+      if m.environment = [] then "()"
+      else "(" ^ String.concat ", " (List.map typed_param_to_string m.environment) ^ ")"
     in
     let constr_str =
       if m.constraints = [] then ""
       else " where " ^ String.concat ", " (List.map (fun (x, ty) ->
         Ident.name x ^ " = " ^ typ_to_string ty) m.constraints)
     in
-    quant_str ^ Path.name m.symbol ^ prod_str ^ cons_str ^ 
-    " : " ^ typ_to_string m.result_type ^ constr_str
+    quant_str ^ Path.name m.symbol ^ " : " ^ env_str ^ 
+    " : " ^ chirality_to_string m.result_type ^ constr_str
   
   let signature_to_string (sig_def: signature) : string =
     let params_str =
@@ -346,32 +339,23 @@ module TypeCheck = struct
     (* Build type environment with signature parameters and method quantified vars *)
     let env = sig_def.parameters @ m.quantified in
     
-    (* Check all producer types *)
-    let check_producers =
-      List.fold_left (fun acc chir ->
+    (* Check all environment types *)
+    let check_environment =
+      List.fold_left (fun acc (_, chir) ->
         match acc with
         | Error e -> Error e
         | Ok () ->
           let ty = Type.of_chirality chir in
           check_kind env sigs ty KStar
-      ) (Ok ()) m.producers
-    in
-    
-    (* Check all consumer types *)
-    let check_consumers =
-      List.fold_left (fun acc chir ->
-        match acc with
-        | Error e -> Error e
-        | Ok () ->
-          let ty = Type.of_chirality chir in
-          check_kind env sigs ty KStar
-      ) check_producers m.consumers
+      ) (Ok ()) m.environment
     in
     
     (* Check result type *)
-    match check_consumers with
+    match check_environment with
     | Error e -> Error e
-    | Ok () -> check_kind env sigs m.result_type KStar
+    | Ok () ->
+      let result_ty = Type.of_chirality m.result_type in
+      check_kind env sigs result_ty KStar
   
   (** Check that a signature is well-formed *)
   let check_signature (sig_def: signature) (sigs: signature_defs) 
@@ -426,14 +410,14 @@ end
    
    - Core: data Nat = { Zero | Succ(Nat) }
      Cut.Types: signature Nat = {
-                  zero : ∀. () | () : Nat
-                  succ : ∀. (prd Nat) | () : Nat
+                  zero : ∀. () : prd Nat
+                  succ : ∀. (n : prd Nat) : prd Nat
                 }
    
    - Core: codata Stream(A) = { head : A, tail : Stream(A) }
      Cut.Types: signature Stream(a : type) = {
-                  head : ∀. (prd a) | (cns Stream(a)) : Stream(a)
-                  tail : ∀. (prd Stream(a)) | (cns Stream(a)) : Stream(a)
+                  head : ∀. (self : cns Stream(a)) : cns a
+                  tail : ∀. (self : cns Stream(a)) : cns Stream(a)
                 }
    
    - Core GADT: data Vec(n : Nat) = { 
@@ -441,8 +425,8 @@ end
                   Cons : ∀m. Vec(m) → Vec(Succ(m)) 
                 }
      Cut.Types: signature Vec(n : type) = {
-                  nil : ∀. () | () : Vec(Zero) where []
-                  cons : ∀m. (prd Vec(m)) | () : Vec(Succ(m)) where []
+                  nil : ∀. () : prd Vec(Zero) where []
+                  cons : ∀m. (v : prd Vec(m)) : prd Vec(Succ(m)) where []
                 }
    
    This type system is currently NOT used by Cut.Terms, which uses a simpler
