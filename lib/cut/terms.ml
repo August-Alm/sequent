@@ -214,7 +214,13 @@ module Env = struct
   let lookup_exn (v: variable) (gamma: typ_env) : chirality_type =
     match lookup v gamma with
     | Some ty -> ty
-    | None -> raise (TypeError ("Variable not in environment: " ^ Ident.name v))
+    | None -> 
+      Printf.eprintf "ERROR: Variable %s not in environment\n" (Ident.name v);
+      Printf.eprintf "Environment has %d variables:\n" (List.length gamma);
+      List.iter (fun (v', ty) ->
+        Printf.eprintf "  %s : %s\n" (Ident.name v') (Types.Pretty.chirality_to_string ty)
+      ) gamma;
+      raise (TypeError ("Variable not in environment: " ^ Ident.name v))
 
   (** Check if two type environments are equal *)
   let equal sigs (gamma1: typ_env) (gamma2: typ_env) : bool =
@@ -309,6 +315,22 @@ let rec check_statement
     (extern_env: extern_env)
     (gamma: typ_env) 
     (s: statement) : unit =
+  if false then begin
+    Printf.eprintf "\n[CHECK_STATEMENT] Env size: %d\n" (List.length gamma);
+    Printf.eprintf "Statement: %s\n" (match s with
+      | Jump _ -> "Jump"
+      | Return _ -> "Return"
+      | Substitute _ -> "Substitute"
+      | Let _ -> "Let"
+      | LetCns _ -> "LetCns"
+      | New _ -> "New"
+      | NewPrd _ -> "NewPrd"
+      | Switch _ -> "Switch"
+      | SwitchCns _ -> "SwitchCns"
+      | Invoke _ -> "Invoke"
+      | InvokePrd _ -> "InvokePrd"
+      | Extern _ -> "Extern");
+  end;
   match s with
   | Jump (l, _type_args) ->
     (* Rule [JUMP]: Θ(l) = Γ'    θ = [β̄ ↦ τ̄]    Γ = θ(Γ')
@@ -356,10 +378,26 @@ let rec check_statement
     (* Rule [SUBSTITUTE]: Γ'(v′ᵢ) = τᵢ    Γ(vᵢ) = τᵢ    Γ' ⊢ s
                           -------------------------------------------
                           Γ ⊢ substitute [v′₁ → v₁, ...]; s *)
+    if false then begin
+      Printf.eprintf "\n[SUBSTITUTE] Input env:\n";
+      List.iter (fun (v, ty) ->
+        Printf.eprintf "  %s : %s\n" (Ident.name v) (Types.Pretty.chirality_to_string ty)
+      ) gamma;
+      Printf.eprintf "  Pairs:\n";
+      List.iter (fun (v_new, v_old) ->
+        Printf.eprintf "    %s → %s\n" (Ident.name v_new) (Ident.name v_old)
+      ) pairs;
+    end;
     let gamma' = List.map (fun (v_new, v_old) ->
       let ty = Env.lookup_exn v_old gamma in
       (v_new, ty)
     ) pairs in
+    if false then begin
+      Printf.eprintf "  Output env:\n";
+      List.iter (fun (v, ty) ->
+        Printf.eprintf "  %s : %s\n" (Ident.name v) (Types.Pretty.chirality_to_string ty)
+      ) gamma';
+    end;
     check_statement sigs delta theta extern_env gamma' s'
 
   | Extern (m, vars, branches) ->

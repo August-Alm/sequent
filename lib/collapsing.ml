@@ -24,7 +24,9 @@ module CutTypes = Cut.Types
 
 type collapse_context = {
   defs: CT.definitions;
-  signatures: CutTypes.signature_defs;}
+  signatures: CutTypes.signature_defs;
+  typ_env: (Ident.t * CutTypes.chirality_type) list;
+}
 
 (** Convert Core kind to Cut kind *)
 let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =
@@ -146,11 +148,12 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
     CutT.Extern (Common.Types.Prim.add_sym, [v], [[(n, CutTypes.Ext int_ty_cut)], s])
   | CT.Call (f, ty_args, prods, cons) ->
     (* Call f[τ̄](x̄, ᾱ) compiles to: substitute [params → args]; jump f[τ̄] *)
+    
     let ty_args_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) ty_args in
     (* Extract actual argument variables *)
     let arg_vars = (List.map (function 
       | CT.Var x -> x 
-      | _ -> failwith "Expected variable after shrinking") prods) @
+      | _ -> failwith "Expected variable after shrinking in Call collapse (prods)") prods) @
       (List.map (function 
       | CT.Covar a -> a 
       | _ -> failwith "Expected covariable after shrinking") cons) in
@@ -284,11 +287,25 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     (* Alpha is a consumer (codata) - use SwitchCns *)
     CutT.SwitchCns (alpha, branches)
   
-  (* FORM 3a: ⟨µα.s1 | case {C(Γ) ⇒ s2, ...}⟩ → newprd α = {C(Γ) ⇒ s2, ...}; s1 
-     α is a PRODUCER (data constructor) *)
+  (* FORM 3a: ⟨µα.s1 | case {C(Γ) ⇒ s2, ...}⟩ → new α = {C(Γ) ⇒ s2, ...}; s1 
+     α is a CONSUMER (Mu in producer position binds consumer) *)
   | (CT.Mu (alpha, s1), CT.Case patterns) ->
+    (* Compute free variables from all case branches *)
+    let all_free_vars = List.concat_map (fun (pat: CT.pattern) ->
+      let bound_vars = pat.CT.variables @ pat.CT.covariables in
+      let free_in_pat = Core.Free_vars.free_vars_statement pat.CT.statement in
+      List.filter (fun v -> not (List.mem v bound_vars) && not (Ident.equal v alpha)) free_in_pat
+    ) patterns in
+    let unique_free_vars = List.sort_uniq Ident.compare all_free_vars in
+    
+    (* Build gamma from free variables, looking up their types *)
+    let gamma = List.filter_map (fun v ->
+      List.assoc_opt v ctx.typ_env
+      |> Option.map (fun chi_ty -> (v, chi_ty))
+    ) unique_free_vars in
+    
     let branches = List.map (fun (pat: CT.pattern) ->
-      (* Get constructor info from Core type definitions *)
+      (* Get constructor info from Core definitions *)
       let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
       (* Build type substitution *)
       let ty_subst = if List.length type_args_core = List.length xtor_decl.quantified then
@@ -304,16 +321,31 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       (* Build args_env *)
       let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
                      (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
-      (* Collapse the statement *)
-      let body = collapse_statement ctx pat.CT.statement in
+      (* Collapse the statement with extended environment *)
+      let ctx_ext = { ctx with typ_env = args_env @ ctx.typ_env } in
+      let body = collapse_statement ctx_ext pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
     let result_ty = core_type_to_cut_type ctx.defs.type_defs ty in
-    CutT.NewPrd (alpha, result_ty, [], branches, collapse_statement ctx s1)
+    CutT.New (alpha, result_ty, gamma, branches, collapse_statement ctx s1)
   
-  (* FORM 3b: ⟨cocase {D(Γ) ⇒ s2, ...} | µ˜x.s1⟩ → new x = {D(Γ) ⇒ s2, ...}; s1 
-     x is a CONSUMER (codata destructor) *)
+  (* FORM 3b: ⟨cocase {D(Γ) ⇒ s2, ...} | µ˜x.s1⟩ → newprd x = {D(Γ) ⇒ s2, ...}; s1 
+     x is a PRODUCER (MuTilde in consumer position binds producer) *)
   | (CT.Cocase patterns, CT.MuTilde (x, s1)) ->
+    (* Compute free variables from all cocase branches *)
+    let all_free_vars = List.concat_map (fun (pat: CT.pattern) ->
+      let bound_vars = pat.CT.variables @ pat.CT.covariables in
+      let free_in_pat = Core.Free_vars.free_vars_statement pat.CT.statement in
+      List.filter (fun v -> not (List.mem v bound_vars) && not (Ident.equal v x)) free_in_pat
+    ) patterns in
+    let unique_free_vars = List.sort_uniq Ident.compare all_free_vars in
+    
+    (* Build gamma from free variables, looking up their types *)
+    let gamma = List.filter_map (fun v ->
+      List.assoc_opt v ctx.typ_env
+      |> Option.map (fun chi_ty -> (v, chi_ty))
+    ) unique_free_vars in
+    
     let branches = List.map (fun (pat: CT.pattern) ->
       (* Get destructor info from Core type definitions *)
       let xtor_decl = CT.get_xtor ctx.defs pat.CT.xtor in
@@ -331,12 +363,13 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
       (* Build args_env *)
       let args_env = (List.map2 (fun v ty -> (v, CutTypes.Prd ty)) pat.CT.variables prod_types_cut) @
                      (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
-      (* Collapse the statement *)
-      let body = collapse_statement ctx pat.CT.statement in
+      (* Collapse the statement with extended environment *)
+      let ctx_ext = { ctx with typ_env = args_env @ ctx.typ_env } in
+      let body = collapse_statement ctx_ext pat.CT.statement in
       (pat.CT.xtor, [], args_env, body)
     ) patterns in
     let result_ty = core_type_to_cut_type ctx.defs.type_defs ty in
-    CutT.New (x, result_ty, [], branches, collapse_statement ctx s1)
+    CutT.NewPrd (x, result_ty, gamma, branches, collapse_statement ctx s1)
   
   (* FORM 4a: ⟨x | D(Γ)⟩ → invoke x D(Γ) 
      x is a CONSUMER (receives codata value) *)
@@ -371,9 +404,6 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
 let collapse_term_def (ctx: collapse_context) (name: Path.t) (def: CT.term_def) : CutT.label * CutT.typ_env * CutT.statement =
   let label = CutT.MkLabel name in
   
-  (* Collapse the body *)
-  let body = collapse_statement ctx def.body in
-  
   (* Build environment preserving Core chiralities *)
   let typ_env = 
     (List.map (fun (v, ty) -> 
@@ -384,6 +414,12 @@ let collapse_term_def (ctx: collapse_context) (name: Path.t) (def: CT.term_def) 
       let cut_ty = core_type_to_cut_type ctx.defs.type_defs ty in
       (v, CutTypes.Cns cut_ty)  (* Consumer arguments stay as consumers *)
     ) def.cons_args) in
+  
+  (* Create context with type environment for collapsing the body *)
+  let ctx_with_env = { ctx with typ_env } in
+  
+  (* Collapse the body *)
+  let body = collapse_statement ctx_with_env def.body in
   
   (label, typ_env, body)
 
@@ -409,7 +445,7 @@ let extract_signatures_from_defs (defs: CT.definitions) : CutTypes.signature_def
 (** Entry point *)
 let collapse_definitions (defs: CT.definitions) : CutT.definitions =
   let signatures = extract_signatures_from_defs defs in
-  let ctx = { defs; signatures } in
+  let ctx = { defs; signatures; typ_env = [] } in
   
   let program = List.map (fun (name, def) -> 
     collapse_term_def ctx name def

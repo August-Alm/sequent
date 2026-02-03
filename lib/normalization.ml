@@ -15,6 +15,16 @@ let normalize_definitions (defs: CT.definitions) : Cut.definitions =
   (* Pass 1: Shrinking - naming and reduction *)
   let shrunken_defs = Shrinking.shrink_definitions defs in
   
+  (* Debug: print shrunken definitions *)
+  if false then begin
+    Printf.eprintf "\n=== After Shrinking ===\n";
+    List.iter (fun (name, def) ->
+      Printf.eprintf "\n%s:\n%s\n" 
+        (Common.Identifiers.Path.name name)
+        (CT.term_def_to_string def)
+    ) shrunken_defs.term_defs;
+  end;
+  
   (* Pass 2: Collapsing - Core to Cut transformation *)
   let collapsed_defs = Collapsing.collapse_definitions shrunken_defs in
   

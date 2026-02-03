@@ -108,7 +108,48 @@ let rec shrink_statement (ctx: shrink_context) (s: CT.statement) : CT.statement 
   match s with
   | CT.Cut (p, ty, c) -> shrink_cut ctx p ty c
   | CT.Add _ as add -> add
-  | CT.Call _ as call -> call
+  | CT.Call (f, ty_args, prods, cons) -> shrink_call ctx f ty_args prods cons
+
+(** Shrink a call: apply naming to ensure all arguments are variables *)
+and shrink_call (ctx: shrink_context) (f: Path.t) (ty_args: typ list) 
+    (prods: CT.producer list) (cons: CT.consumer list) : CT.statement =
+  (* Check if all producers are variables *)
+  let all_prods_vars = List.for_all (function CT.Var _ -> true | _ -> false) prods in
+  let all_cons_vars = List.for_all (function CT.Covar _ -> true | _ -> false) cons in
+  
+
+  if all_prods_vars && all_cons_vars then
+    (* All arguments are already variables, return as-is *)
+    CT.Call (f, ty_args, prods, cons)
+  else
+    (* Apply naming: lift non-variable arguments *)
+    (* Use a dummy type for intermediate bindings - the actual type doesn't matter for µ/µ̃ *)
+    let dummy_ty = TySym (Path.of_string "?") in
+    let rec lift_prods prods_acc = function
+      | [] -> lift_cons prods_acc [] cons
+      | (CT.Var _ as v) :: rest -> lift_prods (v :: prods_acc) rest
+      | p :: rest ->
+        (* Lift non-variable producer *)
+
+        let x = fresh_var () in
+        (* Shrink the new cut to handle nested non-variable terms *)
+        shrink_cut ctx p dummy_ty (CT.MuTilde (x, 
+          CT.Call (f, ty_args, List.rev prods_acc @ (CT.Var x :: rest), cons)))
+    and lift_cons prods_acc cons_acc = function
+      | [] -> 
+        (* All arguments are variables now *)
+        CT.Call (f, ty_args, List.rev prods_acc, List.rev cons_acc)
+      | (CT.Covar _ as cov) :: rest -> lift_cons prods_acc (cov :: cons_acc) rest
+      | c :: rest ->
+        (* Lift non-variable consumer *)
+
+        let alpha = fresh_covar () in
+        (* Shrink the new cut to handle nested non-variable terms *)
+        shrink_cut ctx (CT.Mu (alpha,
+          CT.Call (f, ty_args, List.rev prods_acc, List.rev cons_acc @ (CT.Covar alpha :: rest)))) 
+          dummy_ty c
+    in
+    lift_prods [] prods
 
 (** Shrink a cut: apply reduction rules from normalization.txt *)
 and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer) : CT.statement =
@@ -116,11 +157,11 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
   
   (* RENAMING: ⟨x | μ̃y.s⟩ → s{y → x} *)
   | (CT.Var x, CT.MuTilde (y, s)) ->
-    shrink_statement ctx (subst_statement [(y, x)] s)
+    shrink_statement ctx (subst_statement [(y, x)] (shrink_statement ctx s))
   
   (* RENAMING: ⟨μβ.s | α⟩ → s{β → α} *)
   | (CT.Mu (beta, s), CT.Covar alpha) ->
-    shrink_statement ctx (subst_statement [(beta, alpha)] s)
+    shrink_statement ctx (subst_statement [(beta, alpha)] (shrink_statement ctx s))
   
   (* KNOWN CUT: ⟨C(Γ0) | case {..., C(Γ) ⇒ s, ...}⟩ → s{Γ → Γ0} *)
   | (CT.Constructor (ctor, (_, prods, cons)), CT.Case patterns) ->
@@ -279,7 +320,9 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
             }
           ) xtors in
           shrink_statement ctx (CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.Case patterns))
-        | None -> CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+        | None -> 
+          Printf.eprintf "Warning: Critical pair but no xtors for type\n%!";
+          CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
      | Some false ->
        (* codata type: expand μ with cocase *)
        (match get_xtors ctx ty with
@@ -302,20 +345,24 @@ and shrink_cut (ctx: shrink_context) (p: CT.producer) (ty: typ) (c: CT.consumer)
             }
           ) xtors in
           shrink_statement ctx (CT.Cut (CT.Cocase patterns, ty, CT.MuTilde (x, shrink_statement ctx s2)))
-        | None -> CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
-     | None -> CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+        | None -> 
+          Printf.eprintf "Warning: Critical pair but no xtors for codata type\n%!";
+          CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
+     | None -> 
+       Printf.eprintf "Warning: Critical pair but type is not recognized\n%!";
+       CT.Cut (CT.Mu (alpha, shrink_statement ctx s1), ty, CT.MuTilde (x, shrink_statement ctx s2)))
   
   (* All other forms: recursively shrink subterms *)
-  | (CT.Mu (alpha, s), c) -> 
+  | (CT.Mu (alpha, s), _) -> 
     CT.Cut (CT.Mu (alpha, shrink_statement ctx s), ty, c)
-  | (p, CT.MuTilde (x, s)) ->
+  | (_, CT.MuTilde (x, s)) ->
     CT.Cut (p, ty, CT.MuTilde (x, shrink_statement ctx s))
-  | (CT.Cocase patterns, c) ->
+  | (CT.Cocase patterns, _) ->
     let patterns' = List.map (fun (pat: CT.pattern) ->
       { pat with statement = shrink_statement ctx pat.statement }
     ) patterns in
     CT.Cut (CT.Cocase patterns', ty, c)
-  | (p, CT.Case patterns) ->
+  | (_, CT.Case patterns) ->
     let patterns' = List.map (fun (pat: CT.pattern) ->
       { pat with statement = shrink_statement ctx pat.statement }
     ) patterns in

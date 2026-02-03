@@ -302,8 +302,8 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
       List.mem var current_env
     ) (List.map fst all_free) in
     let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
-    (* Linearize branches with their own environments *)
-    let branches' = List.map (linearize_branch sigs prog env_after_gamma) branches in
+    (* Linearize branches with gamma environment (branches have access to captured vars) *)
+    let branches' = List.map (linearize_branch sigs prog gamma_vars) branches in
     (* After new, v is added to environment *)
     let new_env = v :: env_after_gamma in
     let s_linearized = linearize_statement sigs prog new_env s' in
@@ -356,7 +356,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
       List.mem var current_env
     ) (List.map fst all_free) in
     let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
-    let branches' = List.map (linearize_branch sigs prog env_after_gamma) branches in
+    let branches' = List.map (linearize_branch sigs prog gamma_vars) branches in
     let new_env = v :: env_after_gamma in
     let s_linearized = linearize_statement sigs prog new_env s' in
     prepend_subst subst (CutT.NewPrd (v, ty, gamma, branches', s_linearized))
