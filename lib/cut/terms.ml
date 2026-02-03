@@ -40,8 +40,8 @@ type signatures = Types.signature_defs
 type substitutions = (variable * variable) list
 
 type statement =
-  (* jump l *)
-  | Jump of label
+  (* jump l[τ, ...] *)
+  | Jump of label * typ list
   (* substitute [v → v', ...]; s *)
   | Substitute of substitutions * statement
   (* extern m(v, ...){(Γ) ⇒ s, ...} *)
@@ -103,7 +103,7 @@ let string_of_substitutions subst =
 let rec string_of_statement ?(indent=0) s =
   let ind = String.make (indent * 2) ' ' in
   match s with
-  | Jump l -> ind ^ "jump " ^ Label.to_string l
+  | Jump (l, tys) -> ind ^ "jump " ^ Label.to_string l ^ string_of_typ_list tys
   
   | Substitute (subst, s') ->
     ind ^ "substitute " ^ string_of_substitutions subst ^ ";\n" ^
@@ -277,15 +277,16 @@ let rec check_statement
     (gamma: typ_env) 
     (s: statement) : unit =
   match s with
-  | Jump l ->
-    (* Rule [JUMP]: Θ(l) = Γ
-                    ----------
-                    Γ ⊢ jump l *)
+  | Jump (l, _type_args) ->
+    (* Rule [JUMP]: Θ(l) = Γ'    θ = [β̄ ↦ τ̄]    Γ = θ(Γ')
+                    ----------------------------------------
+                    Γ ⊢ jump l[τ̄] *)
     let expected_gamma = 
       match LabelEnv.lookup l theta with
       | Some g -> g
       | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
     in
+    (* TODO: Check type_args are well-kinded and apply type substitution θ to expected_gamma *)
     if not (Env.equal sigs gamma expected_gamma) then
       raise (TypeError ("Jump: environment mismatch for label " ^ Label.to_string l))
 

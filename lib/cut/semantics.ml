@@ -147,8 +147,8 @@ let step (config: config) : config option =
       }
     | _ -> raise (RuntimeError (Printf.sprintf "Expected consumer value for invoke on %s" (Ident.name v))))
   
-  (* (jump) ⟨jump l ∥ E⟩ → ⟨P(l) ∥ E⟩ *)
-  | CutT.Jump label ->
+  (* (jump) ⟨jump l[τ̄] ∥ E⟩ → ⟨P(l) ∥ E⟩ *)
+  | CutT.Jump (label, _type_args) ->
     let (_gamma, stmt) = lookup_label config.program label in
     Some { config with statement = stmt }
   

@@ -28,7 +28,7 @@ let lookup_method_signature (sigs: CutTypes.signature_defs) (method_sym: Path.t)
 (** Compute free variables in a statement, with multiplicity *)
 let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
   match s with
-  | CutT.Jump _label -> []
+  | CutT.Jump (_label, _type_args) -> []
   
   | CutT.Substitute (pairs, s') ->
     (* Free variables are those on the right-hand side of substitution pairs *)
@@ -193,13 +193,13 @@ let prepend_subst (subst: CutT.substitutions) (s: CutT.statement) : CutT.stateme
 let rec linearize_statement (sigs: CutTypes.signature_defs) (current_env: Ident.t list) (s: CutT.statement) 
     : CutT.statement =
   match s with
-  | CutT.Jump label ->
+  | CutT.Jump (label, type_args) ->
     (* Jump doesn't need variables, so drop all *)
     if current_env = [] then
-      CutT.Jump label
+      CutT.Jump (label, type_args)
     else
       (* Empty substitution effectively drops all variables *)
-      CutT.Substitute ([], CutT.Jump label)
+      CutT.Substitute ([], CutT.Jump (label, type_args))
   
   | CutT.Substitute (_pairs, s') ->
     (* This shouldn't appear in input from collapsing, but handle it anyway *)

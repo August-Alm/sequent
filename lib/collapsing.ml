@@ -145,16 +145,11 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
     let int_ty_cut = CutTypes.Ext.int_typ in
     let s = collapse_cut ctx (CT.Var n) int_ty c in
     CutT.Extern (Common.Types.Prim.add_sym, [v], [[(n, CutTypes.Ext int_ty_cut)], s])
-  | CT.Call (f, _ty_args, prods, cons) ->
-    let args = (List.map (function 
-      | CT.Var x -> x 
-      | _ -> failwith "Expected variable after shrinking") prods) @
-      (List.map (function 
-      | CT.Covar a -> a 
-      | _ -> failwith "Expected covariable after shrinking") cons) in
-    (* Call needs to be converted to invoke on first arg *)
-    if args = [] then failwith "Empty call"
-    else CutT.Invoke (List.hd args, f, [], List.tl args)
+  | CT.Call (f, ty_args, _prods, _cons) ->
+    (* Call f[τ̄](x̄, ᾱ) compiles to: jump f[τ̄]
+       Linearization will insert Substitute to match environments *)
+    let ty_args_cut = List.map (core_type_to_cut_type ctx.defs.type_defs) ty_args in
+    CutT.Jump (CutT.MkLabel f, ty_args_cut)
 
 (** Collapse a cut into one of the 4 symmetric forms *)
 and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ) (c: CT.consumer) : CutT.statement =

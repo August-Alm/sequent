@@ -1,0 +1,41 @@
+Typing judgments in Cut are of the form Σ Θ Γ ⊢ s, where Γ is the type environment
+and s is a statement. The translation to machine code is defined over typing derivations, as it
+uses the type environment Γ. A statement corresponds to a sequence of machine instructions.
+At each point in the program, the environment Γ describes the content of the hardware
+registers. Each variable in Γ corresponds to two adjacent registers, corresponding to the two
+components of values in the abstract machine operational semantics. They are assigned from left
+to right, starting with the first register not reserved for other purposes, which is x4.
+The translation of extern statements depends on the target platform and consists of
+corresponding hardware instructions or system calls. Top-level labels and jumps in Cut
+are translated to assembly labels and direct jumps. A top-level label is typed with an
+environment Γ which communicates what variables the label expects to be present, that
+is, which registers must contain what kind of content. As the reordering of variables is
+accomplished by explicit substitutions, the code for the latter performs the corresponding
+parallel moves of registers. The second purpose of explicit substitutions is to drop and
+duplicate variables. Since we use reference counting for memory management, the code for
+explicit substitutions also decrements and increments reference counts of memory blocks
+associated with the dropped and duplicated variables.
+The code for constructing and destructing producers and consumers is dual, in congruence
+with the abstract machine steps. Both let and new store values onto the heap. But for
+let, the block of memory is paired with a tag and contains the corresponding arguments,
+and for new, it is paired with a jump table and contains the closure environment. In both
+cases, the newly bound variable is thus represented by two registers. let and new are the
+only places where memory blocks are acquired. Similarly, both switch and invoke perform
+indirect jumps with a tag being used as offset into a jump table. But for switch, the offset is
+unknown as it was bound by let, and for invoke, the jump table is unknown as it was bound
+by new. In both cases, at the beginning of each branch, the values stored in the memory
+block are loaded back into registers and the block of memory is released if its reference count
+is 0. The exact way values are stored to memory blocks and loaded back into registers is
+determined by the type signatures.
+
+### Definitions are Labels, Jumps are Direct Jumps
+
+### Explicit Substitutions are Parallel Moves
+
+### Externs are System Calls and Hardware Instructions
+
+### Constructors are Tags, Fields are Memory Blocks, Pattern
+Matches are Jump Tables
+
+### Objects are Virtual Tables, Closures are Memory Blocks,
+Destructor Invocations are Indirect Jumps
