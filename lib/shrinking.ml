@@ -30,10 +30,15 @@ let fresh_covar =
     incr counter;
     Ident.mk (Printf.sprintf "a%d" !counter)
 
+let rec lookup_opt (subst: (Ident.t * Ident.t) list) (x: Ident.t) : Ident.t option =
+  match subst with
+  | [] -> None
+  | (y, z) :: rest -> if Ident.equal x y then Some z else lookup_opt rest x
+
 (** Substitution on Core AST *)
 let rec subst_producer (subst: (Ident.t * Ident.t) list) (p: CT.producer) : CT.producer =
   match p with
-  | CT.Var x -> CT.Var (List.assoc_opt x subst |> Option.value ~default:x)
+  | CT.Var x -> CT.Var (lookup_opt subst x |> Option.value ~default:x)
   | CT.Mu (alpha, s) -> 
     let subst' = List.filter (fun (v, _) -> not (Ident.equal v alpha)) subst in
     CT.Mu (alpha, subst_statement subst' s)
@@ -47,7 +52,7 @@ let rec subst_producer (subst: (Ident.t * Ident.t) list) (p: CT.producer) : CT.p
 
 and subst_consumer (subst: (Ident.t * Ident.t) list) (c: CT.consumer) : CT.consumer =
   match c with
-  | CT.Covar alpha -> CT.Covar (List.assoc_opt alpha subst |> Option.value ~default:alpha)
+  | CT.Covar alpha -> CT.Covar (lookup_opt subst alpha |> Option.value ~default:alpha)
   | CT.MuTilde (x, s) ->
     let subst' = List.filter (fun (v, _) -> not (Ident.equal v x)) subst in
     CT.MuTilde (x, subst_statement subst' s)
@@ -81,7 +86,7 @@ let is_data_type (ctx: shrink_context) (ty: typ) : bool option =
   | TyDef (Code _) -> Some false
   | TySym path ->
     (* Look up the type symbol in definitions *)
-    (match List.assoc_opt path ctx.defs.type_defs with
+    (match get_def_opt ctx.defs.type_defs path with
     | Some (Data _, _) -> Some true
     | Some (Code _, _) -> Some false
     | Some (Prim _, _) -> None
@@ -95,7 +100,7 @@ let get_xtors (ctx: shrink_context) (ty: typ) : ty_xtor list option =
   | TyDef (Code td) -> Some td.xtors
   | TySym path ->
     (* Look up the type symbol in definitions *)
-    (match List.assoc_opt path ctx.defs.type_defs with
+    (match get_def_opt ctx.defs.type_defs path with
     | Some (Data td, _) -> Some td.xtors
     | Some (Code td, _) -> Some td.xtors
     | Some (Prim _, _) -> None

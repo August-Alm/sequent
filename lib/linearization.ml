@@ -14,13 +14,23 @@ open Common.Identifiers
 module CutT = Cut.Terms
 module CutTypes = Cut.Types
 
+let rec lookup_opt (lst: (Ident.t * 'a) list) (x: Ident.t): 'a option =
+  match lst with
+  | [] -> None
+  | (y, v) :: rest -> if Ident.equal x y then Some v else lookup_opt rest x
+
+let rec remove_assoc (x: Ident.t) (lst: (Ident.t * 'a) list) : (Ident.t * 'a) list =
+  match lst with
+  | [] -> []
+  | (y, v) :: rest ->
+    if Ident.equal x y then rest else (y, v) :: remove_assoc x rest
+
 (** Look up a method signature by symbol *)
 let lookup_method_signature (sigs: CutTypes.signature_defs) (method_sym: Path.t) 
     : (CutTypes.signature * CutTypes.method_sig) option =
   List.find_map (fun (_, (sig_def, _)) ->
     List.find_map (fun msig ->
-      if Path.equal msig.CutTypes.symbol method_sym then
-        Some (sig_def, msig)
+      if Path.equal msig.CutTypes.symbol method_sym then Some (sig_def, msig)
       else None
     ) sig_def.CutTypes.methods
   ) sigs
@@ -133,11 +143,11 @@ and count_occurrences (vars: Ident.t list) : (Ident.t * int) list =
     match vars with
     | [] -> acc
     | v :: rest ->
-      let count = match List.assoc_opt v acc with
+      let count = match lookup_opt acc v with
         | Some n -> n + 1
         | None -> 1
       in
-      let acc' = (v, count) :: List.remove_assoc v acc in
+      let acc' = (v, count) :: remove_assoc v acc in
       go rest acc'
   in
   go vars []
@@ -149,11 +159,11 @@ and merge_var_counts (xs: (Ident.t * int) list) (ys: (Ident.t * int) list)
     match xs with
     | [] -> ys
     | (v, n) :: rest ->
-      let m = match List.assoc_opt v ys with
+      let m = match lookup_opt ys v with
         | Some k -> k
         | None -> 0
       in
-      (v, n + m) :: go rest (List.remove_assoc v ys)
+      (v, n + m) :: go rest (remove_assoc v ys)
   in
   go xs ys
 
@@ -164,11 +174,11 @@ and merge_var_counts_max (xs: (Ident.t * int) list) (ys: (Ident.t * int) list)
     match xs with
     | [] -> ys
     | (v, n) :: rest ->
-      let m = match List.assoc_opt v ys with
+      let m = match lookup_opt ys v with
         | Some k -> k
         | None -> 0
       in
-      (v, max n m) :: go rest (List.remove_assoc v ys)
+      (v, max n m) :: go rest (remove_assoc v ys)
   in
   go xs ys
 
@@ -314,8 +324,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     (* Branches are mutually exclusive - take max, not sum *)
     let branch_free_lists = List.map free_vars_branch branches in
     let free_in_branches = free_vars_branches_max branch_free_lists in
-    let preserve = List.filter (fun w -> not (Ident.equal w v))
-      (List.map fst free_in_branches) in
+    let preserve = List.filter (fun w -> not (Ident.equal w v)) (List.map fst free_in_branches) in
     let (subst, env_after) = build_substitution current_env [v] preserve [] in
     (* Remove v from env_after since it's consumed by the switch *)
     let env_for_branches = List.filter (fun w -> not (Ident.equal w v)) env_after in
@@ -365,8 +374,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     (* Dual of Switch - same logic *)
     let branch_free_lists = List.map free_vars_branch branches in
     let free_in_branches = free_vars_branches_max branch_free_lists in
-    let preserve = List.filter (fun w -> not (Ident.equal w v))
-      (List.map fst free_in_branches) in
+    let preserve = List.filter (fun w -> not (Ident.equal w v)) (List.map fst free_in_branches) in
     let (subst, env_after) = build_substitution current_env [v] preserve [] in
     let env_for_branches = List.filter (fun w -> not (Ident.equal w v)) env_after in
     let branches' = List.map (linearize_branch sigs prog env_for_branches) branches in
@@ -427,7 +435,8 @@ and build_substitution (_current_env: Ident.t list) (needed: Ident.t list)
     match vars with
     | [] -> (acc_subst, acc_fresh_map)
     | v :: rest ->
-      let count = match List.assoc_opt v var_counts with
+      let count =
+        match lookup_opt var_counts v with
         | Some n -> n
         | None -> 1
       in
@@ -436,7 +445,8 @@ and build_substitution (_current_env: Ident.t list) (needed: Ident.t list)
         build_pairs rest (acc_subst @ [(v, v)]) acc_fresh_map
       else
         (* Multiple uses: need contraction *)
-        let existing_fresh = match List.assoc_opt v acc_fresh_map with
+        let existing_fresh =
+          match lookup_opt acc_fresh_map v with
           | Some fs -> fs
           | None -> []
         in
@@ -446,7 +456,7 @@ and build_substitution (_current_env: Ident.t list) (needed: Ident.t list)
           generate_fresh_vars v fresh_needed
         else [] in
         let all_fresh = existing_fresh @ fresh_vars in
-        let acc_fresh_map' = (v, all_fresh) :: List.remove_assoc v acc_fresh_map in
+        let acc_fresh_map' = (v, all_fresh) :: remove_assoc v acc_fresh_map in
         
         (* Create substitution pairs: v → v, fresh1 → v, fresh2 → v, ... *)
         let subst_entries = (v, v) :: List.map (fun fv -> (fv, v)) all_fresh in

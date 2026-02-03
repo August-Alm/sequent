@@ -19,11 +19,19 @@ module CT = Core.Terms
 module CutT = Cut.Terms
 module CutTypes = Cut.Types
 
-type collapse_context = {
-  defs: CT.definitions;
-  signatures: CutTypes.signature_defs;
-  typ_env: (Ident.t * CutTypes.chirality_type) list;
-}
+type collapse_context =
+  { defs: CT.definitions
+  ; signatures: CutTypes.signature_defs
+  ; typ_env: (Ident.t * CutTypes.chirality_type) list
+  }
+
+let get_chirality_opt (ctx: collapse_context) (x: Ident.t) : CutTypes.chirality_type option =
+  let rec go typ_env x =
+    match typ_env with
+    | [] -> None
+    | (y, chi_ty) :: rest -> if Ident.equal x y then Some chi_ty else go rest x
+  in
+  go ctx.typ_env x
 
 (** Convert Core kind to Cut kind *)
 let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =
@@ -81,7 +89,7 @@ and core_type_to_cut_type_inner (ty_defs: ty_defs) (inside_decl: Path.t option) 
       CutTypes.TySym path
     | _ ->
       (* Different type or not inside a declaration - expand normally *)
-      (match List.assoc_opt path ty_defs with
+      (match get_def_opt ty_defs path with
       | Some (Data td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
       | Some (Code td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
       | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
@@ -97,7 +105,7 @@ and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
   match ty with
   | TySym path ->
     (* Look up the type symbol in definitions *)
-    (match List.assoc_opt path ty_defs with
+    (match get_def_opt ty_defs path with
     | Some (Data td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
     | Some (Code td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
     | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
@@ -155,7 +163,7 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
       | CT.Covar a -> a 
       | _ -> failwith "Expected covariable after shrinking") cons) in
     (* Look up target function's parameter names *)
-    let target_def = List.assoc f ctx.defs.term_defs in
+    let target_def = CT.get_term_def ctx.defs f in
     let target_params = (List.map fst target_def.prod_args) @ (List.map fst target_def.cons_args) in
     (* Build substitution: target params ← actual args *)
     let subst = List.combine target_params arg_vars in
@@ -297,8 +305,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     
     (* Build gamma from free variables, looking up their types *)
     let gamma = List.filter_map (fun v ->
-      List.assoc_opt v ctx.typ_env
-      |> Option.map (fun chi_ty -> (v, chi_ty))
+      get_chirality_opt ctx v |> Option.map (fun chi_ty -> (v, chi_ty))
     ) unique_free_vars in
     
     let branches = List.map (fun (pat: CT.pattern) ->
@@ -339,8 +346,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
     
     (* Build gamma from free variables, looking up their types *)
     let gamma = List.filter_map (fun v ->
-      List.assoc_opt v ctx.typ_env
-      |> Option.map (fun chi_ty -> (v, chi_ty))
+      get_chirality_opt ctx v |> Option.map (fun chi_ty -> (v, chi_ty))
     ) unique_free_vars in
     
     let branches = List.map (fun (pat: CT.pattern) ->

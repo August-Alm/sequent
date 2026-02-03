@@ -97,6 +97,18 @@ type definitions =
   ; term_defs: (Path.t * term_def) list
   }
 
+let get_term_def_opt (defs: definitions) (sym: Path.t) : term_def option =
+  let rec go defs sym =
+    match defs with
+    | [] -> None
+    | (s, def) :: rest -> if Path.equal s sym then Some def else go rest sym
+  in go defs.term_defs sym
+
+let get_term_def (defs: definitions) (sym: Path.t) : term_def =
+  match get_term_def_opt defs sym with
+  | Some def -> def
+  | None -> failwith ("undefined term symbol: " ^ Path.name sym)
+
 type context =
   { kinds: kind Ident.tbl
   ; types: typ Ident.tbl
@@ -261,10 +273,8 @@ let term_def_to_string (td: term_def) : string =
   name ^ args_str ^ ": " ^ ret_str ^ " =\n  " ^ body_str
 
 (* Helper functions to look up type definitions and xtors *)
-let get_type_def (defs: definitions) (xtor: Path.t) : (ty_def * kind) =
-  match List.assoc_opt xtor defs.type_defs with
-  | Some def -> def
-  | None -> error ("undefined type symbol: " ^ Path.name xtor)
+let get_type_def (defs: definitions) (sym: Path.t) : (ty_def * kind) =
+  get_def defs.type_defs sym
 
 (* Check if a destructor symbol is the primitive $inst{k} for some kind k *)
 let is_inst_destructor (sym: Path.t) : kind option =

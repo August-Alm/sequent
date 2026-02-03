@@ -146,10 +146,15 @@ let primitive_ty_defs : ty_defs =
   ; (Prim.fun_sym, (Prim.fun_def, KArrow (KStar, KArrow (KStar, KStar))))
   ]
 
-let rec get_def (defs: ty_defs) (sym: Path.t) =
+let rec get_def_opt (defs: ty_defs) (sym: Path.t) =
   match defs with
-  | [] -> failwith ("undefined type symbol: " ^ Path.name sym)
-  | (s, def) :: rest -> if Path.equal s sym then def else get_def rest sym
+  | [] -> None
+  | (s, def) :: rest -> if Path.equal s sym then Some def else get_def_opt rest sym
+
+let get_def (defs: ty_defs) (sym: Path.t) =
+  match get_def_opt defs sym with
+  | Some def -> def
+  | None -> failwith ("undefined type symbol: " ^ Path.name sym)
 
 let get_kind (ks: (typ option * kind) list) =
   let rec loop ks =
@@ -434,7 +439,7 @@ let rec whnf (seen: Path.t list) (defs: ty_defs) (ty: typ) =
         seen, ty
       else
         let seen' = sym :: seen in
-        (match List.assoc_opt sym defs with
+        (match get_def_opt defs sym with
         | Some (Code td, _) -> seen', TyDef (Code (inst1 seen' defs td a))
         | Some (Data td, _) -> seen', TyDef (Data (inst1 seen' defs td a))
         | Some (Prim _, _) -> seen', ty
