@@ -26,7 +26,8 @@ type kind =
 type typ =
   | TyVar of Ident.t                (* type variable *)
   | TyApp of typ * typ              (* type application T(A) *)
-  | TySig of signature              (* signature type *)
+  | TySym of Path.t                 (* reference to signature symbol *)
+  | TyDef of signature              (* instantiated signature definition *)
   | TyPrim of Path.t * kind         (* primitive external type *)
 
 (** Signatures unify data and codata types
@@ -40,8 +41,9 @@ type typ =
 *)
 and signature =
   { symbol: Path.t
-    (* Type parameters with their kinds, e.g., [(a, KStar)] for List a *)
-  ; parameters: (Ident.t * kind) list
+    (* Type parameters with their kinds, e.g., [(None, KStar)] for List a.
+      Only instantiated parameters are Some's. *)
+  ; parameters: (typ option * kind) list
     (* Methods (constructors/destructors) *)
   ; methods: method_sig list
   }
@@ -74,7 +76,7 @@ and method_sig =
        - cns T for destructors: New binds the consumer, Invoke calls it *)
   ; result_type: chirality_type
     (* Type constraints for GADTs, e.g., (a, TySym Nat) means a must equal Nat *)
-  ; constraints: (Ident.t * typ) list
+  ; constraints: (Ident.t * typ) list option
   }
 
 (** Typed parameter: variable with its chirality type.
@@ -99,14 +101,28 @@ type signature_defs = (Path.t * (signature * kind)) list
 (** Type variable environment for type checking *)
 type type_env = (Ident.t * kind) list
 
-(** Primitive types *)
-module Prim = struct
+(** External/primitive types *)
+module Ext = struct
   let int_sym = Common.Types.Prim.int_sym
   let int_typ = TyPrim (int_sym, KStar)
   
-  (** Utility: check if a type is a primitive *)
-  let is_primitive (sym: Path.t) : bool =
-    Path.equal sym int_sym
+  let box_sym = Path.of_primitive 200 "box"
+  let unbox_sym = Path.of_primitive 201 "unbox"
+  let unbox_def =
+    let a = Ident.mk "a" in
+    { parent = box_sym
+    ; symbol = unbox_sym
+    ; quantified = [ (a, KStar) ]
+    ; environment = [ (Ident.mk "x", Ext (TyVar a)) ]
+    ; result_type = Ext (TyVar a)
+    ; constraints = None
+    }
+  let box_def = 
+    { symbol = box_sym
+    ; parameters = [ (None, KStar) ]
+    ; methods = [ unbox_def ]
+    }
+  let box_typ = TySym box_sym
 end
 
 (** Kind utilities *)
@@ -137,64 +153,247 @@ end
 
 (** Type utilities *)
 module Type = struct
-  (** Get the kind of a signature *)
-  let signature_kind (sig_def: signature) : kind =
+  (** Look up a type variable in a substitution list *)
+  let rec lookup_subst (x: Ident.t) (subst: (Ident.t * typ) list) : typ option =
+    match subst with
+    | [] -> None
+    | (y, ty) :: rest ->
+      if Ident.equal x y then Some ty
+      else lookup_subst x rest
+  
+  (** Get the kind of a signature from its parameters *)
+  let signature_kind (params: (typ option * kind) list) : kind =
     List.fold_right (fun (_, k) acc -> KArrow (k, acc)) 
-      sig_def.parameters KStar
+      params KStar
+  
+  (** Substitute into a chirality type *)
+  let rec substitute_chirality (subst: (Ident.t * typ) list) (chi: chirality_type) : chirality_type =
+    match chi with
+    | Prd ty -> Prd (substitute subst ty)
+    | Cns ty -> Cns (substitute subst ty)
+    | Ext ty -> Ext (substitute subst ty)
   
   (** Substitute type variables in a type *)
-  let rec substitute (subst: (Ident.t * typ) list) (ty: typ) : typ =
+  and substitute (subst: (Ident.t * typ) list) (ty: typ) : typ =
     match ty with
     | TyVar x ->
-      (match List.assoc_opt x subst with
+      (match lookup_subst x subst with
        | Some ty' -> ty'
        | None -> ty)
     | TyApp (t1, t2) ->
       TyApp (substitute subst t1, substitute subst t2)
-    | TySig sig_def ->
-      (* Don't substitute inside signatures - they are closed *)
-      TySig sig_def
+    | TySym _ -> ty  (* references don't change *)
+    | TyDef sig_def ->
+      (* Substitute into instantiated signature parameters and methods *)
+      TyDef (substitute_sig subst sig_def)
     | TyPrim _ -> ty
+  
+  (** Substitute into a signature definition *)
+  and substitute_sig (subst: (Ident.t * typ) list) (sig_def: signature) : signature =
+    { sig_def with
+      parameters = List.map (fun (t_opt, k) ->
+        (Option.map (substitute subst) t_opt, k)) sig_def.parameters
+    ; methods = List.map (substitute_method subst) sig_def.methods
+    }
+  
+  (** Substitute into a method signature *)
+  and substitute_method (subst: (Ident.t * typ) list) (m: method_sig) : method_sig =
+    (* Filter out quantified variables to avoid capture *)
+    let subst' = List.filter (fun (x, _) ->
+      not (List.exists (fun (y, _) -> Ident.equal x y) m.quantified)
+    ) subst in
+    { m with
+      environment = List.map (fun (v, chi) -> (v, substitute_chirality subst' chi)) m.environment
+    ; result_type = substitute_chirality subst' m.result_type
+    ; constraints = Option.map (List.map (fun (x, ty) -> (x, substitute subst' ty))) m.constraints
+    }
+  
+  (** Substitute using an Ident table (more efficient for complex substitutions) *)
+  let rec subst_tbl (env: typ Ident.tbl) (ty: typ) : typ =
+    match ty with
+    | TyVar x ->
+      (match Ident.find_opt x env with
+       | Some ty' -> ty'
+       | None -> ty)
+    | TyApp (t1, t2) ->
+      TyApp (subst_tbl env t1, subst_tbl env t2)
+    | TySym _ -> ty  (* references don't change *)
+    | TyDef sig_def ->
+      (* Substitute into instantiated signature parameters and methods *)
+      TyDef (subst_tbl_sig env sig_def)
+    | TyPrim _ -> ty
+  
+  and subst_tbl_sig (env: typ Ident.tbl) (sig_def: signature) : signature =
+    { sig_def with
+      parameters = List.map (fun (t_opt, k) ->
+        (Option.map (subst_tbl env) t_opt, k)) sig_def.parameters
+    ; methods = List.map (subst_tbl_method env) sig_def.methods
+    }
+  
+  and subst_tbl_method (env: typ Ident.tbl) (m: method_sig) : method_sig =
+    (* Filter out quantified variables to avoid capture *)
+    let env' = Ident.filter (fun x _ ->
+      not (List.exists (fun (y, _) -> Ident.equal x y) m.quantified)
+    ) env in
+    { m with
+      environment = List.map (fun (v, chi) -> (v, subst_tbl_chirality env' chi)) m.environment
+    ; result_type = subst_tbl_chirality env' m.result_type
+    ; constraints = Option.map (List.map (fun (x, ty) -> (x, subst_tbl env' ty))) m.constraints
+    }
+  
+  and subst_tbl_chirality (env: typ Ident.tbl) (chi: chirality_type) : chirality_type =
+    match chi with
+    | Prd ty -> Prd (subst_tbl env ty)
+    | Cns ty -> Cns (subst_tbl env ty)
+    | Ext ty -> Ext (subst_tbl env ty)
   
   (** Apply a type constructor to an argument *)
   let apply (t1: typ) (t2: typ) : typ =
     TyApp (t1, t2)
   
-  (** Get free type variables in a type *)
-  let rec free_vars (ty: typ) : Ident.t list =
+  (** Check if a variable occurs in a type (for occurs check in unification) *)
+  let rec occurs (x: Ident.t) (ty: typ) : bool =
     match ty with
-    | TyVar x -> [x]
-    | TyApp (t1, t2) -> free_vars t1 @ free_vars t2
-    | TySig _ -> []
-    | TyPrim _ -> []
+    | TyVar y -> Ident.equal x y
+    | TyApp (t1, t2) -> occurs x t1 || occurs x t2
+    | TySym _ -> false  (* references contain no variables *)
+    | TyDef sig_def -> occurs_sig x sig_def  (* check instantiated parameters *)
+    | TyPrim _ -> false
+  
+  and occurs_sig (x: Ident.t) (sig_def: signature) : bool =
+    List.exists (fun (t_opt, _) ->
+      match t_opt with
+      | None -> false
+      | Some ty -> occurs x ty
+    ) sig_def.parameters
   
   (** Convert chirality type to underlying type *)
   let of_chirality = function
     | Prd ty | Cns ty | Ext ty -> ty
   
-  (** Check if two types are equal (structural equality) *)
-  let rec equal (t1: typ) (t2: typ) : bool =
-    let result = match t1, t2 with
-    | TyVar x, TyVar y -> Ident.equal x y
-    | TyApp (a, b), TyApp (c, d) -> equal a c && equal b d
-    | TySig s1, TySig s2 -> Path.equal s1.symbol s2.symbol
-    | TyPrim (p1, _), TyPrim (p2, _) -> Path.equal p1 p2
-    | _ -> false
+  (** Instantiate a signature with one type argument, filtering methods by constraints *)
+  let inst1 (_sigs: signature_defs) (sig_def: signature) (arg: typ) : signature =
+    match sig_def.parameters with
+    | [] -> failwith "Cannot instantiate signature with no parameters"
+    | (_, k) :: rest_params ->
+      (* Build substitution for the first parameter *)
+      let new_params = (Some arg, k) :: rest_params in
+      
+      (* Filter methods whose constraints are satisfiable with this instantiation *)
+      let filter_method (m: method_sig) : bool =
+        match m.constraints with
+        | None -> true  (* No constraints, always available *)
+        | Some constraints ->
+          (* Check if all constraints can unify with the instantiation *)
+          (* For now, we keep all methods - proper constraint checking comes later *)
+          List.for_all (fun (_var, _required_ty) ->
+            (* If this constraint mentions the first parameter, check unification *)
+            true  (* TODO: implement proper constraint checking *)
+          ) constraints
+      in
+      
+      { sig_def with
+        parameters = new_params
+      ; methods = List.filter filter_method sig_def.methods
+      }
+  
+  (** Weak head normal form - expand type symbols to their definitions and instantiate applications *)
+  let rec whnf (seen: Path.t list) (sigs: signature_defs) (ty: typ) : Path.t list * typ =
+    let lookup_sig sym =
+      let rec go = function
+        | [] -> None
+        | (s, sig_def) :: rest ->
+          if Path.equal s sym then Some sig_def
+          else go rest
+      in
+      go sigs
     in
-    if not result then begin
-      Printf.fprintf stderr "  Type mismatch: t1=%s, t2=%s\n%!"
-        (match t1 with
-         | TyVar _ -> "TyVar"
-         | TyApp _ -> "TyApp"
-         | TySig _ -> "TySig"
-         | TyPrim (p, _) -> "TyPrim(" ^ Path.name p ^ ")")
-        (match t2 with
-         | TyVar _ -> "TyVar"
-         | TyApp _ -> "TyApp"
-         | TySig _ -> "TySig"
-         | TyPrim (p, _) -> "TyPrim(" ^ Path.name p ^ ")")
+    match ty with
+    | TyApp (f, a) ->
+      let seen', f' = whnf seen sigs f in
+      (match f' with
+      | TySym sym ->
+        (* Look up signature and instantiate it *)
+        (match lookup_sig sym with
+        | Some (sig_def, _) ->
+          if List.mem sym seen' then
+            (seen', ty)  (* Cycle detected, stop *)
+          else
+            (sym :: seen', TyDef (inst1 sigs sig_def a))
+        | None -> (seen', ty))
+      | TyDef sig_def ->
+        (* Further instantiation *)
+        (seen', TyDef (inst1 sigs sig_def a))
+      | _ ->
+        if f' == f then (seen', ty)
+        else (seen', TyApp (f', a)))
+    | TyVar _ -> (seen, ty)
+    | TySym sym ->
+      (* Expand symbol reference to definition *)
+      if List.mem sym seen then
+        (seen, ty)  (* Cycle detected, stop *)
+      else
+        (match lookup_sig sym with
+        | Some (sig_def, _) ->
+          (sym :: seen, TyDef sig_def)
+        | None -> (seen, ty))  (* Unknown symbol, leave as-is *)
+    | TyDef _ -> (seen, ty)  (* Already expanded *)
+    | TyPrim _ -> (seen, ty)
+  
+  (** Reduce a type to normal form *)
+  let reduce (sigs: signature_defs) (ty: typ) : typ =
+    snd (whnf [] sigs ty)
+  
+  (** Reduce with seen list to prevent infinite loops *)
+  let reduce_seen (seen: Path.t list) (sigs: signature_defs) (ty: typ) : typ =
+    snd (whnf seen sigs ty)
+  
+  (** Unification: returns Some substitution if types unify, None otherwise *)
+  let rec unify (seen: Path.t list) (sigs: signature_defs) (t1: typ) (t2: typ) 
+      : (typ Ident.tbl) option =
+    let res = ref None in
+    begin
+      (match t1, t2 with
+      | TyVar x, TyVar y when Ident.equal x y ->
+        res := Some Ident.emptytbl
+      | TyVar x, t | t, TyVar x ->
+        (* Occurs check: don't allow x = ... x ... *)
+        if not (occurs x t) then res := Some (Ident.add x t Ident.emptytbl)
+      | TyApp (f1, a1), TyApp (f2, a2) ->
+        (match unify seen sigs f1 f2 with
+        | None -> ()
+        | Some sub1 ->
+          (match unify seen sigs (subst_tbl sub1 a1) (subst_tbl sub1 a2) with
+          | None -> ()
+          | Some sub2 -> res := Some (Ident.join sub2 sub1)))
+      | TySym s1, TySym s2 when Path.equal s1 s2 ->
+        res := Some Ident.emptytbl
+      | TyDef s1, TyDef s2 when Path.equal s1.symbol s2.symbol ->
+        (* Unify instantiated signatures - they must have same symbol and compatible parameters *)
+        (* TODO: also check parameter unification *)
+        res := Some Ident.emptytbl
+      | TyPrim (p1, _), TyPrim (p2, _) when Path.equal p1 p2 ->
+        res := Some Ident.emptytbl
+      | _ -> ());
+      
+      (* If direct unification failed, try reducing both sides *)
+      if Option.is_none !res then
+        let t1' = reduce_seen seen sigs t1 in
+        if not (t1' == t1) then
+          res := unify seen sigs t1' t2
+        else
+          let t2' = reduce_seen seen sigs t2 in
+          if not (t2' == t2) then
+            res := unify seen sigs t1 t2'
     end;
-    result
+    !res
+  
+  (** Check if two types are equivalent (unify with empty substitution) *)
+  let equivalent (sigs: signature_defs) (t1: typ) (t2: typ) : bool =
+    match unify [] sigs t1 t2 with
+    | Some subs -> Ident.is_empty subs
+    | None -> false
+  
 end
 
 (** Chirality type operations *)
@@ -204,27 +403,38 @@ let substitute_chirality (subst: (Ident.t * typ) list) (chi: chirality_type) : c
   | Cns ty -> Cns (Type.substitute subst ty)
   | Ext ty -> Ext (Type.substitute subst ty)
 
-let equal_chirality (c1: chirality_type) (c2: chirality_type) : bool =
+let equivalent_chirality sigs (c1: chirality_type) (c2: chirality_type) : bool =
   match c1, c2 with
-  | Prd t1, Prd t2 -> Type.equal t1 t2
-  | Cns t1, Cns t2 -> Type.equal t1 t2
-  | Ext t1, Ext t2 -> Type.equal t1 t2
+  | Prd t1, Prd t2 -> Type.equivalent sigs t1 t2
+  | Cns t1, Cns t2 -> Type.equivalent sigs t1 t2
+  | Ext t1, Ext t2 -> Type.equivalent sigs t1 t2
   | _ -> false
 
 (** Signature utilities *)
 module Sig = struct
   (** Look up a signature by symbol *)
-  let lookup (sigs: signature_defs) (sym: Path.t) : (signature * kind) option =
-    List.assoc_opt sym sigs
+  let rec lookup (sigs: signature_defs) (sym: Path.t) : (signature * kind) option =
+    match sigs with
+    | [] -> None
+    | (s, sig_def) :: rest ->
+      if Path.equal s sym then Some sig_def
+      else lookup rest sym
   
   let lookup_exn (sigs: signature_defs) (sym: Path.t) : signature * kind =
-    match List.assoc_opt sym sigs with
+    match lookup sigs sym with
     | Some result -> result
     | None -> failwith ("Signature not found: " ^ Path.name sym)
   
   (** Find a method in a signature *)
   let find_method (sig_def: signature) (method_sym: Path.t) : method_sig option =
-    List.find_opt (fun (m: method_sig) -> Path.equal m.symbol method_sym) sig_def.methods
+    let rec go (methods:  method_sig list)method_sym =
+      match methods with
+      | [] -> None
+      | m :: rest ->
+        if Path.equal m.symbol method_sym then Some m
+        else go rest method_sym
+    in
+    go sig_def.methods method_sym
   
   let find_method_exn (sig_def: signature) (method_sym: Path.t) : method_sig =
     match find_method sig_def method_sym with
@@ -241,7 +451,7 @@ module Sig = struct
       failwith "Wrong number of type arguments"
     else
       (* Build the fully applied type *)
-      List.fold_left Type.apply (TySig sig_def) args
+      List.fold_left Type.apply (TySym sig_def.symbol) args
 end
 
 (** Pretty printing *)
@@ -252,7 +462,8 @@ module Pretty = struct
     | TyApp (t1, t2) ->
       let s = typ_to_string ~nested:true t1 ^ "(" ^ typ_to_string t2 ^ ")" in
       if nested then "(" ^ s ^ ")" else s
-    | TySig sig_def -> Path.name sig_def.symbol
+    | TySym sym -> Path.name sym
+    | TyDef sig_def -> Path.name sig_def.symbol  (* show symbol of instantiated sig *)
     | TyPrim (sym, _) -> Path.name sym
   
   let chirality_to_string = function
@@ -274,9 +485,11 @@ module Pretty = struct
       else "(" ^ String.concat ", " (List.map typed_param_to_string m.environment) ^ ")"
     in
     let constr_str =
-      if m.constraints = [] then ""
-      else " where " ^ String.concat ", " (List.map (fun (x, ty) ->
-        Ident.name x ^ " = " ^ typ_to_string ty) m.constraints)
+      match m.constraints with
+      | None -> ""
+      | Some constraints ->
+        " where [" ^ String.concat ", " (List.map (fun (x, ty) ->
+          Ident.name x ^ " = " ^ typ_to_string ty) constraints) ^ "]"
     in
     quant_str ^ Path.name m.symbol ^ " : " ^ env_str ^ 
     " : " ^ chirality_to_string m.result_type ^ constr_str
@@ -285,7 +498,8 @@ module Pretty = struct
     let params_str =
       if sig_def.parameters = [] then ""
       else "(" ^ String.concat ", " (List.map (fun (x, k) ->
-        Ident.name x ^ " : " ^ Kind.to_string k) sig_def.parameters) ^ ")"
+        (match x with None -> "_" | Some a -> typ_to_string a) ^
+        " : " ^ Kind.to_string k) sig_def.parameters) ^ ")"
     in
     let methods_str =
       String.concat "\n  " (List.map method_sig_to_string sig_def.methods)
@@ -297,6 +511,14 @@ end
 (** Type checking and inference *)
 module TypeCheck = struct
   type error = string
+  
+  (** Look up a type variable in a type environment *)
+  let rec lookup_type_var (x: Ident.t) (env: type_env) : kind option =
+    match env with
+    | [] -> None
+    | (y, k) :: rest ->
+      if Ident.equal x y then Some k
+      else lookup_type_var x rest
   
   (** Kind checking: ensure a type has the expected kind *)
   let rec check_kind (env: type_env) (sigs: signature_defs) (ty: typ) (expected: kind) 
@@ -313,31 +535,37 @@ module TypeCheck = struct
       : (kind, error) result =
     match ty with
     | TyVar x ->
-      (match List.assoc_opt x env with
-       | Some k -> Ok k
-       | None -> Error ("Unbound type variable: " ^ Ident.name x))
+      (match lookup_type_var x env with
+      | Some k -> Ok k
+      | None -> Error ("Unbound type variable: " ^ Ident.name x))
     
     | TyApp (t1, t2) ->
       (match infer_kind env sigs t1 with
-       | Error e -> Error e
-       | Ok k1 ->
-         match k1 with
-         | KStar -> Error "Cannot apply type of kind type"
-         | KArrow (k_arg, k_res) ->
-           (match check_kind env sigs t2 k_arg with
-            | Error e -> Error e
-            | Ok () -> Ok k_res))
+      | Error e -> Error e
+      | Ok k1 ->
+        match k1 with
+        | KStar -> Error "Cannot apply type of kind type"
+        | KArrow (k_arg, k_res) ->
+          (match check_kind env sigs t2 k_arg with
+           | Error e -> Error e
+           | Ok () -> Ok k_res))
     
-    | TySig sig_def ->
-      Ok (Type.signature_kind sig_def)
+    | TySym sym ->
+      (* Look up signature kind *)
+      (match Sig.lookup sigs sym with
+      | Some (_sig_def, k) -> Ok k
+      | None -> Error ("Unknown signature: " ^ Path.name sym))
+    
+    | TyDef sig_def ->
+      (* Instantiated signature - compute kind from remaining parameters *)
+      Ok (Type.signature_kind sig_def.parameters)
     
     | TyPrim (_, k) -> Ok k
   
   (** Check that a method signature is well-formed *)
-  let check_method (sig_def: signature) (m: method_sig) (sigs: signature_defs)
+  let check_method (_sig_def: signature) (m: method_sig) (sigs: signature_defs)
       : (unit, error) result =
-    (* Build type environment with signature parameters and method quantified vars *)
-    let env = sig_def.parameters @ m.quantified in
+    let env = m.quantified in
     
     (* Check all environment types *)
     let check_environment =
@@ -366,70 +594,3 @@ module TypeCheck = struct
       | Ok () -> check_method sig_def m sigs
     ) (Ok ()) sig_def.methods
 end
-
-(**
-   === Design Notes ===
-   
-   This type system extends Cut to support the full expressiveness of Core's
-   higher-kinded and GADT features while maintaining Cut's data/codata unification.
-   
-   Key design decisions:
-   
-   1. **Signatures replace data/codata types**:
-      - A signature is a parametric collection of methods
-      - No distinction between data and codata at the type level
-      - The operational behavior (eager/lazy) is determined by chirality (prd/cns)
-   
-   2. **Methods unify constructors and destructors**:
-      - Each method has producers (what is given) and consumers (what is needed)
-      - For data constructors: producers = arguments, consumers = empty
-      - For codata destructors: producers = result, consumers = arguments
-      - This mirrors Cut.Terms' operational semantics
-   
-   3. **Higher-kinded types via parametric signatures**:
-      - Signatures can have type parameters with arbitrary kinds
-      - Example: List has parameter (a : type), so List : type → type
-      - Type application TyApp builds fully applied types
-   
-   4. **Polymorphic methods via quantification**:
-      - Methods can quantify over type variables
-      - Example: nil : ∀a. List(a) has quantified = [(a, KStar)]
-      - Allows representing parametric polymorphism
-   
-   5. **GADTs via constraints and refined result types**:
-      - result_type can be more specific than just applying parent parameters
-      - constraints list type equalities that must hold
-      - Example: for Vec(n : Nat), cons could have constraints [(n, Succ(m))]
-   
-   6. **Chirality types carry full type information**:
-      - Unlike Cut.Terms' simple prd/cns/ext symbols
-      - Prd T, Cns T, Ext T all carry the full type T
-      - Enables precise type checking and inference
-   
-   Translation from Core types:
-   
-   - Core: data Nat = { Zero | Succ(Nat) }
-     Cut.Types: signature Nat = {
-                  zero : ∀. () : prd Nat
-                  succ : ∀. (n : prd Nat) : prd Nat
-                }
-   
-   - Core: codata Stream(A) = { head : A, tail : Stream(A) }
-     Cut.Types: signature Stream(a : type) = {
-                  head : ∀. (self : cns Stream(a)) : cns a
-                  tail : ∀. (self : cns Stream(a)) : cns Stream(a)
-                }
-   
-   - Core GADT: data Vec(n : Nat) = { 
-                  Nil : Vec(Zero) 
-                  Cons : ∀m. Vec(m) → Vec(Succ(m)) 
-                }
-     Cut.Types: signature Vec(n : type) = {
-                  nil : ∀. () : prd Vec(Zero) where []
-                  cons : ∀m. (v : prd Vec(m)) : prd Vec(Succ(m)) where []
-                }
-   
-   This type system is currently NOT used by Cut.Terms, which uses a simpler
-   first-order signature system. This module provides the foundation for a
-   future extension of Cut to support full Core expressiveness.
-*)

@@ -85,7 +85,7 @@ module Prim = struct
     (* double and shift to integers > 999 *)
     in 1000 + 2 * go k
 
-  (* inverse: decode integer back to kind; n >= 100 and even *)
+  (* inverse: decode integer back to kind; n >= 1000 and even *)
   let of_int (n: int): kind =
     (* inverse of Cantor's pairing function *)
     let unpair z =

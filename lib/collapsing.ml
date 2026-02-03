@@ -36,11 +36,8 @@ let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =
 (** Extract Cut signature from Core type declaration *)
 let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signature =
   { symbol = td.symbol
-  ; parameters = List.filter_map (fun (ty_opt, k) ->
-      match ty_opt with
-      | Some (TyVar id) -> Some (id, core_kind_to_cut_kind k)
-      | _ -> None
-    ) td.arguments
+  ; parameters = List.map (fun (ty_opt, k) ->
+      (Option.map (core_type_to_cut_type ty_defs) ty_opt, core_kind_to_cut_kind k)) td.arguments
   ; methods = List.map (fun xtor -> 
       (* Build unified environment with polarized types *)
       let prod_env = List.mapi (fun i ty -> 
@@ -67,7 +64,7 @@ let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signatu
         quantified = List.map (fun (id, k) -> (id, core_kind_to_cut_kind k)) xtor.quantified;
         environment = prod_env @ cons_env;
         result_type = result_chirality;
-        constraints = [];
+        constraints = None;
       }) td.xtors
   }
 
@@ -79,34 +76,23 @@ let rec extract_cut_signature (ty_defs: ty_defs) (td: ty_dec) : CutTypes.signatu
 and core_type_to_cut_type_inner (ty_defs: ty_defs) (inside_decl: Path.t option) (ty: typ) : CutTypes.typ =
   match ty with
   | TySym path -> 
-    (* Check if this is the type we're currently defining - if so, create shallow reference *)
+    (* Check if this is the type we're currently defining - if so, create reference *)
     (match inside_decl with
     | Some parent when Path.equal path parent ->
-      (* We're referencing the parent type from inside its own declaration - use shallow signature *)
-      (match List.assoc_opt path ty_defs with
-      | Some (Data td, _) | Some (Code td, _) -> 
-        CutTypes.TySig { symbol = td.symbol
-                       ; parameters = List.filter_map (fun (ty_opt, k) ->
-                           match ty_opt with
-                           | Some (TyVar id) -> Some (id, core_kind_to_cut_kind k)
-                           | _ -> None
-                         ) td.arguments
-                       ; methods = []  (* Empty to avoid infinite recursion *)
-                       }
-      | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
-      | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path)))
+      (* We're referencing the parent type from inside its own declaration - use symbol reference *)
+      CutTypes.TySym path
     | _ ->
       (* Different type or not inside a declaration - expand normally *)
       (match List.assoc_opt path ty_defs with
-      | Some (Data td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
-      | Some (Code td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+      | Some (Data td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
+      | Some (Code td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
       | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
       | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path))))
   | TyVar id -> CutTypes.TyVar id
   | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type_inner ty_defs inside_decl t1, core_type_to_cut_type_inner ty_defs inside_decl t2)
   | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
-  | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
-  | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+  | TyDef (Data td) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
+  | TyDef (Code td) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
 
 (** Convert Core type to Cut type *)
 and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
@@ -114,15 +100,15 @@ and core_type_to_cut_type (ty_defs: ty_defs) (ty: typ) : CutTypes.typ =
   | TySym path ->
     (* Look up the type symbol in definitions *)
     (match List.assoc_opt path ty_defs with
-    | Some (Data td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
-    | Some (Code td, _) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+    | Some (Data td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
+    | Some (Code td, _) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
     | Some (Prim (p, k), _) -> CutTypes.TyPrim (p, core_kind_to_cut_kind k)
     | None -> failwith (Printf.sprintf "Unknown type symbol: %s" (Path.name path)))
   | TyVar id -> CutTypes.TyVar id
   | TyApp (t1, t2) -> CutTypes.TyApp (core_type_to_cut_type ty_defs t1, core_type_to_cut_type ty_defs t2)
   | TyDef (Prim (path, kind)) -> CutTypes.TyPrim (path, core_kind_to_cut_kind kind)
-  | TyDef (Data td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
-  | TyDef (Code td) -> CutTypes.TySig (extract_cut_signature ty_defs td)
+  | TyDef (Data td) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
+  | TyDef (Code td) -> CutTypes.TyDef (extract_cut_signature ty_defs td)
 
 (** Extract type arguments from an applied type *)
 let rec extract_type_args (type_defs: ty_defs) (ty: Common.Types.typ) : CutTypes.typ list =
@@ -156,7 +142,7 @@ let rec collapse_statement (ctx: collapse_context) (s: CT.statement) : CutT.stat
     let v = Ident.fresh () in
     let n = Ident.mk (string_of_int (n1 + n2)) in
     let int_ty = Common.Types.TyDef (Common.Types.Prim.int_def) in
-    let int_ty_cut = CutTypes.Prim.int_typ in
+    let int_ty_cut = CutTypes.Ext.int_typ in
     let s = collapse_cut ctx (CT.Var n) int_ty c in
     CutT.Extern (Common.Types.Prim.add_sym, [v], [[(n, CutTypes.Ext int_ty_cut)], s])
   | CT.Call (f, _ty_args, prods, cons) ->
@@ -262,7 +248,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
                      (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
       (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
-      (pat.CT.xtor, [], args_env, body)
+      (pat.CT.xtor, type_args_cut, args_env, body)
     ) patterns in
     CutT.Switch (x, branches)
   
@@ -288,7 +274,7 @@ and collapse_cut (ctx: collapse_context) (p: CT.producer) (ty: Common.Types.typ)
                      (List.map2 (fun a ty -> (a, CutTypes.Cns ty)) pat.CT.covariables cons_types_cut) in
       (* Collapse the statement *)
       let body = collapse_statement ctx pat.CT.statement in
-      (pat.CT.xtor, [], args_env, body)
+      (pat.CT.xtor, type_args_cut, args_env, body)
     ) patterns in
     (* Track that alpha is used as a switch scrutinee (needs to be producer) *)
     ctx.switch_vars <- alpha :: ctx.switch_vars;
