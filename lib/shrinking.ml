@@ -15,16 +15,8 @@ open Common.Identifiers
 open Common.Types
 module CT = Core.Terms
 
-(** Chirality requirements for collapsing phase *)
-type chirality_requirement = 
-  | MustBeProducer of Ident.t
-  | MustBeConsumer of Ident.t
-
-type chirality_context = chirality_requirement list
-
 type shrink_context = {
   defs: CT.definitions;
-  mutable chirality_reqs: chirality_requirement list;
 }
 
 let fresh_var =
@@ -335,9 +327,9 @@ let shrink_term_def (ctx: shrink_context) (def: CT.term_def) : CT.term_def =
   { def with body = shrink_statement ctx def.body }
 
 (** Entry point *)
-let shrink_definitions (defs: CT.definitions) : CT.definitions * chirality_context =
-  let ctx = { defs; chirality_reqs = [] } in
+let shrink_definitions (defs: CT.definitions) : CT.definitions =
+  let ctx = { defs } in
   let term_defs' = List.map (fun (name, def) -> 
     (name, shrink_term_def ctx def)
   ) defs.term_defs in
-  ({ defs with term_defs = term_defs' }, ctx.chirality_reqs)
+  { defs with term_defs = term_defs' }

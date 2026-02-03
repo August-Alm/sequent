@@ -48,14 +48,22 @@ type statement =
   | Substitute of substitutions * statement
   (* extern m(v, ...){(Γ) ⇒ s, ...} *)
   | Extern of symbol * variable list * extern_branches
-  (* let v = m[τ, ...](Γ); s - with type instantiation *)
+  (* let v = m[τ, ...](Γ); s - from ⟨C(Γ) | µ˜x.s⟩, v : prd T *)
   | Let of variable * symbol * typ list * typ_env * statement
-  (* new v : T[τ, ...] = (Γ)b; s - with type instantiation *)
+  (* letcns v = m[τ, ...](Γ); s - from ⟨µα.s | D(Γ)⟩, v : cns T *)
+  | LetCns of variable * symbol * typ list * typ_env * statement
+  (* new v : T[τ, ...] = (Γ)b; s - from ⟨cocase {...} | µ˜x.s⟩, v : cns T *)
   | New of variable * typ * typ_env * branches * statement
-  (* switch v b *)
+  (* newprd v : T[τ, ...] = (Γ)b; s - from ⟨µα.s | case {...}⟩, v : prd T *)
+  | NewPrd of variable * typ * typ_env * branches * statement
+  (* switch v b - from ⟨x | case {...}⟩, v : prd T *)
   | Switch of variable * branches
-  (* invoke v m[τ, ...](v, ...) - with type instantiation *)
+  (* switchcns v b - from ⟨cocase {...} | α⟩, v : cns T *)
+  | SwitchCns of variable * branches
+  (* invoke v m[τ, ...](v, ...) - from ⟨x | D(Γ)⟩, v : cns T *)
   | Invoke of variable * symbol * typ list * variable list
+  (* invokeprd v m[τ, ...](v, ...) - from ⟨C(Γ) | α⟩, v : prd T *)
+  | InvokePrd of variable * symbol * typ list * variable list
 
 (* branches b ::= {m[τ, ...](Γ) ⇒ s, ...} - with type instantiation *)
 and branches = (symbol * typ list * typ_env * statement) list
@@ -124,8 +132,20 @@ let rec string_of_statement ?(indent=0) s =
     string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ");\n" ^
     string_of_statement ~indent s'
   
+  | LetCns (v, m, tys, gamma, s') ->
+    ind ^ "letcns " ^ Ident.name v ^ " = " ^ Symbol.to_string m ^
+    string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ");\n" ^
+    string_of_statement ~indent s'
+  
   | New (v, ty, gamma, branches, s') ->
     ind ^ "new " ^ Ident.name v ^ " : " ^ string_of_typ ty ^
+    " = (" ^ string_of_typ_env gamma ^ ") {\n" ^
+    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
+    ind ^ "};\n" ^
+    string_of_statement ~indent s'
+  
+  | NewPrd (v, ty, gamma, branches, s') ->
+    ind ^ "newprd " ^ Ident.name v ^ " : " ^ string_of_typ ty ^
     " = (" ^ string_of_typ_env gamma ^ ") {\n" ^
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "};\n" ^
@@ -136,9 +156,18 @@ let rec string_of_statement ?(indent=0) s =
     string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
     ind ^ "}"
   
+  | SwitchCns (v, branches) ->
+    ind ^ "switchcns " ^ Ident.name v ^ " {\n" ^
+    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
+    ind ^ "}"
+  
   | Invoke (v, m, tys, args) ->
     let arg_str = if args = [] then "" else "(" ^ String.concat ", " (List.map Ident.name args) ^ ")" in
     ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m ^ string_of_typ_list tys ^ arg_str
+  
+  | InvokePrd (v, m, tys, args) ->
+    let arg_str = if args = [] then "" else "(" ^ String.concat ", " (List.map Ident.name args) ^ ")" in
+    ind ^ "invokeprd " ^ Ident.name v ^ " " ^ Symbol.to_string m ^ string_of_typ_list tys ^ arg_str
 
 and string_of_branches ?(indent=0) branches =
   let ind = String.make (indent * 2) ' ' in
@@ -654,6 +683,222 @@ let rec check_statement
       raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
     | _ ->
       raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " not at front of environment")))
+
+  | LetCns (v, m, type_args, gamma0, s') ->
+    (* Rule [LETCNS]: LetCns binds a consumer (dual of Let)
+       Similar to Let but result is cns τᵣ *)
+    let (sig_def, _sig_kind) = 
+      match List.find_opt (fun (_sym, (sig_def, _)) ->
+        Signatures.find_method m sig_def <> None
+      ) sigs with
+      | Some (_, sk) -> sk
+      | None -> raise (TypeError ("Method not found in any signature: " ^ Symbol.to_string m))
+    in
+    let msig = Signatures.find_method_exn m sig_def in
+    
+    let expected_arity = List.length msig.Types.quantified in
+    if List.length type_args <> expected_arity then
+      raise (TypeError (Printf.sprintf "LetCns: wrong number of type arguments for %s"
+        (Symbol.to_string m)));
+    
+    let method_quants = List.map fst msig.Types.quantified in
+    let subst = List.combine method_quants type_args in
+    
+    let expected_types = List.map (fun (_name, chi_ty) ->
+      Types.substitute_chirality subst chi_ty
+    ) msig.Types.environment in
+    
+    if List.length gamma0 <> List.length expected_types then
+      raise (TypeError (Printf.sprintf "LetCns: wrong number of arguments for %s"
+        (Symbol.to_string m)));
+    
+    List.iter2 (fun (_var, actual_ty) expected_ty ->
+      if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
+        raise (TypeError ("LetCns: argument type mismatch for " ^ Symbol.to_string m))
+    ) gamma0 expected_types;
+    
+    let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
+    if not (Env.equal sigs gamma0 gamma0_actual) then
+      raise (TypeError "LetCns: environment split mismatch");
+    
+    let v_ty = Types.substitute_chirality subst msig.Types.result_type in
+    let new_gamma = (v, v_ty) :: gamma_rest in
+    check_statement sigs delta theta extern_env new_gamma s'
+
+  | NewPrd (v, ty, gamma0, branches, s') ->
+    (* Rule [NEWPRD]: NewPrd binds a producer (dual of New)
+       Similar to New but result is prd (T[τ̄]) *)
+    let _, ty_whnf = Types.Type.whnf [] sigs ty in
+    let (sig_sym, sig_def_opt) = match ty_whnf with
+      | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+      | Types.TySym sym -> (sym, None)
+      | Types.TyApp _ ->
+        let rec decompose = function
+          | Types.TyApp (t1, _t2) -> decompose t1
+          | Types.TySym sym -> (sym, None)
+          | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+          | _ -> raise (TypeError "NewPrd: expected signature type")
+        in
+        decompose ty_whnf
+      | _ -> raise (TypeError "NewPrd: expected signature type")
+    in
+    
+    let sig_def = match sig_def_opt with
+      | Some sd -> sd
+      | None ->
+        let (sd, _sig_kind) = Signatures.lookup_exn sig_sym sigs in
+        sd
+    in
+    
+    if List.length branches <> List.length sig_def.Types.methods then
+      raise (TypeError ("NewPrd: wrong number of branches for " ^ Path.name sig_sym));
+    
+    let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
+    if not (Env.equal sigs gamma0 gamma0_actual) then
+      raise (TypeError "NewPrd: environment split mismatch");
+    
+    List.iter2 (fun (m_i, branch_type_args, branch_gamma, s_i) msig ->
+      if not (Path.equal m_i msig.Types.symbol) then
+        raise (TypeError ("NewPrd: branch method mismatch"));
+      
+      let method_quants = List.map fst msig.Types.quantified in
+      let subst = List.combine method_quants branch_type_args in
+      
+      let expected_types = 
+        List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty) 
+          msig.Types.environment
+      in
+      
+      if List.length branch_gamma <> List.length expected_types then
+        raise (TypeError (Printf.sprintf "NewPrd: wrong number of arguments in branch for %s"
+          (Symbol.to_string m_i)));
+      
+      List.iter2 (fun (_var, actual_ty) expected_ty ->
+        if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
+          raise (TypeError ("NewPrd: branch argument type mismatch for " ^ Symbol.to_string m_i))
+      ) branch_gamma expected_types;
+      
+      let branch_env = branch_gamma @ gamma0 in
+      check_statement sigs delta theta extern_env branch_env s_i
+    ) branches sig_def.Types.methods;
+    
+    let v_ty = Types.Prd ty in
+    let new_gamma = (v, v_ty) :: gamma_rest in
+    check_statement sigs delta theta extern_env new_gamma s'
+
+  | SwitchCns (v, branches) ->
+    (* Rule [SWITCHCNS]: Pattern matching on a consumer (dual of Switch)
+       Similar to Switch but v : cns (T[τ̄]) *)
+    (match gamma with
+    | (v', Types.Cns ty) :: gamma_rest when Ident.equal v v' ->
+      let _, ty_whnf = Types.Type.whnf [] sigs ty in
+      let (sig_sym, sig_def_opt) = match ty_whnf with
+        | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+        | Types.TySym sym -> (sym, None)
+        | Types.TyApp _ ->
+          let rec decompose = function
+            | Types.TyApp (t1, _t2) -> decompose t1
+            | Types.TySym sym -> (sym, None)
+            | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+            | _ -> raise (TypeError "SwitchCns: expected signature type")
+          in
+          decompose ty_whnf
+        | _ -> raise (TypeError "SwitchCns: expected signature type")
+      in
+      
+      let sig_def = match sig_def_opt with
+        | Some sd -> sd
+        | None ->
+          let (sd, _sig_kind) = Signatures.lookup_exn sig_sym sigs in
+          sd
+      in
+      
+      if List.length branches <> List.length sig_def.Types.methods then
+        raise (TypeError ("SwitchCns: wrong number of branches for " ^ Path.name sig_sym));
+      
+      List.iter2 (fun (m_i, branch_type_args, branch_gamma, s_i) msig ->
+        if not (Path.equal m_i msig.Types.symbol) then
+          raise (TypeError ("SwitchCns: branch method mismatch"));
+        
+        let method_quants = List.map fst msig.Types.quantified in
+        let subst = List.combine method_quants branch_type_args in
+        
+        let expected_types = 
+          List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty)
+            msig.Types.environment
+        in
+        
+        if List.length branch_gamma <> List.length expected_types then
+          raise (TypeError (Printf.sprintf "SwitchCns: wrong number of arguments in branch for %s"
+            (Symbol.to_string m_i)));
+        
+        List.iter2 (fun (_var, actual_ty) expected_ty ->
+          if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
+            raise (TypeError ("SwitchCns: branch argument type mismatch for " ^ Symbol.to_string m_i))
+        ) branch_gamma expected_types;
+        
+        let branch_env = branch_gamma @ gamma_rest in
+        check_statement sigs delta theta extern_env branch_env s_i
+      ) branches sig_def.Types.methods
+    | (v', _) :: _ when Ident.equal v v' ->
+      raise (TypeError ("SwitchCns: variable " ^ Ident.name v ^ " is not a consumer"))
+    | _ ->
+      raise (TypeError ("SwitchCns: variable " ^ Ident.name v ^ " not at front of environment")))
+
+  | InvokePrd (v, m, type_args, args) ->
+    (* Rule [INVOKEPRD]: Invoking a method on a producer (dual of Invoke)
+       Similar to Invoke but v : prd (T[τ̄]) *)
+    (match gamma with
+    | (v', Types.Prd ty) :: gamma_rest when Ident.equal v v' ->
+      let _, ty_whnf = Types.Type.whnf [] sigs ty in
+      let (sig_sym, sig_def_opt) = match ty_whnf with
+        | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+        | Types.TySym sym -> (sym, None)
+        | Types.TyApp _ ->
+          let rec decompose = function
+            | Types.TyApp (t1, _t2) -> decompose t1
+            | Types.TySym sym -> (sym, None)
+            | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
+            | _ -> raise (TypeError "InvokePrd: expected signature type")
+          in
+          decompose ty_whnf
+        | _ -> raise (TypeError "InvokePrd: expected signature type")
+      in
+      
+      let sig_def = match sig_def_opt with
+        | Some sd -> sd
+        | None ->
+          let (sd, _sig_kind) = Signatures.lookup_exn sig_sym sigs in
+          sd
+      in
+      let msig = Signatures.find_method_exn m sig_def in
+      
+      let method_quants = List.map fst msig.Types.quantified in
+      let subst = List.combine method_quants type_args in
+      
+      let expected_types = 
+        List.map (fun (_name, chi_ty) -> Types.substitute_chirality subst chi_ty)
+          msig.Types.environment
+      in
+      
+      let actual_types = List.map (fun arg ->
+        match Env.lookup arg gamma_rest with
+        | Some typ -> typ
+        | None -> raise (TypeError ("InvokePrd: variable " ^ Ident.name arg ^ " not in environment"))
+      ) args in
+      
+      if List.length actual_types <> List.length expected_types then
+        raise (TypeError (Printf.sprintf "InvokePrd: wrong number of arguments for %s"
+          (Symbol.to_string m)));
+      
+      List.iter2 (fun actual_ty expected_ty ->
+        if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
+          raise (TypeError ("InvokePrd: argument type mismatch for " ^ Symbol.to_string m))
+      ) actual_types expected_types
+    | (v', _) :: _ when Ident.equal v v' ->
+      raise (TypeError ("InvokePrd: variable " ^ Ident.name v ^ " is not a producer"))
+    | _ ->
+      raise (TypeError ("InvokePrd: variable " ^ Ident.name v ^ " not at front of environment")))
 
 
 (** Check a program

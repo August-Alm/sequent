@@ -24,7 +24,8 @@ module CutTypes = Cut.Types
 
 type collapse_context = {
   defs: CT.definitions;
-  signatures: CutTypes.signature_defs;}
+  chirality_reqs: Shrinking.chirality_context;
+  signatures: CutTypes.signature_defs;  mutable switch_vars: Ident.t list;  (* Variables used as switch scrutinees *)}
 
 (** Convert Core kind to Cut kind *)
 let rec core_kind_to_cut_kind (k: kind) : CutTypes.kind =

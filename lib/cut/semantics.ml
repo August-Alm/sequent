@@ -174,6 +174,65 @@ let step (config: config) : config option =
       env = new_env
     }
   
+  (* (letcns) ⟨letcns v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b_m}⟩ where E0 : Γ0 *)
+  (* Dual of let: creates a consumer instead of a producer *)
+  | CutT.LetCns (v, symbol, _type_args, gamma, stmt) ->
+    let (env_gamma, env_rest) = split_env config.env gamma in
+    (* For letcns, we create a consumer with the method as a singleton branch *)
+    let new_value = Consumer (env_gamma, [(symbol, stmt)]) in
+    Some { config with
+      statement = stmt;
+      env = (v, new_value) :: env_rest
+    }
+  
+  (* (newprd) ⟨newprd v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 *)
+  (* Dual of new: creates a producer instead of a consumer *)
+  | CutT.NewPrd (v, _typ, gamma, branches_list, stmt) ->
+    let (env_gamma, env_rest) = split_env config.env gamma in
+    (* For newprd, we create a producer - but producers only have one method,
+       so we'll use the first branch's symbol *)
+    let (first_symbol, _, _, _) = List.hd branches_list in
+    let new_value = Producer (first_symbol, env_gamma) in
+    Some { config with
+      statement = stmt;
+      env = (v, new_value) :: env_rest
+    }
+  
+  (* (switchcns) ⟨switchcns v b ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ *)
+  (* Dual of switch: pattern matching on a consumer *)
+  | CutT.SwitchCns (v, branches_list) ->
+    let consumer_value = lookup_var config.env v in
+    (match consumer_value with
+    | Consumer (closure_env, runtime_branches) ->
+      (* Find which branch to execute - use the first branch symbol from runtime_branches *)
+      let (symbol, _branch_stmt) = List.hd runtime_branches in
+      let runtime_branches_converted = List.map (fun (sym, _type_args, _branch_gamma, branch_stmt) ->
+        (sym, branch_stmt)
+      ) branches_list in
+      let branch_stmt = lookup_branch runtime_branches_converted symbol in
+      let env_without_v = List.filter (fun (var, _) -> not (Ident.equal var v)) config.env in
+      Some { config with
+        statement = branch_stmt;
+        env = closure_env @ env_without_v
+      }
+    | _ -> raise (RuntimeError (Printf.sprintf "Expected consumer value for switchcns on %s" (Ident.name v))))
+  
+  (* (invokeprd) ⟨invokeprd v m ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ *)
+  (* Dual of invoke: invoking a method on a producer *)
+  | CutT.InvokePrd (v, symbol, _type_args, _args) ->
+    let producer_value = lookup_var config.env v in
+    (match producer_value with
+    | Producer (prod_symbol, field_env) ->
+      if not (Path.equal symbol prod_symbol) then
+        raise (RuntimeError (Printf.sprintf "InvokePrd: method mismatch - expected %s, got %s"
+          (Path.name prod_symbol) (Path.name symbol)));
+      let env_without_v = List.filter (fun (var, _) -> not (Ident.equal var v)) config.env in
+      (* For invokeprd, we need to look up the implementation - 
+         but this is tricky since producers don't have branches in our model.
+         For now, treat as identity *)
+      Some { config with env = field_env @ env_without_v }
+    | _ -> raise (RuntimeError (Printf.sprintf "Expected producer value for invokeprd on %s" (Ident.name v))))
+  
   (* (extern) External statements - platform-dependent operations *)
   | CutT.Extern (symbol, args, clauses) ->
     (* For now, implement a few basic external operations *)
