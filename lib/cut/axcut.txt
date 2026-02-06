@@ -8,6 +8,7 @@ Statements s ::=
   | new v = (Γ)b; s
   | switch v b
   | invoke v m(Γ)
+(*| forward v₁ v₂ *)
 
 Programs P ::= define l : Γ = s, ...
 
@@ -88,6 +89,14 @@ v1 : τ_1, ... ⊢ m: (Γ1), ...   Γ(v1) = τ1 ...     Γ, Γ1 ⊢ s1  ...
 ------------------------- [INVOKE]
 Γ, v : cns T ⊢ invoke v m
 
+(*
+Suggested addition (forward is the axiomatic cut):
+Γ(v₁) = prd T    Γ(v₂) = cns T
+------------------------------- [FORWARD]
+Γ ⊢ forward v₁ v₂
+
+*)
+
 Programs are typed with signatures Σ and with labels Θ. The statement for each label
 must be well-typed in the annotated type environment Γ. The only typing rule that
 refers to the label environment is JUMP. It ensures that the current type environment
@@ -142,10 +151,15 @@ Stepping relation:
 (lit)     ⟨extern lit n {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → n⟩
 (add)     ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
 (ifz)     ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
-(cont)    ⟨extern cont {(v: cns Int) ⇒ s} ∥ E⟩ → ⟨s ∥ E⟩
-(return)  ⟨extern return(v: cns Int, v′: ext Int) {} ∥ E⟩ → ⟨s ∥ E ⟩
 
-def id(x: ext Int, u: cns Int) = extern return(x, u) {}
+(*
+Suggested addition to handle "axiom", cuts at polymorphic type variables:
+(forward)  ⟨forward v₁ v₂ ∥ E, v₁ → {m; E₁}, v₂ → {E₀; b}⟩ → ⟨b(m) ∥ E, E₀, E₁⟩
+Could also be written
+⟨forward v₁ v₂ ∥ E, v₁ → V, v₂ → {E₀; b}⟩ → ⟨switch v₁ b ∥ E, v₁ → V, E₀⟩
+For known signature T, it functions like sugar for
+switch v₁ { m₁(Γ₁) ⇒ invoke v₂ m₁, ... }
+*)
 
 A machine configuration consists of a statement s under execution, a value environment E
 mapping variables to values, and a program P. The latter is required for jumping to labels
