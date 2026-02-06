@@ -1,0 +1,24 @@
+
+Type+ A+,B+ ::= X+ | A+ ⊕ B+ | A+ ⊗ B+ | ∃Xs.A+ | ⊖A− | down A−
+
+Type− A−,B− ::= X− | A− & B− | A− `& B− | ∀Xs.A− | ¬A+ | up A+
+
+The + type-formers are all data, and the - type-formers are all
+codata! Here
+
+data ⊖A where
+  (_): ⊢ ⊖A | A     ---    (k: cns A): cns ⊖A
+
+code ¬A where
+  [_]: A | ¬A ⊢     ---    [x: prd A]: prd ¬A
+
+data down A where
+  box: A ⊢ down A |    ---   box(x: prd A): prd (down A) 
+
+code up A where
+  eval: | up A ⊢ A     ---   eval(k: cns(up A)): cns A
+
+We also have, fundamentally,
+
+code (X:+) → (Y:−) :− where
+· : (X:+ |X → Y ⊢ Y:−)

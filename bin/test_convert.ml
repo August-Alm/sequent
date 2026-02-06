@@ -264,6 +264,24 @@ let my_zero: nat = zero
 let another_zero: nat = my_zero
   ";
 
+  (* Test 14: Many lets *)
+  test_case "Test 14: Many lets" "
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+let add(x: nat)(y: nat): nat = 
+  match x with
+  { zero => y
+  ; succ(m) => succ(add(m)(y))
+  }
+
+let foo(a: nat): nat =
+  let f = add(a) in
+  let one = succ(zero) in
+  f(one)
+  ";
 
   print_endline "╔════════════════════════════════════════╗";
   print_endline "║  Test Suite Complete                   ║";

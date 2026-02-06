@@ -4,14 +4,10 @@ Statements s ::=
     jump l
   | substitute [v → v, ...]; s
   | extern m(v, ...){(Γ) ⇒ s, ...}
-  | let_prd v = m(Γ); s
-  | new_prd v = (Γ)b; s
-  | switch_prd v b
-  | invoke_prd v m(Γ)
-  | let_cns v = m(Γ); s
-  | new_cns v = (Γ)b; s
-  | switch_cns v b
-  | invoke_cns v m(Γ)
+  | let v = m(Γ); s
+  | new v = (Γ)b; s
+  | switch v b
+  | invoke v m(Γ)
 
 Programs P ::= define l : Γ = s, ...
 
@@ -103,7 +99,7 @@ way to reorder variables in the environment for the subsequent statement s. All 
 typing rules, except for rule EXTERN, follow the rules of ordered logic. Extern
 statements, such as add, do not consume the variables they use and it does not matter at
 which positions in the environment these variables occur. Rule EXTERN merely checks that
-the variables vi are of the correct type and adds the bound variables (Γi ) to the type
+the variables vi are of the correct type and adds the bound variables (Γi) to the type
 environment in each statement si, but otherwise does not change the environment. Which
 assumptions and consequences an external symbol m has is defined outside the system.
 They usually only involve external types.
@@ -143,9 +139,13 @@ Stepping relation:
 (invoke)  ⟨invoke v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
 (jump)    ⟨jump l ∥ E⟩ → ⟨P(l) ∥ E⟩
 (subst)   ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
-(lit)     ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩
+(lit)     ⟨extern lit n {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → n⟩
 (add)     ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
 (ifz)     ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
+(cont)    ⟨extern cont {(v: cns Int) ⇒ s} ∥ E⟩ → ⟨s ∥ E⟩
+(return)  ⟨extern return(v: cns Int, v′: ext Int) {} ∥ E⟩ → ⟨s ∥ E ⟩
+
+def id(x: ext Int, u: cns Int) = extern return(x, u) {}
 
 A machine configuration consists of a statement s under execution, a value environment E
 mapping variables to values, and a program P. The latter is required for jumping to labels

@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules shrinking collapsing linearization normalization convert)
+ (modules shrinking collapsing linearization normalization convert playground simple)
  (libraries utility common lang core cut))
