@@ -1,24 +1,40 @@
 
-Type+ A+,B+ ::= X+ | A+ ⊕ B+ | A+ ⊗ B+ | ∃Xs.A+ | ⊖A− | down A−
+Type+ A+,B+ ::= X+ | A+ ⊕ B+ | A+ ⊗ B+ | ∃Xs.A+ | ⊖A− | ↑A−
 
-Type− A−,B− ::= X− | A− & B− | A− `& B− | ∀Xs.A− | ¬A+ | up A+
+Type− A−,B− ::= X− | A− & B− | A− `& B− | ∀Xs.A− | ¬A+ | ↓A+
 
 The + type-formers are all data, and the - type-formers are all
 codata! Here
 
 data ⊖A where
-  (_): ⊢ ⊖A | A     ---    (k: cns A): cns ⊖A
+  (_): ⊢ ⊖A | A    ---    (k: cns A): cns ⊖A
 
 code ¬A where
-  [_]: A | ¬A ⊢     ---    [x: prd A]: prd ¬A
+  [_]: A | ¬A ⊢    ---    [x: prd A]: prd ¬A
 
-data down A where
-  box: A ⊢ down A |    ---   box(x: prd A): prd (down A) 
+data ↑A where
+  close: A ⊢ ↑A |    ---    close(x: prd A): prd ↑A 
 
-code up A where
-  eval: | up A ⊢ A     ---   eval(k: cns(up A)): cns A
+code ↓A where
+  thunk: | ↓A ⊢ A    ---    thunk(k: cns A): cns ↓A
 
 We also have, fundamentally,
 
 code (X:+) → (Y:−) :− where
-· : (X:+ |X → Y ⊢ Y:−)
+  ·: (X:+ |X → Y ⊢ Y:−)
+
+
+-- Primitives
+codata Forall(F) { instantiate: {A} Forall(F) -> F(A) }
+codata Fun(A, B) { apply: Fun(A, B) -> A -> B }
+data Box(E: ext) { box(ext E) }
+
+-- Compilation of:  id : ∀A. A → A
+def id(k: cns Forall(λA. Fun(A, A))) =
+  ⟨cocase { instantiate{A} => cocase { apply(x, u) => forward x u }} | k⟩
+
+-- Compilation of:  idInt : Int → Int  
+def idInt(x: prd Box(I32), k: cns Box(I32)) =
+  switch x { box(x') => invoke k box(x') }
+
+-- Both have same runtime behavior on strict arguments
