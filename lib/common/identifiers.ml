@@ -79,9 +79,20 @@ module type PATH = sig
   val is_rooted_at: Ident.t -> t -> bool
   val name: t -> string
 
+  type 'a tbl
+  val emptytbl: 'a tbl
+  val is_empty: 'a tbl -> bool
+  val add: t -> 'a -> 'a tbl -> 'a tbl
+  val find: t -> 'a tbl -> 'a
+  val find_opt: t -> 'a tbl -> 'a option
+  val filter: (t -> 'a -> bool) -> 'a tbl -> 'a tbl
+  val join: 'a tbl -> 'a tbl -> 'a tbl
+  val of_list: (t * 'a) list -> 'a tbl
+  val contains_key: t -> 'a tbl -> bool
+
   type subst
-  val add: Ident.t -> t -> subst -> subst
-  val find: Ident.t -> subst -> t
+  val add_subst: Ident.t -> t -> subst -> subst
+  val find_subst: Ident.t -> subst -> t
   val none: subst
   val path: t -> subst -> t
 end
@@ -133,6 +144,23 @@ module Path: PATH = struct
     | Pident id -> Ident.name id
     | Pdot (p, field) -> (name p) ^ "." ^ field
 
+  type 'a tbl = (t * 'a) list
+  let emptytbl = []
+  let is_empty tbl = (tbl = [])
+  let add id data tbl = (id, data) :: tbl
+  let rec find x tb =
+    match tb with
+    | [] -> raise Not_found
+    | (y, v) :: rest -> if equal x y then v else find x rest
+  let rec find_opt x tb =
+    match tb with
+    | [] -> None
+    | (y, v) :: rest -> if equal x y then Some v else find_opt x rest
+  let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
+  let join tbl1 tbl2 = tbl1 @ tbl2
+  let of_list lst = lst
+  let contains_key x tbl = List.exists (fun (k, _) -> equal x k) tbl
+
   type subst = t Ident.tbl
 
   let rec path p sub =
@@ -140,7 +168,7 @@ module Path: PATH = struct
     | Pident id -> (try Ident.find id sub with Not_found -> p)
     | Pdot (root, field) -> Pdot (path root sub, field)
   
-  let add = Ident.add
-  let find = Ident.find
+  let add_subst = Ident.add
+  let find_subst = Ident.find
   let none = Ident.emptytbl
 end

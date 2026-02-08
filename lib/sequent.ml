@@ -2,3 +2,4 @@
 module Types = Common.Types
 module Lang = Lang
 module Core = Core
+module Kore = Kore
