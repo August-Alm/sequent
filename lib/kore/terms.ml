@@ -35,7 +35,7 @@ and branch =
 and command =
   | CutPos of tpe * term * term (** Type must be positive *)
   | CutNeg of tpe * term * term (** Type must be negative *)
-  | Extern of import * term list * clause list (** External call *)
+  | Extern of symbol * term list * clause list (** External call *)
   | Call of symbol * tpe list * term list (** Internal call or jump *)
   | End
 
@@ -129,69 +129,14 @@ let rec check_term (env: Env.t) (ctx: Ctx.t) (trm: term) (typ: chiral_tpe) =
     | Rhs ty -> check_case_or_cocase env ctx Positive trm_sgn branches ty
     | _ -> raise (PolarityMismatchTerm (trm, Positive, Negative)))
   
-  | MuLhsPos (t, u, c) ->
-    (match typ with
-    | Lhs ty ->
-      if not (Types.equivalent env.signatures t ty) then
-        raise (TypeMismatchTerm (trm, t, ty));
-      (match infer_polarity env.signatures ctx.kinds t with
-      | Positive ->
-        let ctx' = Ctx.add_type ctx u (Rhs ty) in (* Bind covariable *)
-        check_command env ctx' c
-      | Negative ->
-        raise (PolarityMismatchTerm (trm, Positive, Negative)))
-    | Rhs _ ->
-      raise (ChiralityMismatchTerm (trm, typ, Lhs t)))
-  
-  | MuLhsNeg (t, u, c) ->
-    (match typ with
-    | Lhs ty ->
-      if not (Types.equivalent env.signatures t ty) then
-        raise (TypeMismatchTerm (trm, t, ty));
-      (match infer_polarity env.signatures ctx.kinds t with
-      | Negative ->
-        let ctx' = Ctx.add_type ctx u (Rhs ty) in (* Bind covariable *)
-        check_command env ctx' c
-      | Positive ->
-        raise (PolarityMismatchTerm (trm, Negative, Positive)))
-    | Rhs _ ->
-      raise (ChiralityMismatchTerm (trm, typ, Lhs t)))
-
-  | MuRhsPos (t, x, c) ->
-    (match typ with
-    | Rhs ty ->
-      if not (Types.equivalent env.signatures t ty) then
-        raise (TypeMismatchTerm (trm, t, ty));
-      (match infer_polarity env.signatures ctx.kinds t with
-      | Positive ->
-        let ctx' = Ctx.add_type ctx x (Lhs ty) in (* Bind variable *)
-        check_command env ctx' c
-      | Negative ->
-        raise (PolarityMismatchTerm (trm, Positive, Negative)))
-    | Lhs _ ->
-      raise (ChiralityMismatchTerm (trm, typ, Rhs t)))
-
-  | MuRhsNeg (t, x, c) ->
-    (match typ with
-    | Rhs ty ->
-      if not (Types.equivalent env.signatures t ty) then
-        raise (TypeMismatchTerm (trm, t, ty));
-      (match infer_polarity env.signatures ctx.kinds t with
-      | Negative ->
-        let ctx' = Ctx.add_type ctx x (Lhs ty) in (* Bind variable *)
-        check_command env ctx' c
-      | Positive ->
-        raise (PolarityMismatchTerm (trm, Negative, Positive)))
-    | Lhs _ ->
-      raise (ChiralityMismatchTerm (trm, typ, Rhs t)))
-
   | _ ->
     let inferred = infer_term env ctx trm in
     if not (chiralities_equivalent env inferred typ) then
       raise (ChiralityMismatchTerm (trm, inferred, typ))
   
 and check_case_or_cocase
-    (env: Env.t) (ctx: Ctx.t) (pol: polarity) (trm_sgn: signature) (branches: branch list) (typ: tpe) =
+    (env: Env.t) (ctx: Ctx.t) (pol: polarity)
+    (trm_sgn: signature) (branches: branch list) (typ: tpe) =
   match typ with
   | TyPos sgn | TyNeg sgn ->
     (match pol with
@@ -200,7 +145,7 @@ and check_case_or_cocase
         raise (TypeMismatchTerm (New (trm_sgn, branches), TyNeg trm_sgn, TyNeg sgn));
     | Positive ->
       if not (Types.equivalent env.signatures (TyPos trm_sgn) (TyPos sgn)) then
-        raise (TypeMismatchTerm (New (trm_sgn, branches), TyPos trm_sgn, TyPos sgn)));
+        raise (TypeMismatchTerm (Match (trm_sgn, branches), TyPos trm_sgn, TyPos sgn)));
 
     (* Check each branch *)
     List.iter (fun (branch: branch) ->
@@ -235,9 +180,14 @@ and check_case_or_cocase
         try List.fold_left2 Ctx.add_type ctx branch.term_vars param_tys
         with Invalid_argument _ -> raise TermArgumentNumberMismatch
       in
+
+      (* Also add type variables to context *)
+      let ctx'' =
+        List.fold_left (fun acc (tv, k) -> Ctx.add_kind acc tv k) ctx' branch.type_vars
+      in
       
       (* Check the body statement - just ensure it type checks *)
-      check_command env ctx' branch.command
+      check_command env ctx'' branch.command
     ) branches;
     
     (* Check exhaustivity: all destructors covered *)
@@ -265,32 +215,66 @@ and check_case_or_cocase
       (* Add type variables from pattern to context *)
       let ctx' = List.fold_left (fun (acc: Ctx.t) (tv, k) ->
         Ctx.add_kind acc tv k
-      ) ctx branch.type_vars in
+      ) ctx branch.type_vars
+      in
       
       (* Add (co)variables to context *)
-      let ty =
-        (match pol with
-        | Negative -> Rhs typ
-        | Positive -> Lhs typ)
-      in
-      let ctx'' = List.fold_left (fun acc var ->
+      let ctx'' = List.fold_left2 (fun acc var ty ->
         Ctx.add_type acc var ty
-      ) ctx' branch.term_vars in
+      ) ctx' branch.term_vars branch.xtor.parameters
+      in
       
       (* Check the body statement - just ensure it type checks *)
       check_command env ctx'' branch.command
-    ) branches;
+    ) branches
   
   | _ ->
     match pol with
     | Negative -> raise (NewOfNonCodataType (New (trm_sgn, branches)))
-    | Positive -> raise (MatchOfNonDataType (New (trm_sgn, branches)))
+    | Positive -> raise (MatchOfNonDataType (Match (trm_sgn, branches)))
 
 and infer_term (env: Env.t) (ctx: Ctx.t) (trm: term) : chiral_tpe =
   match trm with
   | Variable x -> Ctx.get_type ctx x
   | Constructor (xtor, tys, args) -> infer_xtor env ctx Positive xtor tys args
   | Destructor (xtor, tys, args) -> infer_xtor env ctx Negative xtor tys args
+
+  | MuLhsPos (ty, u, c) ->
+    (match infer_polarity env.signatures ctx.kinds ty with
+    | Positive ->
+      let ctx' = Ctx.add_type ctx u (Rhs ty) in (* Bind covariable *)
+      check_command env ctx' c;
+      Lhs ty
+    | Negative ->
+      raise (PolarityMismatchTerm (trm, Positive, Negative)))
+  
+  | MuLhsNeg (ty, u, c) ->
+    (match infer_polarity env.signatures ctx.kinds ty with
+    | Negative ->
+      let ctx' = Ctx.add_type ctx u (Rhs ty) in (* Bind covariable *)
+      check_command env ctx' c;
+      Lhs ty
+    | Positive ->
+      raise (PolarityMismatchTerm (trm, Negative, Positive)))
+
+  | MuRhsPos (ty, x, c) ->
+    (match infer_polarity env.signatures ctx.kinds ty with
+    | Positive ->
+      let ctx' = Ctx.add_type ctx x (Lhs ty) in (* Bind variable *)
+      check_command env ctx' c;
+      Rhs ty
+    | Negative ->
+      raise (PolarityMismatchTerm (trm, Positive, Negative)))
+
+  | MuRhsNeg (ty, x, c) ->
+    (match infer_polarity env.signatures ctx.kinds ty with
+    | Negative ->
+      let ctx' = Ctx.add_type ctx x (Lhs ty) in (* Bind variable *)
+      check_command env ctx' c;
+      Rhs ty
+    | Positive ->
+      raise (PolarityMismatchTerm (trm, Negative, Positive)))
+
   | _ -> raise (CannotInferTypeOfTerm trm)
 
 and infer_xtor
@@ -371,12 +355,12 @@ and check_command (env: Env.t) (ctx: Ctx.t) (cmd: command): unit =
       ) args def.term_params;
     with
     | Invalid_argument _ -> raise TermArgumentNumberMismatch);
-  | Extern (imp, args, clauses) ->
+  | Extern (sym, args, clauses) ->
     (* Look up the import to get its type *)
-    let imp_def = Env.get_import env imp.name in
+    let imp = Env.get_import env sym in
     (* Check term arguments *)
     (try
-      List.iter2 (check_term env ctx) args imp_def.parameter_types
+      List.iter2 (check_term env ctx) args imp.parameter_types
     with
     | Invalid_argument _ -> raise TermArgumentNumberMismatch);
     (* Check clauses *)
@@ -389,11 +373,8 @@ and check_command (env: Env.t) (ctx: Ctx.t) (cmd: command): unit =
           | Invalid_argument _ -> raise ClauseParameterNumberMismatch
         in
         check_command env ctx' clause.body
-      ) clauses imp_def.clauses_types
+      ) clauses imp.clauses_types
     with
     | Invalid_argument _ -> raise ClauseNumberMismatch
     | e -> raise e)
   | End -> ()
-
-
-

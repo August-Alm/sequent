@@ -110,11 +110,14 @@ and infer_signature_kind
     (sgns: signatures) (ctx: kind Ident.tbl) (base: kind) (sgn: signature) =  
   (* Verify all constructors are well-formed *)
   let arg_kinds = List.map snd sgn.arguments in
-  List.iter (fun ctor ->
+  List.iter (fun xtor ->
     let ctx' =
-      List.fold_left (fun acc (x, k) -> Ident.add x k acc) ctx ctor.quantified
+      List.fold_left (fun acc (x, k) -> Ident.add x k acc) ctx xtor.quantified
     in
-    List.iter2 (check_kind sgns ctx') ctor.parent_arguments arg_kinds
+    List.iter2 (check_kind sgns ctx') xtor.parent_arguments arg_kinds;
+    List.iter (fun ty ->
+      ignore (infer_kind sgns ctx' (match ty with Lhs t | Rhs t -> t))
+    ) xtor.parameters
   ) sgn.xtors;
   compute_kind base sgn
 
@@ -126,7 +129,7 @@ let infer_polarity (sgns: signatures) (ctx: kind Ident.tbl) (t: tpe) =
   | Arrow _ -> failwith "Only first-order types have polarity"
 
 (* ========================================================================= *)
-(* Type-level operations                                                       *)
+(* Type-level operations                                                     *)
 (* ========================================================================= *)
 
 (** Add the signature as either positive or negative polarity. Will fail if the
@@ -170,6 +173,8 @@ and subst_xtor (subs: tpe Ident.tbl) (xtor: xtor) : xtor =
   { xtor with
     parameters = List.map (chiral_tpe_map (subst subs')) xtor.parameters
   ; parent_arguments = List.map (subst subs') xtor.parent_arguments
+  ; constraints =
+      Option.map (List.map (fun (x, t) -> (x, subst subs' t))) xtor.constraints
   }
 
 (** Weak head normal form *)
@@ -329,11 +334,19 @@ let norm (sgns: signatures) (ty: tpe) =
     | seen, TyNeg sgn -> TyNeg (go_sig seen sgn)
   and go_sig (seen: Path.t list) (sgn: signature) =
     let seen' = sgn.name :: seen in
-    let normalized_ctors = List.map (fun xtor ->
+    let normalized_xtors = List.map (fun xtor ->
       { xtor with
         parameters = List.map (chiral_tpe_map (go seen')) xtor.parameters
       ; parent_arguments = List.map (go seen') xtor.parent_arguments
       }) sgn.xtors
-    in { sgn with xtors = normalized_ctors }
+    in
+    let normalized_arguments =
+      List.map (fun (t_opt, k) -> (Option.map (go seen') t_opt, k)
+      ) sgn.arguments
+    in
+    { sgn with
+      arguments = normalized_arguments
+    ; xtors = normalized_xtors
+    }
   in
   go [] ty
