@@ -1,5 +1,4 @@
 (* Re-export submodules for convenient access *)
-module Types = Common.Types
+module Cut = Cut
 module Lang = Lang
-module Core = Core
 module Kore = Kore

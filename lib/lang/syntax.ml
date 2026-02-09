@@ -308,8 +308,8 @@ let lookup_term_symbol ctx name =
 
 (* convert kind *)
 let rec kind_of_ast = function
-  | AST_KStar -> Common.Types.KStar
-  | AST_KArrow (k1, k2) -> Common.Types.KArrow (kind_of_ast k1, kind_of_ast k2)
+  | AST_KStar -> KStar
+  | AST_KArrow (k1, k2) -> KArrow (kind_of_ast k1, kind_of_ast k2)
 
 (* convert type *)
 let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : typ =
@@ -359,7 +359,7 @@ let xtor_of_ast
     List.fold_left (fun (quant_acc, ctx_acc) (x, k_opt) ->
       let k = match k_opt with
         | Some k -> kind_of_ast k
-        | None -> Common.Types.KStar
+        | None -> KStar
       in
       let x_id = Ident.mk x in
       let ctx_new = add_type_var ctx_acc x x_id in
@@ -424,8 +424,9 @@ let build_ty_defs (ast_defs: ast_defs): ty_defs =
     List.fold_left (fun (paths_acc, defs_acc) tdef ->
       match tdef with
       | AST_TyAlias (name, _ty) ->
-        let path = Path.of_string name in
-        ((name, path) :: paths_acc, (path, (Prim (path, Common.Types.KStar), Common.Types.KStar)) :: defs_acc)
+        (match name with
+        | "int" -> (paths_acc, defs_acc)  (* skip built-in int type *)
+        | _ -> failwith ("Unknown type alias: " ^ name))
       
       | AST_TyData dec ->
         let symbol = Path.of_string dec.name in
@@ -462,25 +463,19 @@ let build_ty_defs (ast_defs: ast_defs): ty_defs =
   in
   
   (* second pass: fill in constructors with proper context *)
-  List.map (fun tdef ->
+  List.filter_map (fun tdef ->
     match tdef with
-    | AST_TyAlias (name, _ty) ->
-      let path = 
-        match lookup_type_symbol ctx name with
-        | Some p -> p
-        | None -> Path.of_string name
-      in
-      (path, (Prim (path, Common.Types.KStar), Common.Types.KStar))
+    | AST_TyAlias _ -> None
     
     | AST_TyData dec ->
         let ty_dec = ty_dec_of_ast ctx dec.name dec.kind dec.clauses true in
         let k = kind_of_ast dec.kind in
-        (ty_dec.symbol, (Data ty_dec, k))
+        Some (ty_dec.symbol, (Data ty_dec, k))
     
     | AST_TyCode dec ->
         let ty_dec = ty_dec_of_ast ctx dec.name dec.kind dec.clauses false in
         let k = kind_of_ast dec.kind in
-        (ty_dec.symbol, (Code ty_dec, k))
+        Some (ty_dec.symbol, (Code ty_dec, k))
   ) ast_defs.type_defs
 
 (* find constructor/destructor by name *)
@@ -496,7 +491,6 @@ let find_xtor (ctx: conv_ctx) (name: string) : (ty_xtor * bool) =
         (match List.find_opt (fun x -> Path.name x.symbol = name) dec.xtors with
         | Some xtor -> (xtor, false)  (* false = destructor *)
         | None -> search rest)
-    | (_, (Prim _, _)) :: rest -> search rest
   in
   search ctx.defs
 
@@ -540,7 +534,7 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : term =
       | (x, k_opt) :: rest ->
         let k = match k_opt with
           | Some k -> kind_of_ast k
-          | None -> Common.Types.KStar
+          | None -> KStar
         in
         let x_id = Ident.mk x in
         let ctx'' = add_type_var ctx' x x_id in
@@ -655,7 +649,7 @@ let to_term_def (ctx: conv_ctx) (def: ast_term_def) : (Path.t * term_def) =
     List.fold_left (fun (quant_acc, ctx_acc) (x, k_opt) ->
       let k = match k_opt with
         | Some k -> kind_of_ast k
-        | None -> Common.Types.KStar
+        | None -> KStar
       in
       let x_id = Ident.mk x in
       let ctx_new = add_type_var ctx_acc x x_id in
@@ -688,14 +682,6 @@ let to_term_def (ctx: conv_ctx) (def: ast_term_def) : (Path.t * term_def) =
 
 let to_definitions (ast_defs: ast_defs) : definitions =
   let ty_defs = build_ty_defs ast_defs in
-  
-  (* Add primitive int type to type definitions *)
-  let int_path = Common.Types.Prim.int_sym in
-  let int_def = (int_path, (Prim (int_path, Common.Types.KStar), Common.Types.KStar)) in
-  let ty_defs = if List.exists (fun (p, _) -> Path.equal p int_path) ty_defs 
-                then ty_defs 
-                else int_def :: ty_defs in
-  
   (* Extract type symbol names from ty_defs *)
   let type_symbols = List.fold_left (fun acc (path, _) ->
     let name = Path.name path in

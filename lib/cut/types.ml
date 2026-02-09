@@ -101,30 +101,6 @@ type signature_defs = (Path.t * (signature * kind)) list
 (** Type variable environment for type checking *)
 type type_env = (Ident.t * kind) list
 
-(** External/primitive types *)
-module Ext = struct
-  let int_sym = Common.Types.Prim.int_sym
-  let int_typ = TyPrim (int_sym, KStar)
-  
-  let box_sym = Path.of_primitive 200 "box"
-  let unbox_sym = Path.of_primitive 201 "unbox"
-  let unbox_def =
-    let a = Ident.mk "a" in
-    { parent = box_sym
-    ; symbol = unbox_sym
-    ; quantified = [ (a, KStar) ]
-    ; environment = [ (Ident.mk "x", Ext (TyVar a)) ]
-    ; result_type = Ext (TyVar a)
-    ; constraints = None
-    }
-  let box_def = 
-    { symbol = box_sym
-    ; parameters = [ (None, KStar) ]
-    ; methods = [ unbox_def ]
-    }
-  let box_typ = TySym box_sym
-end
-
 (** Kind utilities *)
 module Kind = struct
   let equal = (=)

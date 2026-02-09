@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules linearization convert playground simple essence)
- (libraries utility common lang core cut kore))
+ (modules linearization playground simple essence)
+ (libraries utility common lang cut kore))

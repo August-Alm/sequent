@@ -117,26 +117,23 @@ let find_xtor (defs: definitions) (path: Path.t) : (ty_xtor * [`Data | `Code]) o
       (match List.find_opt (fun (x: ty_xtor) -> Path.equal x.symbol path) td.xtors with
       | Some xtor -> Some (xtor, `Code)
       | None -> search_type_defs rest)
-    | _ :: rest -> search_type_defs rest
   in
   search_type_defs defs.type_defs
 
 let rec infer_typ
     (defs: definitions) (ctx: context) (tm: term) : typ * typed_term =
   match tm with
-  | TmInt n -> 
-    let ty = Prim.int_typ in
-    (ty, TyTmInt (n, ty))
+  | TmInt n -> (TyPrim Int, TyTmInt (n, TyPrim Int))
   
   | TmAdd (t1, t2) ->
     let (ty1, tt1) = infer_typ defs ctx t1 in
     let (ty2, tt2) = infer_typ defs ctx t2 in
     (* Both operands must be int *)
-    if not (equivalent defs.type_defs ty1 Prim.int_typ) then
+    if not (equivalent defs.type_defs ty1 (TyPrim Int)) then
       failwith ("Addition operand must be int, got " ^ typ_to_string false ty1);
-    if not (equivalent defs.type_defs ty2 Prim.int_typ) then
+    if not (equivalent defs.type_defs ty2 (TyPrim Int)) then
       failwith ("Addition operand must be int, got " ^ typ_to_string false ty2);
-    (Prim.int_typ, TyTmAdd (tt1, tt2, Prim.int_typ))
+    (TyPrim Int, TyTmAdd (tt1, tt2, TyPrim Int))
     
   | TmVar x ->
     (match Ident.find_opt x ctx.types with

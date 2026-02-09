@@ -38,20 +38,23 @@
 
 open Common.Identifiers
 
-type kind = Common.Types.kind
+type kind = KStar | KArrow of kind * kind
+
+type prim_typ =
+  | Int
 
 type typ =
-  | TySym of Path.t
+  | TySym of Path.t (** Reference to a type definition (never to a primitive type) *)
   | TyVar of Ident.t
   | TyApp of typ * typ
   | TyFun of typ * typ (* `->` type constructor *)
   | TyAll of (Ident.t * kind) * typ (* `forall` type constructor, `{a: k} ty` *)
   | TyDef of ty_def
+  | TyPrim of prim_typ
 
 and ty_def =
   | Data of ty_dec
   | Code of ty_dec
-  | Prim of Path.t * kind
 
 and ty_dec =
   { symbol: Path.t
@@ -70,10 +73,6 @@ and ty_xtor =
   ; constraints: (Ident.t * typ) list option
   }
 
-module Prim = struct
-  let int_typ = TyDef (Prim (Common.Types.Prim.int_sym, KStar))
-end
-
 type ty_defs = (Path.t * (ty_def * kind)) list
 
 let rec get_def (defs: ty_defs) (sym: Path.t) =
@@ -84,7 +83,7 @@ let rec get_def (defs: ty_defs) (sym: Path.t) =
 let get_kind (ks: (typ option * kind) list) =
   let rec loop ks =
     match ks with
-    | [] -> Common.Types.KStar
+    | [] -> KStar
     | (Some _, _) :: rest -> loop rest
     | (None, k) :: rest -> KArrow (k, loop rest)
   in 
@@ -111,7 +110,7 @@ let rec typ_to_string (nested: bool) (t: typ) : string =
     "{" ^ Ident.name x ^ ": " ^ kind_to_string k ^ "} " ^ typ_to_string nested t
   | TyDef (Data td) -> data_to_string nested td
   | TyDef (Code td) -> code_to_string nested td
-  | TyDef (Prim (s, _)) -> Path.name s
+  | TyPrim Int -> "int"
 
 and typ_to_string_atom (nested: bool) (t: typ) : string =
   match t with
@@ -273,7 +272,7 @@ let rec infer_kind (defs: ty_defs) (ctx: kind Ident.tbl) (t: typ) =
     let ctx' = Ident.add x k ctx in
     check_kind defs ctx' t KStar;
     KStar
-  | TyDef (Prim (_, k)) -> k
+  | TyPrim _ -> KStar
   | TyDef (Code td) | TyDef (Data td) ->
     (* verify all constructors are well-formed *)
     let arg_kinds = List.map snd td.arguments in
@@ -286,8 +285,8 @@ let rec infer_kind (defs: ty_defs) (ctx: kind Ident.tbl) (t: typ) =
     ) td.xtors;
     let rec build_kind ks =
       match ks with
-      | [] -> Common.Types.KStar
-      | k :: ks -> Common.Types.KArrow (k, build_kind ks)
+      | [] -> KStar
+      | k :: ks -> KArrow (k, build_kind ks)
     in
     build_kind arg_kinds
 
@@ -297,7 +296,6 @@ and check_kind (defs: ty_defs) (ctx: kind Ident.tbl) (t: typ) (expected: kind) =
 
 let add_def (defs: ty_defs) (def: ty_def) =
   match def with
-  | Prim (sym, k) -> (sym, (def, k)) :: defs
   | Data td | Code td ->
     let k = infer_kind defs Ident.emptytbl (TyDef def) in
     (td.symbol, (def, k)) :: defs
@@ -316,7 +314,7 @@ let rec subst (env: typ Ident.tbl) (t: typ) : typ =
     (* remove x from env to avoid capture *)
     let env' = Ident.filter (fun y _ -> not (Ident.equal x y)) env in
     TyAll ((x, k), subst env' t)
-  | TyDef (Prim _) -> t
+  | TyPrim _ -> t
   | TyDef (Data td) -> TyDef (Data (subst_dec env td))
   | TyDef (Code td) -> TyDef (Code (subst_dec env td))
 
@@ -464,11 +462,7 @@ and unify (seen: Path.t list) (defs: ty_defs) (t1: typ) (t2: typ) : (typ Ident.t
     | TyDef (Data td1), TyDef (Data td2)
     | TyDef (Code td1), TyDef (Code td2) when Path.equal td1.symbol td2.symbol ->
       res := unify_tdec seen defs td1 td2
-    | TyDef (Prim (s1, _)), TyDef (Prim (s2, _)) when Path.equal s1 s2 ->
-      res := Some Ident.emptytbl
-    (* allow type symbols to unify with primitives *)
-    | TySym s, TyDef (Prim (s', _))
-    | TyDef (Prim (s', _)), TySym s when Path.equal s s' ->
+    | TyPrim p1, TyPrim p2 when p1 = p2 ->
       res := Some Ident.emptytbl
     | _ -> ());
 
@@ -492,7 +486,7 @@ and occurs (x: Ident.t) (t: typ) : bool =
   | TyAll ((y, _), t) ->
     (* x occurs in TyAll if it occurs free in the body *)
     if Ident.equal x y then false else occurs x t
-  | TyDef (Prim _) -> false
+  | TyPrim _ -> false
   | TyDef (Data td) | TyDef (Code td) ->
     List.exists (fun (t_opt, _) ->
       match t_opt with
@@ -513,7 +507,7 @@ let norm (defs: ty_defs) (ty: typ) : typ =
     | _, TyFun (t1, t2) -> TyFun (go seen t1, go seen t2)
     | seen, TyApp (t1, t2) -> TyApp (go seen t1, go seen t2)
     | _, TyAll ((x, k), t) -> TyAll ((x, k), go seen t)
-    | _, (TyDef (Prim _) as p) -> p
+    | _, (TyPrim _ as p) -> p
     | seen, TyDef (Data td) -> TyDef (Data (go_dec seen td))
     | seen, TyDef (Code td) -> TyDef (Code (go_dec seen td))
   and go_dec (seen: Path.t list) (td: ty_dec) =
