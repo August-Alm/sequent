@@ -89,6 +89,15 @@ module Ext = struct
     ; parameter_types = [Lhs int_t]
     ; clauses_types = [[]; []]
     }
+  
+  let imports =
+    List.fold_left (fun tbl (imp: import) ->
+      Path.add imp.name imp tbl
+    ) Path.emptytbl
+      [ int_add
+      ; int_ifz
+      ]
+    
 end
 
 module Prim = struct
@@ -174,4 +183,14 @@ module Prim = struct
     ; xtors = [box_mk]
     }
   let box_t = TyNeg box_sgn
+  
+  let signatures =
+    List.fold_left (fun tbl (s, pol, sgn, k) ->
+      Path.add s (sgn, pol, k) tbl
+    ) Path.emptytbl
+      [ (Sym.fun_t, Negative, fun_sgn, Arrow (Pos, Neg))
+      ; (Sym.pos_t, Positive, pos_sgn, Arrow (Neg, Pos))
+      ; (Sym.neg_t, Negative, neg_sgn, Arrow (Pos, Neg))
+      ; (Sym.box_t, Positive, box_sgn, Arrow (Ext, Pos))
+      ]
 end

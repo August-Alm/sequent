@@ -35,10 +35,12 @@ module Ext: sig
   val int_t: tpe
   val int_add: import
   val int_ifz: import
+
+  (** All built-in imports *)
+  val imports: import Path.tbl
 end
 
 module Prim: sig
-  
   (**
     code (X:+) → (Y:−) where
       ·: X | X → Y ⊢ Y   --- apply(prd X, cns Y)
@@ -78,4 +80,7 @@ module Prim: sig
   val box_t: tpe
   val box_sgn: signature
   val box_mk: xtor
+
+  (** All built-in primitive signatures, except `all_t`-types. *)
+  val signatures: signatures
 end

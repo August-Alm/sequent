@@ -378,3 +378,19 @@ and check_command (env: Env.t) (ctx: Ctx.t) (cmd: command): unit =
     | Invalid_argument _ -> raise ClauseNumberMismatch
     | e -> raise e)
   | End -> ()
+
+(** Checks a collection of top-level definitions. The signatures are assumed
+ to already have been kind-checked. *)
+let check_definitions
+    (imports: import Path.tbl)
+    (signatures: signatures)
+    (definitions: definition Path.tbl) =
+  let env: Env.t =
+    { terms = definitions
+    ; signatures = signatures
+    ; imports = imports
+    }
+  in
+  List.iter (fun (_, def) ->
+    check_command env Ctx.empty def.body
+  ) (Path.to_list definitions)

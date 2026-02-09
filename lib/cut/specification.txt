@@ -2,16 +2,13 @@
 
 Statements s ::=
     jump l (τ, ...)
+  | forward v v; s
   | substitute [v → v, ...]; s
   | extern m(v, ...){(Γ) ⇒ s, ...}
-  | let_prd v = m(Γ); s
-  | new_prd v = (Γ)b; s
-  | switch_prd v b
-  | invoke_prd v m(Γ)
-  | let_cns v = m(Γ); s
-  | new_cns v = (Γ)b; s
-  | switch_cns v b
-  | invoke_cns v m(Γ)
+  | let v = m(Γ); s
+  | switch v b
+  | new v = (Γ)b; s
+  | invoke v m(Γ)
 
 Programs P ::= define l : Γ = s, ...
 
@@ -263,7 +260,7 @@ types and continuation environments.
 
 ---
 
-**[LET_PRD]** - Binding a producer (data constructor or let-bound producer)
+**[LET]** - Binding a producer (data constructor or let-bound producer)
 
   signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
   
@@ -291,32 +288,7 @@ is empty, this reduces to the simpler form.
 
 ---
 
-**[LET_CNS]** - Binding a consumer (codata destructor or let-bound consumer)
-
-  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
-  
-  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (type substitution instantiating parameters and quantifiers)
-  
-  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints in signature must be satisfiable)
-  
-  Γ' = θ(Γ)    (method's environment, instantiated)
-  
-  τ_v = θ(cns τᵣ)    (the bound variable's type)
-  
-  Δ ⊢ τ_v : type    (result type is well-kinded)
-  
-  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound variable)
-  ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ_ctx, Γ' ⊢ let_cns v = m[σ̄](Γ'); s
-
-**Intuition:** LetCns binds a consumer value. The method m may be polymorphic (∀β̄),
-so we must provide type arguments to instantiate it. The pattern arguments Γ'
-are consumed from the environment. The result type (after substitution) becomes
-the type of the bound consumer variable v.
-
----
-
-**[NEW_CNS]** - Binding a consumer (codata destructor or new-bound consumer)
+**[NEW]** - Binding a consumer (codata destructor or new-bound consumer)
 
   signature T : κ = {m₁, ..., mₖ} ∈ Σ
   
@@ -345,36 +317,7 @@ polarized types indicating whether they're producers, consumers, or external val
 
 ---
 
-**[NEW_PRD]** - Binding a producer (data constructor or new-bound producer)
-
-  signature T : κ = {m₁, ..., mₖ} ∈ Σ
-  
-  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : prd τᵣᵢ where Cᵢ:
-  
-    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (instantiation for this method)
-    
-    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints must be satisfiable)
-    
-    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
-    
-    Σ; Δ; Θ; Γᵢ', Γ₀ ⊢ sᵢ    (each branch types with its arguments + closure)
-  
-  τ_v = prd (T[τ̄])    (the bound producer has the instantiated signature type)
-  
-  Δ ⊢ τ_v : type
-  
-  Σ; Δ; Θ; Γ_ctx, v : τ_v ⊢ s    (continuation with bound producer)
-  ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ_ctx, Γ₀ ⊢ new_prd v : T[τ̄] = (Γ₀){m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}; s
-
-**Intuition:** NewPrd binds a producer value by creating a case with branches for
-all methods in the signature. The closure environment Γ₀ is captured and available
-in each branch. Each method's environment Γᵢ contains all its arguments (with
-polarized types indicating whether they're producers, consumers, or external values).
-
----
-
-**[SWITCH_PRD]** - Pattern matching on a producer
+**[SWITCH]** - Pattern matching on a producer
 
   signature T : κ = {m₁, ..., mₖ} ∈ Σ
   
@@ -405,37 +348,7 @@ based on which constructor matched.
 
 ---
 
-**[SWITCH_CNS]** - Pattern matching on a consumer
-
-  signature T : κ = {m₁, ..., mₖ} ∈ Σ
-  
-  Γ_ctx(v) = cns (T[τ̄])    (switching on a consumer of instantiated signature type)
-  
-  For each method mᵢ : ∀β̄ᵢ:κ̄ᵢ. Γᵢ : cns τᵣᵢ where Cᵢ:
-  
-    θᵢ = [ᾱ ↦ τ̄, β̄ᵢ ↦ σ̄ᵢ]    (must instantiate signature parameters consistently)
-    
-    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ Cᵢ    (constraints satisfied)
-    
-    ᾱ : κ̄, β̄ᵢ : κ̄ᵢ ⊢ θᵢ(cns τᵣᵢ) ≡ cns (T[τ̄]) : type    (result type matches)
-    
-    Γᵢ' = θᵢ(Γᵢ)    (instantiated method environment)
-    
-    Σ; Δ; Θ; Γ_ctx, Γᵢ' ⊢ sᵢ    (each branch has method's arguments available)
-  ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ_ctx, v : cns (T[τ̄]) ⊢ switch_cns v {m₁[σ̄₁](Γ₁') ⇒ s₁, ..., mₖ[σ̄ₖ](Γₖ') ⇒ sₖ}
-
-**Intuition:** SwitchCns pattern matches on a consumer value. The branches must cover
-all methods in the signature. Each method's arguments become available in the
-corresponding branch. The signature is instantiated at the type arguments of v.
-
-**Key for GADTs:** The result type τᵣᵢ (after instantiation) must equal T[τ̄].
-For GADT observations, constraints Cᵢ refine the type parameters based on the
-observed method.
-
----
-
-**[INVOKE_CNS]** - Invoking a method on a consumer
+**[INVOKE]** - Invoking a method on a consumer
 
   signature T : κ = {..., m : ∀β̄:κ̄'. Γ : cns τᵣ where C, ...} ∈ Σ
   
@@ -462,30 +375,13 @@ constraints, enabling type refinement based on which method is being invoked.
 
 ---
 
-**[INVOKE_PRD]** - Invoking a method on a producer
-
-  signature T : κ = {..., m : ∀β̄:κ̄'. Γ : prd τᵣ where C, ...} ∈ Σ
+**[FORWARD]** - Forwarding a producer to a consumer
   
-  Γ_ctx(v) = prd (T[τ̄])    (invoking method on producer of instantiated type)
-  
-  θ = [ᾱ ↦ τ̄, β̄ ↦ σ̄]    (instantiate signature parameters and method quantifiers)
-  
-  ᾱ : κ̄, β̄ : κ̄' ⊢ C    (constraints satisfied)
-  
-  ᾱ : κ̄, β̄ : κ̄' ⊢ θ(prd τᵣ) ≡ prd (T[τ̄]) : type    (result type matches)
-  
-  Γ' = θ(Γ)    (instantiated method environment)
-  
-  Γ_ctx = (Γ', v : prd (T[τ̄]))    (environment must match exactly)
+  Σ; Δ; Θ; Γ' ⊢ s
   ---------------------------------------------------------------
-  Σ; Δ; Θ; Γ', v : prd (T[τ̄]) ⊢ invoke_prd v m[σ̄](Γ')
+  Σ; Δ; Θ; Γ', v' : cns T, v : prd T ⊢ forward v v'; s 
 
-**Intuition:** InvokePrd calls a method on a producer. The method may be polymorphic,
-so we instantiate its quantified variables. The environment must contain exactly
-the method's arguments (with polarized types) plus the producer being invoked.
-
-**Key for GADTs:** The result type must match the producer's type after applying
-constraints, enabling type refinement based on which method is being invoked.
+**Intuition:** Forward is the axiomatic cut.
 
 ---
 
@@ -526,23 +422,16 @@ Syntax of states:
 
 Stepping relation:
 
-(let_prd)  ⟨let_prd v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0
-(let_cns)  ⟨let_cns v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b_m}⟩ where E0 : Γ0
-
-(new_prd)  ⟨new_prd v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0 and b = {m(Γm) ⇒ sm, ...}
-(new_cns)  ⟨new_cns v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b}⟩ where E0 : Γ0
-
-(switch_prd) ⟨switch_prd v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩
-(switch_cns) ⟨switch_cns v b ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩ where b has clause m
-
-(invoke_prd) ⟨invoke_prd v m ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩ where b is the branch set carried by v
-(invoke_cns) ⟨invoke_cns v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
-
-(jump)    ⟨jump l[τ̄] ∥ E⟩ → ⟨P(l) ∥ E⟩
-(subst)   ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
-(lit)     ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩
-(add)     ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
-(ifz)     ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
+(let)       ⟨let_prd v = m(Γ0); s ∥ E, E0⟩ → ⟨s ∥ E, v → {m; E0}⟩ where E0 : Γ0
+(new)       ⟨new_cns v = (Γ0)b; s ∥ E, E0⟩ → ⟨s ∥ E, v → {E0; b}⟩ where E0 : Γ0
+(switch)    ⟨switch_prd v b ∥ E, v → {m; E0}⟩ → ⟨b(m) ∥ E, E0⟩
+(invoke)    ⟨invoke_cns v m ∥ E, v → {E0; b}⟩ → ⟨b(m) ∥ E, E0⟩
+(forward)   ⟨forward v v'; s ∥ E, v → {E1; b}, v' → {m, E0}⟩ → ⟨b(m) ∥ E, E1, E0⟩
+(jump)      ⟨jump l[τ̄] ∥ E⟩ → ⟨P(l) ∥ E⟩
+(subst)     ⟨substitute [v′1 → v1, ...]; s ∥ E⟩ → ⟨s ∥ v′1 → E(v1), ...⟩
+(lit)       ⟨extern lit n {(v) ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩
+(add)       ⟨extern add(v1, v2) {(v) ⇒ s} ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩
+(ifz)       ⟨extern ifz(v) {() ⇒ s1, () ⇒ s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩
 
 A machine configuration consists of a statement s under execution, a value environment E
 mapping variables to values, and a program P. The latter is required for jumping to labels

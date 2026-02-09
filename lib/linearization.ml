@@ -40,7 +40,7 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
   match s with
   | CutT.Jump (_label, _type_args) -> []
   
-  | CutT.Return (x, k) -> count_occurrences [x; k]
+  | CutT.Forward (x, k) -> count_occurrences [x; k]
   
   | CutT.Substitute (pairs, s') ->
     (* Free variables are those on the right-hand side of substitution pairs *)
@@ -59,7 +59,7 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let branch_vars = List.concat_map free_vars_extern_branch branches in
     merge_var_counts var_counts branch_vars
   
-  | CutT.LetPrd (v, _ctor, _type_args, gamma, s') ->
+  | CutT.Let (v, _ctor, _type_args, gamma, s') ->
     (* Free vars in gamma environment *)
     let gamma_vars = List.map fst gamma in
     let gamma_counts = count_occurrences gamma_vars in
@@ -68,15 +68,7 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let body_free = List.filter (fun (x, _) -> not (Ident.equal x v)) body_vars in
     merge_var_counts gamma_counts body_free
   
-  | CutT.LetCns (v, _dtor, _type_args, gamma, s') ->
-    (* Same as Let - dual form *)
-    let gamma_vars = List.map fst gamma in
-    let gamma_counts = count_occurrences gamma_vars in
-    let body_vars = free_vars_statement s' in
-    let body_free = List.filter (fun (x, _) -> not (Ident.equal x v)) body_vars in
-    merge_var_counts gamma_counts body_free
-  
-  | CutT.NewCns (v, _ty, gamma, branches, s') ->
+  | CutT.New (v, _ty, gamma, branches, s') ->
     (* Free vars in gamma *)
     let gamma_vars = List.map fst gamma in
     let gamma_counts = count_occurrences gamma_vars in
@@ -87,35 +79,17 @@ let rec free_vars_statement (s: CutT.statement) : (Ident.t * int) list =
     let cont_free = List.filter (fun (x, _) -> not (Ident.equal x v)) cont_vars in
     merge_var_counts gamma_counts (merge_var_counts branch_vars cont_free)
   
-  | CutT.NewPrd (v, _ty, gamma, branches, s') ->
-    (* Same as New - dual form *)
-    let gamma_vars = List.map fst gamma in
-    let gamma_counts = count_occurrences gamma_vars in
-    let branch_vars = List.concat_map free_vars_branch branches in
-    let cont_vars = free_vars_statement s' in
-    let cont_free = List.filter (fun (x, _) -> not (Ident.equal x v)) cont_vars in
-    merge_var_counts gamma_counts (merge_var_counts branch_vars cont_free)
-  
-  | CutT.SwitchPrd (v, branches) ->
+  | CutT.Switch (v, branches) ->
     (* Variable v is used once *)
     let v_count = [(v, 1)] in
     (* Plus free variables in all branches *)
     let branch_vars = List.concat_map free_vars_branch branches in
     merge_var_counts v_count branch_vars
   
-  | CutT.SwitchCns (v, branches) ->
-    (* Same as Switch - dual form *)
-    let v_count = [(v, 1)] in
-    let branch_vars = List.concat_map free_vars_branch branches in
-    merge_var_counts v_count branch_vars
-  
-  | CutT.InvokeCns (v, _dtor, _type_args, args) ->
+  | CutT.Invoke (v, _dtor, _type_args, args) ->
     (* The variable v and all args *)
     [(v, 1)] @ count_occurrences args
   
-  | CutT.InvokePrd (v, _ctor, _type_args, args) ->
-    (* Same as Invoke - dual form *)
-    [(v, 1)] @ count_occurrences args
 
 (** Free variables in a branch *)
 and free_vars_branch ((_xtor, _type_args, gamma, body): CutT.symbol * CutT.typ list * CutT.typ_env * CutT.statement) 
@@ -249,10 +223,10 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
         (String.concat "," (List.map Ident.name target_env))
         (String.concat "," (List.map Ident.name current_env)))
   
-  | CutT.Return (x, k) ->
-    (* Return uses both x and k, everything else is dropped *)
+  | CutT.Forward (x, k) ->
+    (* Forward uses both x and k, everything else is dropped *)
     let (subst, _env_after) = build_substitution current_env [x; k] [] [] in
-    prepend_subst subst (CutT.Return (x, k))
+    prepend_subst subst (CutT.Forward (x, k))
   
   | CutT.Substitute (pairs, s') ->
     (* Substitution already present (from collapsing or explicit) *)
@@ -272,7 +246,7 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     let branches' = List.map (linearize_extern_branch sigs prog env_after) branches in
     prepend_subst subst (CutT.Extern (f, vars, branches'))
   
-  | CutT.LetPrd (v, ctor, type_args, gamma, s') ->
+  | CutT.Let (v, ctor, type_args, gamma, s') ->
     (* Gamma lists the variables used by the constructor *)
     let gamma_vars = List.map fst gamma in
     
@@ -292,9 +266,9 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     let s_linearized = linearize_statement sigs prog new_env s' in
     
     (* Prepend the substitution to handle variable flow *)
-    prepend_subst subst (CutT.LetPrd (v, ctor, type_args, gamma, s_linearized))
+    prepend_subst subst (CutT.Let (v, ctor, type_args, gamma, s_linearized))
   
-  | CutT.NewCns (v, ty, gamma, branches, s') ->
+  | CutT.New (v, ty, gamma, branches, s') ->
     (* Gamma lists variables in the new binding *)
     let gamma_vars = List.map fst gamma in
     (* Branches are mutually exclusive - take max, not sum *)
@@ -317,9 +291,9 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     (* After new, v is added to environment *)
     let new_env = v :: env_after_gamma in
     let s_linearized = linearize_statement sigs prog new_env s' in
-    prepend_subst subst (CutT.NewCns (v, ty, gamma, branches', s_linearized))
+    prepend_subst subst (CutT.New (v, ty, gamma, branches', s_linearized))
   
-  | CutT.SwitchPrd (v, branches) ->
+  | CutT.Switch (v, branches) ->
     (* Build substitution that puts v first *)
     (* Branches are mutually exclusive - take max, not sum *)
     let branch_free_lists = List.map free_vars_branch branches in
@@ -329,62 +303,14 @@ let rec linearize_statement (sigs: CutTypes.signature_defs) (prog: CutT.program)
     (* Remove v from env_after since it's consumed by the switch *)
     let env_for_branches = List.filter (fun w -> not (Ident.equal w v)) env_after in
     let branches' = List.map (linearize_branch sigs prog env_for_branches) branches in
-    prepend_subst subst (CutT.SwitchPrd (v, branches'))
+    prepend_subst subst (CutT.Switch (v, branches'))
   
-  | CutT.InvokeCns (v, dtor, type_args, args) ->
+  | CutT.Invoke (v, dtor, type_args, args) ->
     (* Invoke uses variable v and all args, everything else is dropped *)
     (* INVOKE rule: Γ, v : cns T, so v comes first (rightmost = head) *)
     let needed = v :: args in
     let (subst, _env_after) = build_substitution current_env needed [] [] in
-    prepend_subst subst (CutT.InvokeCns (v, dtor, type_args, args))
-
-  | CutT.LetCns (v, dtor, type_args, gamma, s') ->
-    (* Dual of Let - same logic *)
-    let gamma_vars = List.map fst gamma in
-    let free_in_cont = free_vars_statement s' in
-    let preserve = List.filter (fun var -> 
-      not (List.mem var gamma_vars) && 
-      not (Ident.equal var v) &&
-      List.mem var current_env
-    ) (List.map fst free_in_cont) in
-    let (subst, env_after) = build_substitution current_env gamma_vars preserve [] in
-    let new_env = v :: env_after in
-    let s_linearized = linearize_statement sigs prog new_env s' in
-    prepend_subst subst (CutT.LetCns (v, dtor, type_args, gamma, s_linearized))
-  
-  | CutT.NewPrd (v, ty, gamma, branches, s') ->
-    (* Dual of New - same logic *)
-    let gamma_vars = List.map fst gamma in
-    let branch_free_lists = List.map free_vars_branch branches in
-    let free_in_branches = free_vars_branches_max branch_free_lists in
-    let free_in_cont = free_vars_statement s' in
-    let all_free = merge_var_counts free_in_branches free_in_cont in
-    let preserve = List.filter (fun var -> 
-      not (List.mem var gamma_vars) && 
-      not (Ident.equal var v) &&
-      List.mem var current_env
-    ) (List.map fst all_free) in
-    let (subst, env_after_gamma) = build_substitution current_env gamma_vars preserve [] in
-    let branches' = List.map (linearize_branch sigs prog gamma_vars) branches in
-    let new_env = v :: env_after_gamma in
-    let s_linearized = linearize_statement sigs prog new_env s' in
-    prepend_subst subst (CutT.NewPrd (v, ty, gamma, branches', s_linearized))
-  
-  | CutT.SwitchCns (v, branches) ->
-    (* Dual of Switch - same logic *)
-    let branch_free_lists = List.map free_vars_branch branches in
-    let free_in_branches = free_vars_branches_max branch_free_lists in
-    let preserve = List.filter (fun w -> not (Ident.equal w v)) (List.map fst free_in_branches) in
-    let (subst, env_after) = build_substitution current_env [v] preserve [] in
-    let env_for_branches = List.filter (fun w -> not (Ident.equal w v)) env_after in
-    let branches' = List.map (linearize_branch sigs prog env_for_branches) branches in
-    prepend_subst subst (CutT.SwitchCns (v, branches'))
-  
-  | CutT.InvokePrd (v, ctor, type_args, args) ->
-    (* Dual of Invoke - same logic *)
-    let needed = v :: args in
-    let (subst, _env_after) = build_substitution current_env needed [] [] in
-    prepend_subst subst (CutT.InvokePrd (v, ctor, type_args, args))
+    prepend_subst subst (CutT.Invoke (v, dtor, type_args, args))
 
 (** Linearize a branch 
     The branch binds new variables in its pattern and has a body

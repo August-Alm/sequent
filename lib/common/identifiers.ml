@@ -2,30 +2,8 @@
   Inspired by Leroy's modular module system.
 *)
 
-module type IDENT = sig
-  type t
-  val mk: string -> t
-  val name: t -> string
-  val stamp: t -> int
-  val equal: t -> t -> bool
-  val compare: t -> t -> int
 
-  val fresh: unit -> t
-  val mk_primitive: int -> string -> t
-
-  type 'a tbl
-  val emptytbl: 'a tbl
-  val is_empty: 'a tbl -> bool
-  val add: t -> 'a -> 'a tbl -> 'a tbl
-  val find: t -> 'a tbl -> 'a
-  val find_opt: t -> 'a tbl -> 'a option
-  val filter: (t -> 'a -> bool) -> 'a tbl -> 'a tbl
-  val join: 'a tbl -> 'a tbl -> 'a tbl
-  val of_list: (t * 'a) list -> 'a tbl
-  val contains_key: t -> 'a tbl -> bool
-end
-
-module Ident: IDENT = struct
+module Ident = struct
   type t = {name: string; stamp: int}
   let currstamp = ref 0
   let mk s =
@@ -63,44 +41,16 @@ module Ident: IDENT = struct
   let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
   let join tbl1 tbl2 = tbl1 @ tbl2
   let of_list lst = lst
+  let to_list lst = lst
   let contains_key x tbl = List.exists (fun (k, _) -> equal x k) tbl
 end
 
-module type PATH = sig
-  type t
-  val equal: t -> t -> bool
-  val compare: t -> t -> int
-  val of_ident: Ident.t -> t
-  val stamp_unsafe: t -> int
-  val of_primitive: int -> string -> t
-  val of_string: string -> t
-  val as_ident: t -> Ident.t option
-  val access: t -> string -> t
-  val is_rooted_at: Ident.t -> t -> bool
-  val name: t -> string
-
-  type 'a tbl
-  val emptytbl: 'a tbl
-  val is_empty: 'a tbl -> bool
-  val add: t -> 'a -> 'a tbl -> 'a tbl
-  val find: t -> 'a tbl -> 'a
-  val find_opt: t -> 'a tbl -> 'a option
-  val filter: (t -> 'a -> bool) -> 'a tbl -> 'a tbl
-  val join: 'a tbl -> 'a tbl -> 'a tbl
-  val of_list: (t * 'a) list -> 'a tbl
-  val contains_key: t -> 'a tbl -> bool
-
-  type subst
-  val add_subst: Ident.t -> t -> subst -> subst
-  val find_subst: Ident.t -> subst -> t
-  val none: subst
-  val path: t -> subst -> t
-end
-
-module Path: PATH = struct
+module Path = struct
   type t =
     | Pident of Ident.t     (* identifier *)
     | Pdot of t * string    (* access to a module component *)
+  
+  module Id = Ident
 
   let of_ident id = Pident id
   let of_primitive n x = Pident (Ident.mk_primitive n x)
@@ -159,6 +109,7 @@ module Path: PATH = struct
   let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
   let join tbl1 tbl2 = tbl1 @ tbl2
   let of_list lst = lst
+  let to_list lst = lst
   let contains_key x tbl = List.exists (fun (k, _) -> equal x k) tbl
 
   type subst = t Ident.tbl

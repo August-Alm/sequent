@@ -104,57 +104,11 @@ With this unification, a producer of a signature now represents a constructor or
 and a consumer now represents a pattern match or copattern match. We can choose to view
 a signature as a data type or a codata type.
 
-The collapsing from the 8 Core statement forms down to the 4 Cut statement forms is not a
-simple matter of replacement. The issue is that polarities do not match. For example,
 
-⟨cocase {D(Γ) ⇒ s, ... } | α⟩
-
-cannot be straight-forwardly replaced with
-
-switch v {m(Γ) ⇒ s, ...}
-
-for v = α, because α is a consumer, but the switch statment in Cut matches on a producer
-variable v. The trick to achieve a proper mapping is to use double negation/CPS-transform.
-
-Let us first show with an example.
-
-In Core we have
-
-codata Fun(A)(B) where { app(prd A, cns B) }
-
-We use a primitive
-
-signature C(T) { ret(prd T) }
-
-and translate Fun(A)(B) to
-
-signature Func(A)(B) = { app(prd A, cns C(B)) }
-
-for simplicity writing A and B again for the translations to Cut. Then
-
-⟨cocase {app(x, k) => s} | α⟩
-
-is translated (recursively) to
-
-new v = (fvs){app(y: prd A, k: cns C(B)) => s};
-substitute[..., v → v];
-invoke α ret
-
-In general, Core codata
-code T where
-  D₁ : T → τ₁₁ → ... → r₁
-  D₂ : T → τ₂₁ → ... → r₂
-
-is translated to
-signature Cont⟦r₁⟧ = { ret(⟦r₁⟧) }
-signature Cont⟦r₂⟧ = { ret(⟦r₂⟧) }
-
-signature T = { 
-  D₁(cns Cont⟦r₁⟧, ⟦τ₁₁⟧, ...), 
-  D₂(cns Cont⟦r₂⟧, ⟦τ₂₁⟧, ...) 
-}
-
-
+⟨C(Γ) | µ˜x.s⟩ → let x = C(Γ); s
+⟨x | case {C(Γ) ⇒ s, ... }⟩ → switch x {C(Γ) ⇒ s, ...}
+⟨µα.s | case {C(Γ) ⇒ s, ... }⟩  → new α = {C(Γ) ⇒ s, ...}; s
+⟨C(Γ) | α⟩ → invoke α C(Γ)
 
 ## Explicit substitutions
 
