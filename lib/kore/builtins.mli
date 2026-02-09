@@ -13,6 +13,7 @@ module Sym: sig
   val i32_t: symbol
   val i32_add: symbol
   val i32_ifz: symbol
+  val i32_lit: int -> symbol
 
   val fun_t: symbol
   val fun_apply: symbol
@@ -37,6 +38,7 @@ module Ext: sig
   val int_t: tpe
   val int_add: import
   val int_ifz: import
+  val int_lit: int -> import
 
   (** All built-in imports *)
   val imports: import Path.tbl

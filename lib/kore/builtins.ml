@@ -13,6 +13,7 @@ module Sym = struct
   let i32_t = Path.of_primitive 1 "i32"
   let i32_add = Path.access i32_t "add"
   let i32_ifz = Path.access i32_t "ifz"
+  let i32_lit n = Path.access i32_t ("lit_" ^ string_of_int n)
 
   let fun_t = Path.of_primitive 100 "fun"
   let fun_apply = Path.access fun_t "apply"
@@ -93,6 +94,12 @@ module Ext = struct
     { name = Sym.i32_ifz
     ; parameter_types = [Lhs int_t]
     ; clauses_types = [[]; []]
+    }
+  
+  let int_lit n =
+    { name = Sym.i32_lit n
+    ; parameter_types = []
+    ; clauses_types = [[Lhs int_t]]
     }
   
   let imports =

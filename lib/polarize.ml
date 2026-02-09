@@ -177,7 +177,8 @@ let rec count_fun_arrows (ty: LTy.typ) : int =
   | _ -> 0
 
 (* Helper: Collect arguments from nested applications *)
-let rec collect_args (tm: LTm.typed_term) : (LTm.typed_term * LTm.typed_term list) =
+let rec collect_args
+    (tm: LTm.typed_term): (LTm.typed_term * LTm.typed_term list) =
   match tm with
   | LTm.TyTmApp (t, u, _) ->
     let (head, args) = collect_args t in
@@ -209,244 +210,668 @@ let rec get_return_type (ty: LTy.typ) : LTy.typ =
   | LTy.TyFun (_, t2) -> get_return_type t2
   | _ -> ty
 
- (** Translates Lang terms to Kore producers (LHS terms) *)
-let rec map_term (sgns: signatures) (trm: LTm.typed_term) : Kore.Terms.term =
+(**
+  Build a lambda term in the positive fragment:
+    [fun (x: A) ⇒ t] =
+      close(cocase {apply(x, k) ⇒ ⟨cocase {thunk(k') ⇒ ⟨[t] | k'⟩} | k⟩})
+  
+  Arguments:
+    - arg_ty: the type A (already mapped to Kore)
+    - ret_ty: the type B (already mapped to Kore)
+    - x: the bound variable
+    - body: the body term (already mapped to Kore)
+*)
+let build_lambda (arg_ty: tpe) (ret_ty: tpe) (x: variable) (body: term) =
+  let k = Ident.fresh () in   (* k : cns ↓[B] *)
+  let k' = Ident.fresh () in  (* k' : cns [B] *)
+  (* 
+    The function type is: ↑([A] → ↓[B])
+    Inner codata type: [A] → ↓[B]
+  *)
+  let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
+  let inner_fun_sgn = Prim.fun_sgn in
+  (* Build instantiated apply xtor for this specific function type *)
+  let apply_xtor = 
+    { Prim.fun_apply with
+      parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
+    ; parent_arguments = [arg_ty; mk_neg ret_ty]
+    }
+  in
+  (* Inner: cocase {thunk(k') ⇒ ⟨body | k'⟩} : prd ↓[B] *)
+  let neg_ret_ty = mk_neg ret_ty in
+  let neg_sgn = Prim.neg_sgn in
+  let thunk_xtor =
+    { Prim.neg_thunk with
+      parameters = [Rhs ret_ty]
+    ; parent_arguments = [ret_ty]
+    }
+  in
+  let inner_cocase =
+    New (neg_sgn, [{
+      xtor = thunk_xtor
+    ; type_vars = []
+    ; term_vars = [k']
+    ; command = CutPos (ret_ty, body, Variable k')
+    }])
+  in
+  (* Middle: cocase {apply(x, k) ⇒ ⟨inner_cocase | k⟩} : prd ([A] → ↓[B]) *)
+  let middle_cocase =
+    New (inner_fun_sgn, [{
+      xtor = apply_xtor
+    ; type_vars = []
+    ; term_vars = [x; k]
+    ; command = CutNeg (neg_ret_ty, inner_cocase, Variable k)
+    }])
+  in
+  (* Outer: close(middle_cocase) : prd ↑([A] → ↓[B]) *)
+  let close_xtor =
+    { Prim.pos_close with
+      parameters = [Lhs inner_fun_ty]
+    ; parent_arguments = [inner_fun_ty]
+    }
+  in
+  Constructor (close_xtor, [inner_fun_ty], [middle_cocase])
+
+(**
+  Build an application term in the positive fragment:
+    [t u] = μ(k: cns [B]). ⟨[t] | case {close(f) ⇒ ⟨f | apply([u], thunk(k))⟩}⟩
+  
+  Arguments:
+    - arg_ty: type of the argument u (already mapped)
+    - ret_ty: type of the result (already mapped)
+    - t_term: the function term (already mapped)
+    - u_term: the argument term (already mapped)
+*)
+let build_app (arg_ty: tpe) (ret_ty: tpe) (t_term: term) (u_term: term) =
+  let k = Ident.fresh () in   (* k: cns [B] - the final result continuation *)
+  let f = Ident.fresh () in   (* f: prd ([A] → ↓[B]) - the unwrapped function *)
+  (*
+    Function type: ↑([A] → ↓[B])
+    After unwrapping close: [A] → ↓[B]
+  *)
+  let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
+  let outer_fun_ty = mk_pos inner_fun_ty in
+  let pos_sgn = Prim.pos_sgn in
+  let close_xtor =
+    { Prim.pos_close with
+      parameters = [Lhs inner_fun_ty]
+    ; parent_arguments = [inner_fun_ty]
+    }
+  in
+  (* thunk(k) : cns ↓[B] *)
+  let thunk_xtor =
+    { Prim.neg_thunk with
+      parameters = [Rhs ret_ty]
+    ; parent_arguments = [ret_ty]
+    }
+  in
+  let thunk_k = Destructor (thunk_xtor, [ret_ty], [Variable k]) in
+  (* apply(u_term, thunk(k)) : cns ([A] → ↓[B]) *)
+  let apply_xtor =
+    { Prim.fun_apply with
+      parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
+    ; parent_arguments = [arg_ty; mk_neg ret_ty]
+    }
+  in
+  let apply_dtor =
+    Destructor (apply_xtor, [arg_ty; mk_neg ret_ty], [u_term; thunk_k])
+  in
+  (* case {close(f) ⇒ ⟨f | apply(u, thunk(k))⟩} : cns ↑([A] → ↓[B]) *)
+  let match_term =
+    Match (pos_sgn, [{
+      xtor = close_xtor
+    ; type_vars = []
+    ; term_vars = [f]
+    ; command = CutNeg (inner_fun_ty, Variable f, apply_dtor)
+    }])
+  in
+  (* μk. ⟨t | match⟩ *)
+  MuLhsPos (ret_ty, k, CutPos (outer_fun_ty, t_term, match_term))
+
+(**
+  Build a type instantiation in the positive fragment:
+    [t{A}] = μ(k: cns [B]). ⟨[t] | case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩}⟩
+*)
+let build_inst (kind: kind) (ty_arg: tpe) (ret_ty: tpe) (t_term: term) =
+  let a = Ident.fresh () in   (* type variable for the forall *)
+  let k = Ident.fresh () in   (* k: cns [B] *)
+  let f = Ident.fresh () in   (* f: prd (∀F) where F applied to ty_arg = ret_ty *)
+  (*
+    Forall type: ↑(∀(a:k). ↓[B])
+    Inner: ∀(a:k). ↓[B]
+  *)
+  let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
+  let outer_all_ty = mk_pos inner_all_ty in
+  let pos_sgn = Prim.pos_sgn in
+  let close_xtor =
+    { Prim.pos_close with
+      parameters = [Lhs inner_all_ty]
+    ; parent_arguments = [inner_all_ty]
+    }
+  in
+  (* thunk(k): cns ↓[B] *)
+  let thunk_xtor =
+    { Prim.neg_thunk with
+      parameters = [Rhs ret_ty]
+    ; parent_arguments = [ret_ty]
+    }
+  in
+  let thunk_k = Destructor (thunk_xtor, [ret_ty], [Variable k]) in
+  (* insta{ty_arg}(thunk(k)): cns (∀(a:k). ↓[B]) *)
+  let insta_xtor = Prim.all_insta a kind in
+  let insta_dtor = Destructor (insta_xtor, [ty_arg], [thunk_k]) in
+  (* case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩} *)
+  let match_term =
+    Match (pos_sgn, [{
+      xtor = close_xtor
+    ; type_vars = []
+    ; term_vars = [f]
+    ; command = CutNeg (inner_all_ty, Variable f, insta_dtor)
+    }])
+  in
+  MuLhsPos (ret_ty, k, CutPos (outer_all_ty, t_term, match_term))
+
+(**
+  Build a type abstraction in the positive fragment:
+    [{a:k} t] =
+      close(cocase {insta{a}(k) ⇒ ⟨cocase {thunk(k') ⇒ ⟨〚t〛| k'⟩} | k⟩})
+*)
+let build_type_abs (a: variable) (kind: kind) (ret_ty: tpe) (body: term) =
+  let k = Ident.fresh () in   (* k: cns ↓[B] *)
+  let k' = Ident.fresh () in  (* k': cns [B] *)
+  let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
+  let all_sgn = Prim.all_sgn a kind in
+  let insta_xtor = Prim.all_insta a kind in
+  (* Inner: cocase {thunk(k') ⇒ ⟨body | k'⟩} *)
+  let neg_ret_ty = mk_neg ret_ty in
+  let neg_sgn = Prim.neg_sgn in
+  let thunk_xtor =
+    { Prim.neg_thunk with
+      parameters = [Rhs ret_ty]
+    ; parent_arguments = [ret_ty]
+    }
+  in
+  let inner_cocase =
+    New (neg_sgn, [{
+      xtor = thunk_xtor
+    ; type_vars = []
+    ; term_vars = [k']
+    ; command = CutPos (ret_ty, body, Variable k')
+    }])
+  in
+  (* Middle: cocase {insta{a}(k) ⇒ ⟨inner | k⟩} *)
+  let middle_cocase =
+    New (all_sgn, [{
+      xtor = insta_xtor
+    ; type_vars = [(a, kind)]
+    ; term_vars = [k]
+    ; command = CutNeg (neg_ret_ty, inner_cocase, Variable k)
+    }])
+  in
+  (* Outer: close(middle) *)
+  let close_xtor =
+    { Prim.pos_close with
+      parameters = [Lhs inner_all_ty]
+    ; parent_arguments = [inner_all_ty]
+    }
+  in
+  Constructor (close_xtor, [inner_all_ty], [middle_cocase])
+
+(** Translates Lang terms to Kore producers (LHS terms) *)
+let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
   match trm with
   | LTm.TyTmVar (x, _) -> Variable x
-  | LTm.TyTmSym (s, ty) ->
-    let alpha = Ident.fresh () in
-    MuLhsPos (map_type ty, alpha, Call (s, [], [Variable alpha]))
-  | LTm.TyTmApp (t, u, ty_ret) ->
-    (* Collect all type and term arguments from nested applications and instantiations *)
-    let (head, ty_args, tm_args) =
-      collect_type_and_term_args (LTm.TyTmApp (t, u, ty_ret))
-    in
-    (match head with
-    | LTm.TyTmSym (sym, sym_ty) ->
-      (* This is an application of a top-level symbol *)
-      let required_arity = count_fun_arrows sym_ty in
-      let provided_arity = List.length tm_args in
-      
-      if provided_arity = required_arity then
-        (* Fully applied - generate Call statement with type arguments *)
-        let alpha = Ident.fresh () in
-        let ty = map_type sym_ty in
-        let tys = List.map map_type ty_args in
-        let args = List.map (map_term sgns) tm_args in
-        MuLhsPos (ty, alpha, Call (sym, tys, args @ [Variable alpha]))
-      
-      else if provided_arity < required_arity then
-        (* Partially applied - generate lambda for remaining arguments *)
-        (* foo(u) where foo: a -> b -> c becomes:
-           fun (y: b) => foo(u, y) 
-           which is: new { $app(this, y, α) => μβ.Call(foo, [u, y], [β]) | α } *)
-        let arg_types = get_arg_types sym_ty in
-        let remaining_arg_types = Utility.drop provided_arity arg_types in
-        let final_return_ty = get_return_type sym_ty in  (* The final return type, not the partial app type *)
-        
-        (* Generate nested lambdas for each remaining argument *)
-        let rec make_lambdas remaining_tys provided_args =
-          match remaining_tys with
-          | [] -> 
-            (* All arguments provided - make the call with collected type args *)
-            let alpha = Ident.fresh () in
-            let ty = map_type sym_ty in
-            let tys = List.map map_type ty_args in
-            let args = List.map (map_term sgns) provided_args in
-            MuLhsPos (ty, alpha, Call (sym, tys, args @ [Variable alpha]))
-          | arg_ty :: rest_tys ->
-            (* Create lambda for this argument *)
-            let x = Ident.fresh () in
-            let y = Ident.fresh () in
-            let ta = Ident.fresh () in
-            let tb = Ident.fresh () in
-            (* The result type after applying this and all remaining arguments *)
-            let result_ty = 
-              if rest_tys = [] then map_type final_return_ty
-              else List.fold_right (fun arg_ty acc -> 
-                TyApp (TyApp (Prim.fun_t, map_type arg_ty), acc)
-              ) rest_tys (map_type final_return_ty)
-            in
-            let result_sng =
-              match result_ty with
-              | 
-            New (result_ty, [{
-              CTm.xtor = CTy.Prim.app_dtor_sym;
-              CTm.type_vars = [ta; tb];
-              CTm.variables = [x];
-              CTm.covariables = [y];
-              CTm.statement = CTm.Cut (
-                make_lambdas rest_tys (provided_args @ [LTm.TyTmVar (x, arg_ty)]),
-                result_ty,
-                CTm.Covar y
-              )
-            }]
-        in
-        make_lambdas remaining_arg_types tm_args
-      
-      else
-        (* Over-applied - this shouldn't happen in well-typed code *)
-        failwith "convert: over-applied function (type checking should have caught this)"
-    | _ ->
-      (* General application using $app destructor *)
-      let ty_arg = LTm.get_type u in
-      let x = Ident.fresh () in
-      (* μx.< conv t | $apply{ty_arg}{ty_ret}(x, conv u) > *)
-      CTm.Mu (x, CTm.Cut (
-        convert t,
-        (* Function type: ty_arg -> ty_ret *)
-        CTy.TyApp (CTy.TyApp (CTy.TyDef (CTy.Prim (CTy.Prim.fun_sym,
-          CTy.KArrow (CTy.KStar, CTy.KArrow (CTy.KStar, CTy.KStar)))),
-            convert_typ ty_arg), convert_typ ty_ret),
-        CTm.Destructor (CTy.Prim.app_dtor_sym, (
-          [convert_typ ty_arg; convert_typ ty_ret],
-          [CTm.Var x],
-          [CTm.MuTilde (x, CTm.Cut (convert u, convert_typ ty_arg, CTm.Covar x))]
-        ))
-      ))
-    )
 
-  | LTm.TyTmIns (t, ty_arg, k, ty_result) ->
-    (* Type instantiation: check if this is part of a function call pattern *)
-    (* If t is a symbol or becomes a symbol after collecting args, handle as Call *)
-    let (head, all_ty_args, all_tm_args) = collect_type_and_term_args (LTm.TyTmIns (t, ty_arg, k, ty_result)) in
-    (match head with
-    | LTm.TyTmSym (_, _) when all_ty_args <> [] && all_tm_args = [] ->
-      (* Just type instantiation, no term args yet *)
-      let x = Ident.fresh () in
-      CTm.Mu (x, CTm.Cut (
-        convert t,
-        CTy.TyApp (CTy.TyDef (CTy.Prim (CTy.Prim.all_sym k, CTy.KArrow (CTy.KArrow (k, CTy.KStar), CTy.KStar))), convert_typ ty_result),
-        CTm.Destructor (CTy.Prim.ins_dtor_sym k, (
-          [convert_typ ty_result; convert_typ ty_arg],
-          [],
-          [CTm.Covar x]
-        ))
-      ))
-    | _ ->
-      (* Use old forall encoding *)
-      let x = Ident.fresh () in
-      CTm.Mu (x, CTm.Cut (
-        convert t,
-        CTy.TyApp (CTy.TyDef (CTy.Prim (CTy.Prim.all_sym k, CTy.KArrow (CTy.KArrow (k, CTy.KStar), CTy.KStar))), convert_typ ty_result),
-        CTm.Destructor (CTy.Prim.ins_dtor_sym k, (
-          [convert_typ ty_result; convert_typ ty_arg],
-          [],
-          [CTm.Covar x]
-        ))
-      ))
-    )
-
-  | LTm.TyTmLam (x, _a, body, _ty) ->
-    let b = LTm.get_type body in
-    let y = Ident.fresh () in
-    let ta = Ident.fresh () in
-    let tb = Ident.fresh () in
-    (* new $fun{a}{b} { $apply{a}{b}(this, x, y) => < conv body | y > } *)
-    CTm.Cocase [{
-      CTm.xtor = CTy.Prim.app_dtor_sym;
-      CTm.type_vars = [ta; tb];
-      CTm.variables = [x];
-      CTm.covariables = [y];
-      CTm.statement = CTm.Cut (convert body, convert_typ b, CTm.Covar y)
-    }]
+  | LTm.TyTmLam (x, arg_ty, body, _ty) ->
+    (* fun (x: A) => t *)
+    let ret_ty = LTm.get_type body in
+    let arg_ty' = map_type arg_ty in
+    let ret_ty' = map_type ret_ty in
+    let body' = map_term sgns body in
+    build_lambda arg_ty' ret_ty' x body'
 
   | LTm.TyTmAll ((a, k), body, _ty) ->
-    let b = LTm.get_type body in
-    let y = Ident.fresh () in
-    (* new $forall{k} { $inst{a: k}(y) => < conv body | y > } *)
-    CTm.Cocase [{
-      CTm.xtor = CTy.Prim.ins_dtor_sym k;
-      CTm.type_vars = [a];
-      CTm.variables = [];
-      CTm.covariables = [y];
-      CTm.statement = CTm.Cut (convert body, convert_typ b, CTm.Covar y)
-    }]
+    (* {a: k} t *)
+    let ret_ty = LTm.get_type body in
+    let kind = map_kinds k in
+    let ret_ty' = map_type ret_ty in
+    let body' = map_term sgns body in
+    build_type_abs a kind ret_ty' body'
 
-  | LTm.TyTmLet (x, t, u, ty) ->
+  | LTm.TyTmApp (t, u, _ty_ret) ->
+    (* Collect all type and term arguments *)
+    let (head, ty_args, tm_args) =
+      collect_type_and_term_args (LTm.TyTmApp (t, u, _ty_ret))
+    in
+    map_application sgns head ty_args tm_args
+
+  | LTm.TyTmIns (t, ty_arg, k, _ty_result) ->
+    (* Collect all type and term arguments *)
+    let (head, ty_args, tm_args) =
+      collect_type_and_term_args (LTm.TyTmIns (t, ty_arg, k, _ty_result))
+    in
+    map_application sgns head ty_args tm_args
+
+  | LTm.TyTmSym (_s, _ty) ->
+    (* A bare symbol reference - treat as partial application with 0 args *)
+    map_application sgns trm [] []
+
+  | LTm.TyTmLet (x, t, u, _ty) ->
+    (* let x = t in u  →  μk. ⟨〚t〛| μ̃x. ⟨[u] | k⟩⟩ *)
     let t_ty = LTm.get_type t in
-    let y = Ident.fresh () in
-    (* μy.< conv t | μ̃x.< conv u | y > > *)
-    CTm.Mu (y, CTm.Cut (
-      convert t,
-      convert_typ t_ty,
-      CTm.MuTilde (x, CTm.Cut (convert u, convert_typ ty, CTm.Covar y))
-    ))
+    let u_ty = LTm.get_type u in
+    let k = Ident.fresh () in
+    let t' = map_term sgns t in
+    let u' = map_term sgns u in
+    let t_ty' = map_type t_ty in
+    let u_ty' = map_type u_ty in
+    MuLhsPos (u_ty', k, 
+      CutPos (t_ty', t', 
+        MuRhsPos (t_ty', x, 
+          CutPos (u_ty', u', Variable k))))
 
   | LTm.TyTmMatch (t, clauses, ty) ->
+    (* match t with { C₁(xs) => e₁ ; ... }
+       → μk. ⟨[t] | case {C₁(xs) => ⟨[e₁] | k⟩ ; ...}⟩ *)
     let t_ty = LTm.get_type t in
-    let y = Ident.fresh () in
-    (* μy.< conv t | case { ctor_i{type_vars}(term_vars) => < conv body_i | y > } > *)
-    let patterns = List.map (fun (xtor, type_vars, term_vars, body) ->
-      { CTm.xtor = xtor.LTy.symbol
-      ; CTm.type_vars = type_vars
-      ; CTm.variables = term_vars
-      ; CTm.covariables = []  (* Case patterns don't have covariables *)
-      ; CTm.statement = CTm.Cut (convert body, convert_typ ty, CTm.Covar y)
+    let k = Ident.fresh () in
+    let t' = map_term sgns t in
+    let t_ty' = map_type t_ty in
+    let ret_ty' = map_type ty in
+    let t_sgn = get_signature_of_type sgns t_ty in
+    let branches = List.map (fun (xtor, type_vars, term_vars, body) ->
+      let body' = map_term sgns body in
+      let xtor' = map_xtor sgns xtor in
+      (* Get kinds from the xtor's quantified list *)
+      let type_vars_with_kinds = 
+        List.map2 (fun v (_, k) -> (v, map_kinds k)
+        ) type_vars xtor.LTy.quantified
+      in
+      { xtor = xtor'
+      ; type_vars = type_vars_with_kinds
+      ; term_vars = term_vars
+      ; command = CutPos (ret_ty', body', Variable k)
       }
     ) clauses in
-    CTm.Mu (y, CTm.Cut (
-      convert t,
-      convert_typ t_ty,
-      CTm.Case patterns
-    ))
+    MuLhsPos (ret_ty', k, CutPos (t_ty', t', Match (t_sgn, branches)))
 
-  | LTm.TyTmNew (_ty_opt, clauses, _ty) ->
-    (* In Lang: new stream(a) { head{_} => x ; tail{_} => const_stream(x) }
-       In Core: cocase { head{a}(k) => <x | k> ; tail{a}(k) => <...| k> }
-       
-       Note: In Lang, self is implicit (not in pattern bindings).
-       In Core, cocase patterns have NO producer variables (no self).
-       They only have consumer variables for the return continuation.
-       Self appears in destructor APPLICATIONS, not in cocase pattern definitions.
-       
-       Extract type arguments from the result type to use as type variables in patterns.
-       For `new stream(a)`, the type is `TyApp(TyCtor(stream), TyVar(a))`, so we extract `[a]`.
-    *)
-    let rec extract_type_vars (ty: LTy.typ) : Ident.t list =
-      match ty with
-      | LTy.TyVar x -> [x]
-      | LTy.TyApp (t1, t2) -> extract_type_vars t1 @ extract_type_vars t2
-      | _ -> []
-    in
-    let type_vars_from_result = extract_type_vars _ty in
-    
-    let patterns = List.map (fun (xtor, _lang_type_vars, term_vars, body) ->
+  | LTm.TyTmNew (_ty_opt, clauses, ty) ->
+    (* new { D₁(args) => e₁ ; ... }
+       → close(cocase {D₁(args, k) =>
+          ⟨cocase{thunk(k') => ⟨[e₁] | k'⟩} | k⟩ ; ...}) *)
+    let _ty' = map_type ty in
+    let codata_sgn = get_signature_of_new_type sgns ty in
+    let branches = List.map (fun (xtor, type_vars, term_vars, body) ->
       let body_ty = LTm.get_type body in
-      let y = Ident.fresh () in
-      { CTm.xtor = xtor.LTy.symbol
-      ; CTm.type_vars = type_vars_from_result  (* Use type vars from result type, not Lang pattern *)
-      ; CTm.variables = term_vars  (* Just the non-return arguments (empty for head/tail) *)
-      ; CTm.covariables = [y]
-      ; CTm.statement = CTm.Cut (convert body, convert_typ body_ty, CTm.Covar y)
+      let body' = map_term sgns body in
+      let body_ty' = map_type body_ty in
+      let k = Ident.fresh () in
+      let k' = Ident.fresh () in
+      let xtor' = map_xtor sgns xtor in
+      (* Get kinds from the xtor's quantified list *)
+      let type_vars_with_kinds =
+        List.map2 (fun v (_, knd) -> (v, map_kinds knd)
+        ) type_vars xtor.LTy.quantified
+      in
+      (* Inner thunk cocase *)
+      let neg_body_ty = mk_neg body_ty' in
+      let thunk_xtor =
+        { Prim.neg_thunk with
+          parameters = [Rhs body_ty']
+        ; parent_arguments = [body_ty']
+        }
+      in
+      let inner_cocase =
+        New (Prim.neg_sgn, [{
+          xtor = thunk_xtor
+        ; type_vars = []
+        ; term_vars = [k']
+        ; command = CutPos (body_ty', body', Variable k')
+        }])
+      in
+      { xtor = xtor'
+      ; type_vars = type_vars_with_kinds
+      ; term_vars = term_vars @ [k]  (* Add continuation parameter *)
+      ; command = CutNeg (neg_body_ty, inner_cocase, Variable k)
       }
     ) clauses in
-    CTm.Cocase patterns
+    (* The codata itself - need to wrap in close for positive fragment *)
+    let inner_codata = New (codata_sgn, branches) in
+    let inner_ty = TyNeg codata_sgn in
+    let close_xtor =
+      { Prim.pos_close with
+        parameters = [Lhs inner_ty]
+      ; parent_arguments = [inner_ty]
+      }
+    in
+    Constructor (close_xtor, [inner_ty], [inner_codata])
 
-  | LTm.TyTmCtor (ctor, ty_args, tm_args, _ty) ->
-    (* ctor{(Convert.typ ty_args)}((conv tm_args), []) *)
-    CTm.Constructor (ctor.LTy.symbol, (
-      List.map convert_typ ty_args,
-      List.map convert tm_args,
-      []
-    ))
+  | LTm.TyTmCtor (ctor, ty_args, tm_args, ty) ->
+    (* Constructor application - may be partial *)
+    map_ctor_application sgns ctor ty_args tm_args ty
 
-  | LTm.TyTmDtor (dtor, ty_args, tm_args, _ty) ->
-    (* The first tm_arg should be 'self' *)
-    (match tm_args with
-    | [] -> failwith "convert: destructor must have at least 'self' argument"
-    | self :: rest ->
-      let self_ty = LTm.get_type self in
-      let y = Ident.fresh () in
-      (* μy.< conv self | dtor{(Convert.typ ty_args)}((conv rest), y) > *)
-      CTm.Mu (y, CTm.Cut (
-        convert self,
-        convert_typ self_ty,
-        CTm.Destructor (dtor.LTy.symbol, (
-          List.map convert_typ ty_args,
-          List.map convert rest,
-          [CTm.Covar y]
-        ))
-      ))
-    )
-  | _ -> failwith "map_term: not implemented yet"
+  | LTm.TyTmDtor (dtor, ty_args, tm_args, ty) ->
+    (* Destructor application *)
+    map_dtor_application sgns dtor ty_args tm_args ty
+
+  | LTm.TyTmInt (n, _) ->
+    (* Integer literal n : Box(ext int)
+       〚n〛= μk. extern lit_n {(v) => ⟨box(v) | k⟩}
+       where v : prd (ext int), box(v) : prd Box(ext int), k : cns Box(ext int)
+    *)
+    let k = Ident.fresh () in
+    let v = Ident.fresh () in
+    let box_ty = TyApp (Prim.box_t, Ext.int_t) in  (* Box(ext int) *)
+    let box_xtor =
+      { Prim.box_mk with
+        parameters = [Lhs Ext.int_t]
+      ; parent_arguments = [Ext.int_t]
+      }
+    in
+    let box_v = Constructor (box_xtor, [Ext.int_t], [Variable v]) in
+    let clause = { parameters = [v]; body = CutPos (box_ty, box_v, Variable k) } in
+    MuLhsPos (box_ty, k, Extern (Sym.i32_lit n, [], [clause]))
+
+  | LTm.TyTmAdd (t1, t2, _ty) ->
+    (* Integer addition e1 + e2 : Box(ext int)
+       〚e1 + e2〛= μk. ⟨〚e1〛| case {box(v1) => ⟨〚e2〛| case {box(v2) => 
+                         extern add(v1, v2) {(v) => ⟨box(v) | k⟩}}}⟩
+       
+       Both e1 and e2 have type Box(ext int), so we unbox, call extern, rebox.
+    *)
+    let k = Ident.fresh () in
+    let v1 = Ident.fresh () in
+    let v2 = Ident.fresh () in
+    let v = Ident.fresh () in
+    let box_ty = TyApp (Prim.box_t, Ext.int_t) in  (* Box(ext int) *)
+    let box_xtor =
+      { Prim.box_mk with
+        parameters = [Lhs Ext.int_t]
+      ; parent_arguments = [Ext.int_t]
+      }
+    in
+    (* box(v) for the result *)
+    let box_v = Constructor (box_xtor, [Ext.int_t], [Variable v]) in
+    (* extern add(v1, v2) {(v) => ⟨box(v) | k⟩} *)
+    let add_clause =
+      { parameters = [v]; body = CutPos (box_ty, box_v, Variable k) }
+    in
+    let add_extern =
+      Extern (Sym.i32_add, [Variable v1; Variable v2], [add_clause])
+    in
+    (* case {box(v2) => extern add ...} for unboxing e2 *)
+    let unbox2 = Match (Prim.box_sgn,
+      [{ xtor = box_xtor
+      ; type_vars = []
+      ; term_vars = [v2]
+      ; command = add_extern
+      }])
+    in
+    (* case {box(v1) => ⟨〚e2〛| unbox2⟩} for unboxing e1 *)
+    let t2' = map_term sgns t2 in
+    let unbox1 = Match (Prim.box_sgn,
+      [{ xtor = box_xtor
+      ; type_vars = []
+      ; term_vars = [v1]
+      ; command = CutPos (box_ty, t2', unbox2)
+      }])
+    in
+    (* μk. ⟨〚e1〛| unbox1⟩ *)
+    let t1' = map_term sgns t1 in
+    MuLhsPos (box_ty, k, CutPos (box_ty, t1', unbox1))
+
+(** Map an application (possibly partial) of a head to type and term arguments *)
+and map_application (sgns: signatures) (head: LTm.typed_term) 
+    (ty_args: LTy.typ list) (tm_args: LTm.typed_term list) =
+  match head with
+  | LTm.TyTmSym (sym, sym_ty) ->
+    (* Application of a top-level symbol *)
+    let required_arity = count_fun_arrows sym_ty in
+    let provided_arity = List.length tm_args in
+    
+    if provided_arity = required_arity then
+      (* Fully applied - generate Call *)
+      let ret_ty = get_return_type sym_ty in
+      let ret_ty' = map_type ret_ty in
+      let tys = List.map map_type ty_args in
+      let args = List.map (map_term sgns) tm_args in
+      let k = Ident.fresh () in
+      MuLhsPos (ret_ty', k, Call (sym, tys, args @ [Variable k]))
+    
+    else if provided_arity < required_arity then
+      (* Partial application - generate lambdas for remaining args *)
+      let arg_types = get_arg_types sym_ty in
+      let remaining_arg_types = Utility.drop provided_arity arg_types in
+      let provided_args = List.map (map_term sgns) tm_args in
+      build_partial_application sgns sym sym_ty ty_args
+      provided_args remaining_arg_types
+    
+    else
+      failwith "map_application: over-applied function"
+
+  | LTm.TyTmCtor (ctor, ctor_ty_args, ctor_tm_args, _) ->
+    (* Constructor partially applied through further application *)
+    let all_ty_args = ctor_ty_args @ ty_args in
+    let all_tm_args = ctor_tm_args @ tm_args in
+    map_ctor_application sgns ctor all_ty_args all_tm_args (LTm.get_type head)
+
+  | LTm.TyTmDtor (dtor, dtor_ty_args, dtor_tm_args, _) ->
+    (* Destructor applied through further application *)
+    let all_ty_args = dtor_ty_args @ ty_args in
+    let all_tm_args = dtor_tm_args @ tm_args in
+    map_dtor_application sgns dtor all_ty_args all_tm_args (LTm.get_type head)
+
+  | _ ->
+    (* General case: apply one argument at a time *)
+    let rec apply_args
+        (t: term) (t_ty: LTy.typ) (tys: LTy.typ list) (args: LTm.typed_term list) =
+      match tys, args with
+      | [], [] -> t
+      | ty :: rest_tys, [] ->
+        (* Type instantiation *)
+        let ret_ty = instantiate_forall t_ty ty in
+        let kind = get_forall_kind t_ty in
+        let t' = build_inst kind (map_type ty) (map_type ret_ty) t in
+        apply_args t' ret_ty rest_tys []
+      | tys, arg :: rest_args ->
+        (* First consume all type args, then term args *)
+        let t', t_ty' = 
+          List.fold_left (fun (t, ty) ty_arg ->
+            let ret_ty = instantiate_forall ty ty_arg in
+            let kind = get_forall_kind ty in
+            (build_inst kind (map_type ty_arg) (map_type ret_ty) t, ret_ty)
+          ) (t, t_ty) tys
+        in
+        let arg_ty, ret_ty = get_fun_arg_ret t_ty' in
+        let arg' = map_term sgns arg in
+        let t'' = build_app (map_type arg_ty) (map_type ret_ty) t' arg' in
+        apply_args t'' ret_ty [] rest_args
+    in
+    let head' = map_term sgns head in
+    let head_ty = LTm.get_type head in
+    apply_args head' head_ty ty_args tm_args
+
+(** Build nested lambdas for partial application of a symbol *)
+and build_partial_application
+    (sgns: signatures) (sym: symbol) (sym_ty: LTy.typ)
+    (ty_args: LTy.typ list) (provided_args: term list)
+    (remaining_tys: LTy.typ list) =
+  match remaining_tys with
+  | [] ->
+    (* All arguments collected - make the call *)
+    let ret_ty = get_return_type sym_ty in
+    let ret_ty' = map_type ret_ty in
+    let tys = List.map map_type ty_args in
+    let k = Ident.fresh () in
+    MuLhsPos (ret_ty', k, Call (sym, tys, provided_args @ [Variable k]))
+  | arg_ty :: rest_tys ->
+    (* Build lambda for this argument *)
+    let x = Ident.fresh () in
+    let arg_ty' = map_type arg_ty in
+    let inner =
+      build_partial_application
+        sgns sym sym_ty ty_args 
+        (provided_args @ [Variable x]) rest_tys
+    in
+    let inner_ty = 
+      List.fold_right (fun t acc -> 
+        mk_pos (TyApp (TyApp (Prim.fun_t, map_type t), mk_neg acc))
+      ) rest_tys (map_type (get_return_type sym_ty))
+    in
+    build_lambda arg_ty' inner_ty x inner
+
+(** Map constructor application (possibly partial) *)
+and map_ctor_application
+    (sgns: signatures) (ctor: LTy.ty_xtor) 
+    (ty_args: LTy.typ list) (tm_args: LTm.typed_term list)
+    (result_ty: LTy.typ) =
+  let required_arity = List.length ctor.LTy.sources in
+  let provided_arity = List.length tm_args in
+  
+  if provided_arity = required_arity then
+    (* Fully applied constructor *)
+    let xtor' = map_xtor sgns ctor in
+    let tys = List.map map_type ty_args in
+    let args = List.map (map_term sgns) tm_args in
+    Constructor (xtor', tys, args)
+  
+  else if provided_arity < required_arity then
+    (* Partial constructor application - wrap in lambdas *)
+    let remaining_tys =
+      Utility.drop provided_arity ctor.LTy.sources
+    in
+    let provided_args = List.map (map_term sgns) tm_args in
+    build_partial_ctor
+      sgns ctor ty_args
+      provided_args remaining_tys
+      result_ty
+  
+  else
+    failwith "map_ctor_application: over-applied constructor"
+
+and build_partial_ctor
+    (sgns: signatures) (ctor: LTy.ty_xtor)
+    (ty_args: LTy.typ list) (provided_args: term list) 
+    (remaining_tys: LTy.typ list)
+    (result_ty: LTy.typ) =
+  match remaining_tys with
+  | [] ->
+    let xtor' = map_xtor sgns ctor in
+    let tys = List.map map_type ty_args in
+    Constructor (xtor', tys, provided_args)
+  | arg_ty :: rest_tys ->
+    let x = Ident.fresh () in
+    let arg_ty' = map_type arg_ty in
+    let inner =
+      build_partial_ctor sgns ctor ty_args 
+        (provided_args @ [Variable x]) rest_tys result_ty
+    in
+    let inner_ty =
+      List.fold_right (fun t acc ->
+        mk_pos (TyApp (TyApp (Prim.fun_t, map_type t), mk_neg acc))
+      ) rest_tys (map_type result_ty)
+    in
+    build_lambda arg_ty' inner_ty x inner
+
+(** Map destructor application *)
+and map_dtor_application
+    (sgns: signatures) (dtor: LTy.ty_xtor)
+    (ty_args: LTy.typ list) (tm_args: LTm.typed_term list)
+    (result_ty: LTy.typ) =
+  (* Destructors need at least self argument *)
+  match tm_args with
+  | [] -> failwith "map_dtor_application: destructor needs self argument"
+  | self :: rest ->
+    let self_ty = LTm.get_type self in
+    let self' = map_term sgns self in
+    let self_ty' = map_type self_ty in
+    let ret_ty' = map_type result_ty in
+    let xtor' = map_xtor sgns dtor in
+    let tys = List.map map_type ty_args in
+    let args = List.map (map_term sgns) rest in
+    let k = Ident.fresh () in
+    (* μk. ⟨self | D(args, thunk(k))⟩ *)
+    (* Need to wrap continuation in thunk for negative codomain *)
+    let thunk_xtor =
+      { Prim.neg_thunk with
+        parameters = [Rhs ret_ty']
+      ; parent_arguments = [ret_ty']
+      }
+    in
+    let thunk_k = Destructor (thunk_xtor, [ret_ty'], [Variable k]) in
+    let dtor_term = Destructor (xtor', tys, args @ [thunk_k]) in
+    let inner_ty = TyNeg (get_codata_signature sgns self_ty) in
+    (* Need to unwrap close first if self is shifted *)
+    let f = Ident.fresh () in
+    let close_xtor =
+      { Prim.pos_close with
+        parameters = [Lhs inner_ty]
+      ; parent_arguments = [inner_ty]
+      }
+    in
+    MuLhsPos (ret_ty', k,
+      CutPos (self_ty', self',
+        Match (Prim.pos_sgn, [{
+          xtor = close_xtor
+        ; type_vars = []
+        ; term_vars = [f]
+        ; command = CutNeg (inner_ty, Variable f, dtor_term)
+        }])))
+
+(** Helper: get signature from a data type *)
+and get_signature_of_type (sgns: signatures) (ty: LTy.typ) =
+  match ty with
+  | LTy.TyDef (LTy.Data dec) -> map_data dec
+  | LTy.TySym s ->
+    let sgn, _, _ = get_def sgns s in sgn
+  | LTy.TyApp (t, _) -> get_signature_of_type sgns t
+  | _ -> failwith "get_signature_of_type: not a data type"
+
+(** Helper: get signature from a codata type used in new *)
+and get_signature_of_new_type (sgns: signatures) (ty: LTy.typ) =
+  (* The type is ↑(codata), we need to extract the codata signature *)
+  match ty with
+  | LTy.TyDef (LTy.Code dec) -> map_code dec
+  | LTy.TySym s ->
+    let sgn, _, _ = get_def sgns s in sgn
+  | LTy.TyApp (t, _) -> get_signature_of_new_type sgns t
+  | _ -> failwith "get_signature_of_new_type: not a codata type"
+
+(** Helper: get codata signature *)
+and get_codata_signature (sgns: signatures) (ty: LTy.typ) =
+  get_signature_of_new_type sgns ty
+
+(** Map a Lang xtor to Kore xtor *)
+and map_xtor (_sgns: signatures) (xtor: LTy.ty_xtor) =
+  { parent = xtor.LTy.parent
+  ; name = xtor.LTy.symbol
+  ; quantified =
+      List.map (fun (v, k) -> (v, map_kinds k)
+      ) xtor.LTy.quantified
+  ; parameters =
+      List.map (fun t -> Lhs (map_type t)) xtor.LTy.sources
+  ; parent_arguments =
+      List.map map_type xtor.LTy.arguments
+  ; constraints =
+      Option.map (List.map (fun (v, t) -> (v, map_type t)
+      )) xtor.LTy.constraints
+  }
+
+(** Helper: instantiate a forall type *)
+and instantiate_forall (ty: LTy.typ) (arg: LTy.typ) =
+  match ty with
+  | LTy.TyAll ((a, _), body) -> 
+    LTy.subst (Ident.add a arg Ident.emptytbl) body
+  | _ -> failwith "instantiate_forall: not a forall type"
+
+(** Helper: get kind from forall *)
+and get_forall_kind (ty: LTy.typ) =
+  match ty with
+  | LTy.TyAll ((_, k), _) -> map_kinds k
+  | _ -> failwith "get_forall_kind: not a forall type"
+
+(** Helper: get function argument and return types *)
+and get_fun_arg_ret (ty: LTy.typ) =
+  match ty with
+  | LTy.TyFun (a, b) -> (a, b)
+  | _ -> failwith "get_fun_arg_ret: not a function type"
