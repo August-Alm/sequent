@@ -23,6 +23,48 @@ let mk_pos tt = TyApp (Prim.pos_t, tt)
 (* Shifts from positive to negative polarity *)
 let mk_neg tt = TyApp (Prim.neg_t, tt)
 
+(* Instantiate close xtor for a given inner negative type *)
+let mk_close_xtor inner_ty =
+  { Prim.pos_close with
+    parameters = [Lhs inner_ty]
+  ; parent_arguments = [inner_ty]
+  }
+
+(* Instantiate thunk xtor for a given result type *)
+let mk_thunk_xtor ret_ty =
+  { Prim.neg_thunk with
+    parameters = [Rhs ret_ty]
+  ; parent_arguments = [ret_ty]
+  }
+
+(* Instantiate box xtor for ext int *)
+let mk_box_xtor () =
+  { Prim.box_mk with
+    parameters = [Lhs Ext.int_t]
+  ; parent_arguments = [Ext.int_t]
+  }
+
+(* The type Box(ext int) *)
+let box_int_ty = TyApp (Prim.box_t, Ext.int_t)
+
+(* Build: cocase {thunk(k') ⇒ ⟨body | k'⟩} : prd ↓[ret_ty] *)
+let mk_thunk_cocase ret_ty body =
+  let k' = Ident.fresh () in
+  New (Prim.neg_sgn, [{
+    xtor = mk_thunk_xtor ret_ty
+  ; type_vars = []
+  ; term_vars = [k']
+  ; command = CutPos (ret_ty, body, Variable k')
+  }])
+
+(* Build: close(inner) where inner : prd inner_ty *)
+let mk_close inner_ty inner =
+  Constructor (mk_close_xtor inner_ty, [inner_ty], [inner])
+
+(* Build: thunk(k) : cns ↓[ret_ty] *)
+let mk_thunk ret_ty k =
+  Destructor (mk_thunk_xtor ret_ty, [ret_ty], [Variable k])
+
 (* Helper *)
 let rec go expand tt =
   match tt with
@@ -169,21 +211,18 @@ let signatures (defs: LTm.typed_definitions) =
     | LTy.Code dec -> add_def sgns Negative (map_code dec)
   ) primitives defs.LTm.type_defs
 
-(* Helper: Count the number of function arrows in a type *)
-let rec count_fun_arrows (ty: LTy.typ) : int =
+(* Helper: Decompose a function type into arg types and return type *)
+let rec decompose_fun_type (ty: LTy.typ) : LTy.typ list * LTy.typ =
   match ty with
-  | LTy.TyAll (_, t2) -> count_fun_arrows t2  (* Skip type abstraction *)
-  | LTy.TyFun (_, t2) -> 1 + count_fun_arrows t2
-  | _ -> 0
+  | LTy.TyAll (_, t2) -> decompose_fun_type t2  (* Skip type abstraction *)
+  | LTy.TyFun (t1, t2) ->
+    let (args, ret) = decompose_fun_type t2 in
+    (t1 :: args, ret)
+  | _ -> ([], ty)
 
-(* Helper: Collect arguments from nested applications *)
-let rec collect_args
-    (tm: LTm.typed_term): (LTm.typed_term * LTm.typed_term list) =
-  match tm with
-  | LTm.TyTmApp (t, u, _) ->
-    let (head, args) = collect_args t in
-    (head, args @ [u])
-  | _ -> (tm, [])
+let count_fun_arrows ty = List.length (fst (decompose_fun_type ty))
+let get_arg_types ty = fst (decompose_fun_type ty)
+let get_return_type ty = snd (decompose_fun_type ty)
 
 (* Helper: Collect both type arguments and term arguments from
   nested applications and instantiations *)
@@ -198,18 +237,6 @@ let rec collect_type_and_term_args (tm: LTm.typed_term)
     (head, ty_args @ [ty_arg], tm_args)
   | _ -> (tm, [], [])
 
-(* Helper: Get function argument types from a function type *)
-let rec get_arg_types (ty: LTy.typ) : LTy.typ list =
-  match ty with
-  | LTy.TyFun (t1, t2) -> t1 :: get_arg_types t2
-  | _ -> []
-
-(* Helper: Get return type from a function type *)
-let rec get_return_type (ty: LTy.typ) : LTy.typ =
-  match ty with
-  | LTy.TyFun (_, t2) -> get_return_type t2
-  | _ -> ty
-
 (**
   Build a lambda term in the positive fragment:
     [fun (x: A) ⇒ t] =
@@ -223,54 +250,23 @@ let rec get_return_type (ty: LTy.typ) : LTy.typ =
 *)
 let build_lambda (arg_ty: tpe) (ret_ty: tpe) (x: variable) (body: term) =
   let k = Ident.fresh () in   (* k : cns ↓[B] *)
-  let k' = Ident.fresh () in  (* k' : cns [B] *)
-  (* 
-    The function type is: ↑([A] → ↓[B])
-    Inner codata type: [A] → ↓[B]
-  *)
   let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
-  let inner_fun_sgn = Prim.fun_sgn in
-  (* Build instantiated apply xtor for this specific function type *)
   let apply_xtor = 
     { Prim.fun_apply with
       parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
     ; parent_arguments = [arg_ty; mk_neg ret_ty]
     }
   in
-  (* Inner: cocase {thunk(k') ⇒ ⟨body | k'⟩} : prd ↓[B] *)
-  let neg_ret_ty = mk_neg ret_ty in
-  let neg_sgn = Prim.neg_sgn in
-  let thunk_xtor =
-    { Prim.neg_thunk with
-      parameters = [Rhs ret_ty]
-    ; parent_arguments = [ret_ty]
-    }
-  in
-  let inner_cocase =
-    New (neg_sgn, [{
-      xtor = thunk_xtor
-    ; type_vars = []
-    ; term_vars = [k']
-    ; command = CutPos (ret_ty, body, Variable k')
-    }])
-  in
-  (* Middle: cocase {apply(x, k) ⇒ ⟨inner_cocase | k⟩} : prd ([A] → ↓[B]) *)
+  (* cocase {apply(x, k) ⇒ ⟨cocase{thunk(k') ⇒ ⟨body|k'⟩} | k⟩} *)
   let middle_cocase =
-    New (inner_fun_sgn, [{
+    New (Prim.fun_sgn, [{
       xtor = apply_xtor
     ; type_vars = []
     ; term_vars = [x; k]
-    ; command = CutNeg (neg_ret_ty, inner_cocase, Variable k)
+    ; command = CutNeg (mk_neg ret_ty, mk_thunk_cocase ret_ty body, Variable k)
     }])
   in
-  (* Outer: close(middle_cocase) : prd ↑([A] → ↓[B]) *)
-  let close_xtor =
-    { Prim.pos_close with
-      parameters = [Lhs inner_fun_ty]
-    ; parent_arguments = [inner_fun_ty]
-    }
-  in
-  Constructor (close_xtor, [inner_fun_ty], [middle_cocase])
+  mk_close inner_fun_ty middle_cocase
 
 (**
   Build an application term in the positive fragment:
@@ -283,93 +279,52 @@ let build_lambda (arg_ty: tpe) (ret_ty: tpe) (x: variable) (body: term) =
     - u_term: the argument term (already mapped)
 *)
 let build_app (arg_ty: tpe) (ret_ty: tpe) (t_term: term) (u_term: term) =
-  let k = Ident.fresh () in   (* k: cns [B] - the final result continuation *)
-  let f = Ident.fresh () in   (* f: prd ([A] → ↓[B]) - the unwrapped function *)
-  (*
-    Function type: ↑([A] → ↓[B])
-    After unwrapping close: [A] → ↓[B]
-  *)
+  let k = Ident.fresh () in
+  let f = Ident.fresh () in
   let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
-  let outer_fun_ty = mk_pos inner_fun_ty in
-  let pos_sgn = Prim.pos_sgn in
-  let close_xtor =
-    { Prim.pos_close with
-      parameters = [Lhs inner_fun_ty]
-    ; parent_arguments = [inner_fun_ty]
-    }
-  in
-  (* thunk(k) : cns ↓[B] *)
-  let thunk_xtor =
-    { Prim.neg_thunk with
-      parameters = [Rhs ret_ty]
-    ; parent_arguments = [ret_ty]
-    }
-  in
-  let thunk_k = Destructor (thunk_xtor, [ret_ty], [Variable k]) in
-  (* apply(u_term, thunk(k)) : cns ([A] → ↓[B]) *)
   let apply_xtor =
     { Prim.fun_apply with
       parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
     ; parent_arguments = [arg_ty; mk_neg ret_ty]
     }
   in
+  (* apply(u, thunk(k)) *)
   let apply_dtor =
-    Destructor (apply_xtor, [arg_ty; mk_neg ret_ty], [u_term; thunk_k])
+    Destructor (apply_xtor, [arg_ty; mk_neg ret_ty], [u_term; mk_thunk ret_ty k])
   in
-  (* case {close(f) ⇒ ⟨f | apply(u, thunk(k))⟩} : cns ↑([A] → ↓[B]) *)
+  (* case {close(f) ⇒ ⟨f | apply(u, thunk(k))⟩} *)
   let match_term =
-    Match (pos_sgn, [{
-      xtor = close_xtor
+    Match (Prim.pos_sgn, [{
+      xtor = mk_close_xtor inner_fun_ty
     ; type_vars = []
     ; term_vars = [f]
     ; command = CutNeg (inner_fun_ty, Variable f, apply_dtor)
     }])
   in
-  (* μk. ⟨t | match⟩ *)
-  MuLhsPos (ret_ty, k, CutPos (outer_fun_ty, t_term, match_term))
+  MuLhsPos (ret_ty, k, CutPos (mk_pos inner_fun_ty, t_term, match_term))
 
 (**
   Build a type instantiation in the positive fragment:
     [t{A}] = μ(k: cns [B]). ⟨[t] | case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩}⟩
 *)
 let build_inst (kind: kind) (ty_arg: tpe) (ret_ty: tpe) (t_term: term) =
-  let a = Ident.fresh () in   (* type variable for the forall *)
-  let k = Ident.fresh () in   (* k: cns [B] *)
-  let f = Ident.fresh () in   (* f: prd (∀F) where F applied to ty_arg = ret_ty *)
-  (*
-    Forall type: ↑(∀(a:k). ↓[B])
-    Inner: ∀(a:k). ↓[B]
-  *)
+  let a = Ident.fresh () in
+  let k = Ident.fresh () in
+  let f = Ident.fresh () in
   let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
-  let outer_all_ty = mk_pos inner_all_ty in
-  let pos_sgn = Prim.pos_sgn in
-  let close_xtor =
-    { Prim.pos_close with
-      parameters = [Lhs inner_all_ty]
-    ; parent_arguments = [inner_all_ty]
-    }
-  in
-  (* thunk(k): cns ↓[B] *)
-  let thunk_xtor =
-    { Prim.neg_thunk with
-      parameters = [Rhs ret_ty]
-    ; parent_arguments = [ret_ty]
-    }
-  in
-  let thunk_k = Destructor (thunk_xtor, [ret_ty], [Variable k]) in
-  (* insta{ty_arg}(thunk(k)): cns (∀(a:k). ↓[B]) *)
+  (* insta{ty_arg}(thunk(k)) *)
   let insta_xtor = Prim.all_insta a kind in
-  let insta_dtor = Destructor (insta_xtor, [ty_arg], [thunk_k]) in
+  let insta_dtor = Destructor (insta_xtor, [ty_arg], [mk_thunk ret_ty k]) in
   (* case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩} *)
   let match_term =
-    Match (pos_sgn, [{
-      xtor = close_xtor
+    Match (Prim.pos_sgn, [{
+      xtor = mk_close_xtor inner_all_ty
     ; type_vars = []
     ; term_vars = [f]
     ; command = CutNeg (inner_all_ty, Variable f, insta_dtor)
     }])
   in
-  MuLhsPos (ret_ty, k, CutPos (outer_all_ty, t_term, match_term))
+  MuLhsPos (ret_ty, k, CutPos (mk_pos inner_all_ty, t_term, match_term))
 
 (**
   Build a type abstraction in the positive fragment:
@@ -377,45 +332,19 @@ let build_inst (kind: kind) (ty_arg: tpe) (ret_ty: tpe) (t_term: term) =
       close(cocase {insta{a}(k) ⇒ ⟨cocase {thunk(k') ⇒ ⟨〚t〛| k'⟩} | k⟩})
 *)
 let build_type_abs (a: variable) (kind: kind) (ret_ty: tpe) (body: term) =
-  let k = Ident.fresh () in   (* k: cns ↓[B] *)
-  let k' = Ident.fresh () in  (* k': cns [B] *)
+  let k = Ident.fresh () in
   let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
-  let all_sgn = Prim.all_sgn a kind in
   let insta_xtor = Prim.all_insta a kind in
-  (* Inner: cocase {thunk(k') ⇒ ⟨body | k'⟩} *)
-  let neg_ret_ty = mk_neg ret_ty in
-  let neg_sgn = Prim.neg_sgn in
-  let thunk_xtor =
-    { Prim.neg_thunk with
-      parameters = [Rhs ret_ty]
-    ; parent_arguments = [ret_ty]
-    }
-  in
-  let inner_cocase =
-    New (neg_sgn, [{
-      xtor = thunk_xtor
-    ; type_vars = []
-    ; term_vars = [k']
-    ; command = CutPos (ret_ty, body, Variable k')
-    }])
-  in
-  (* Middle: cocase {insta{a}(k) ⇒ ⟨inner | k⟩} *)
+  (* cocase {insta{a}(k) ⇒ ⟨cocase{thunk(k')⇒⟨body|k'⟩} | k⟩} *)
   let middle_cocase =
-    New (all_sgn, [{
+    New (Prim.all_sgn a kind, [{
       xtor = insta_xtor
     ; type_vars = [(a, kind)]
     ; term_vars = [k]
-    ; command = CutNeg (neg_ret_ty, inner_cocase, Variable k)
+    ; command = CutNeg (mk_neg ret_ty, mk_thunk_cocase ret_ty body, Variable k)
     }])
   in
-  (* Outer: close(middle) *)
-  let close_xtor =
-    { Prim.pos_close with
-      parameters = [Lhs inner_all_ty]
-    ; parent_arguments = [inner_all_ty]
-    }
-  in
-  Constructor (close_xtor, [inner_all_ty], [middle_cocase])
+  mk_close inner_all_ty middle_cocase
 
 (** Translates Lang terms to Kore producers (LHS terms) *)
 let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
@@ -499,52 +428,25 @@ let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
     (* new { D₁(args) => e₁ ; ... }
        → close(cocase {D₁(args, k) =>
           ⟨cocase{thunk(k') => ⟨[e₁] | k'⟩} | k⟩ ; ...}) *)
-    let _ty' = map_type ty in
     let codata_sgn = get_signature_of_new_type sgns ty in
     let branches = List.map (fun (xtor, type_vars, term_vars, body) ->
       let body_ty = LTm.get_type body in
       let body' = map_term sgns body in
       let body_ty' = map_type body_ty in
       let k = Ident.fresh () in
-      let k' = Ident.fresh () in
       let xtor' = map_xtor sgns xtor in
-      (* Get kinds from the xtor's quantified list *)
       let type_vars_with_kinds =
         List.map2 (fun v (_, knd) -> (v, map_kinds knd)
         ) type_vars xtor.LTy.quantified
       in
-      (* Inner thunk cocase *)
-      let neg_body_ty = mk_neg body_ty' in
-      let thunk_xtor =
-        { Prim.neg_thunk with
-          parameters = [Rhs body_ty']
-        ; parent_arguments = [body_ty']
-        }
-      in
-      let inner_cocase =
-        New (Prim.neg_sgn, [{
-          xtor = thunk_xtor
-        ; type_vars = []
-        ; term_vars = [k']
-        ; command = CutPos (body_ty', body', Variable k')
-        }])
-      in
       { xtor = xtor'
       ; type_vars = type_vars_with_kinds
-      ; term_vars = term_vars @ [k]  (* Add continuation parameter *)
-      ; command = CutNeg (neg_body_ty, inner_cocase, Variable k)
+      ; term_vars = term_vars @ [k]
+      ; command = CutNeg (mk_neg body_ty', mk_thunk_cocase body_ty' body', Variable k)
       }
     ) clauses in
-    (* The codata itself - need to wrap in close for positive fragment *)
-    let inner_codata = New (codata_sgn, branches) in
     let inner_ty = TyNeg codata_sgn in
-    let close_xtor =
-      { Prim.pos_close with
-        parameters = [Lhs inner_ty]
-      ; parent_arguments = [inner_ty]
-      }
-    in
-    Constructor (close_xtor, [inner_ty], [inner_codata])
+    mk_close inner_ty (New (codata_sgn, branches))
 
   | LTm.TyTmCtor (ctor, ty_args, tm_args, ty) ->
     (* Constructor application - may be partial *)
@@ -556,69 +458,38 @@ let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
 
   | LTm.TyTmInt (n, _) ->
     (* Integer literal n : Box(ext int)
-       〚n〛= μk. extern lit_n {(v) => ⟨box(v) | k⟩}
-       where v : prd (ext int), box(v) : prd Box(ext int), k : cns Box(ext int)
-    *)
+       [n] = μk. extern lit_n {(v) => ⟨box(v) | k⟩} *)
     let k = Ident.fresh () in
     let v = Ident.fresh () in
-    let box_ty = TyApp (Prim.box_t, Ext.int_t) in  (* Box(ext int) *)
-    let box_xtor =
-      { Prim.box_mk with
-        parameters = [Lhs Ext.int_t]
-      ; parent_arguments = [Ext.int_t]
-      }
-    in
-    let box_v = Constructor (box_xtor, [Ext.int_t], [Variable v]) in
-    let clause = { parameters = [v]; body = CutPos (box_ty, box_v, Variable k) } in
-    MuLhsPos (box_ty, k, Extern (Sym.i32_lit n, [], [clause]))
+    let box_v =
+      Constructor (mk_box_xtor (), [Ext.int_t], [Variable v]) in
+    let clause =
+      { parameters = [v]; body = CutPos (box_int_ty, box_v, Variable k) } in
+    MuLhsPos (box_int_ty, k, Extern (Sym.i32_lit n, [], [clause]))
 
   | LTm.TyTmAdd (t1, t2, _ty) ->
     (* Integer addition e1 + e2 : Box(ext int)
-       〚e1 + e2〛= μk. ⟨〚e1〛| case {box(v1) => ⟨〚e2〛| case {box(v2) => 
-                         extern add(v1, v2) {(v) => ⟨box(v) | k⟩}}}⟩
-       
-       Both e1 and e2 have type Box(ext int), so we unbox, call extern, rebox.
-    *)
+       [e1 + e2] = μk.⟨[e1]| case {box(v1) => ⟨[e2]| case {box(v2) => 
+                     extern add(v1, v2) {(v) => ⟨box(v) | k⟩}}}⟩ *)
     let k = Ident.fresh () in
     let v1 = Ident.fresh () in
     let v2 = Ident.fresh () in
     let v = Ident.fresh () in
-    let box_ty = TyApp (Prim.box_t, Ext.int_t) in  (* Box(ext int) *)
-    let box_xtor =
-      { Prim.box_mk with
-        parameters = [Lhs Ext.int_t]
-      ; parent_arguments = [Ext.int_t]
-      }
-    in
-    (* box(v) for the result *)
+    let box_xtor = mk_box_xtor () in
     let box_v = Constructor (box_xtor, [Ext.int_t], [Variable v]) in
-    (* extern add(v1, v2) {(v) => ⟨box(v) | k⟩} *)
     let add_clause =
-      { parameters = [v]; body = CutPos (box_ty, box_v, Variable k) }
-    in
+      { parameters = [v]; body = CutPos (box_int_ty, box_v, Variable k) } in
     let add_extern =
-      Extern (Sym.i32_add, [Variable v1; Variable v2], [add_clause])
+      Extern (Sym.i32_add, [Variable v1; Variable v2], [add_clause]) in
+    let unbox var cmd =
+      Match (Prim.box_sgn,
+        [{ xtor = box_xtor; type_vars = []; term_vars = [var]; command = cmd }])
     in
-    (* case {box(v2) => extern add ...} for unboxing e2 *)
-    let unbox2 = Match (Prim.box_sgn,
-      [{ xtor = box_xtor
-      ; type_vars = []
-      ; term_vars = [v2]
-      ; command = add_extern
-      }])
-    in
-    (* case {box(v1) => ⟨〚e2〛| unbox2⟩} for unboxing e1 *)
     let t2' = map_term sgns t2 in
-    let unbox1 = Match (Prim.box_sgn,
-      [{ xtor = box_xtor
-      ; type_vars = []
-      ; term_vars = [v1]
-      ; command = CutPos (box_ty, t2', unbox2)
-      }])
-    in
-    (* μk. ⟨〚e1〛| unbox1⟩ *)
     let t1' = map_term sgns t1 in
-    MuLhsPos (box_ty, k, CutPos (box_ty, t1', unbox1))
+    MuLhsPos (box_int_ty, k,
+      CutPos (box_int_ty, t1', unbox v1
+        (CutPos (box_int_ty, t2', unbox v2 add_extern))))
 
 (** Map an application (possibly partial) of a head to type and term arguments *)
 and map_application (sgns: signatures) (head: LTm.typed_term) 
@@ -790,56 +661,31 @@ and map_dtor_application
     let tys = List.map map_type ty_args in
     let args = List.map (map_term sgns) rest in
     let k = Ident.fresh () in
-    (* μk. ⟨self | D(args, thunk(k))⟩ *)
-    (* Need to wrap continuation in thunk for negative codomain *)
-    let thunk_xtor =
-      { Prim.neg_thunk with
-        parameters = [Rhs ret_ty']
-      ; parent_arguments = [ret_ty']
-      }
-    in
-    let thunk_k = Destructor (thunk_xtor, [ret_ty'], [Variable k]) in
-    let dtor_term = Destructor (xtor', tys, args @ [thunk_k]) in
-    let inner_ty = TyNeg (get_codata_signature sgns self_ty) in
-    (* Need to unwrap close first if self is shifted *)
     let f = Ident.fresh () in
-    let close_xtor =
-      { Prim.pos_close with
-        parameters = [Lhs inner_ty]
-      ; parent_arguments = [inner_ty]
-      }
-    in
+    let inner_ty = TyNeg (get_codata_signature sgns self_ty) in
+    let dtor_term = Destructor (xtor', tys, args @ [mk_thunk ret_ty' k]) in
+    (* μk. ⟨self | case{close(f) ⇒ ⟨f | D(args, thunk(k))⟩}⟩ *)
     MuLhsPos (ret_ty', k,
       CutPos (self_ty', self',
         Match (Prim.pos_sgn, [{
-          xtor = close_xtor
+          xtor = mk_close_xtor inner_ty
         ; type_vars = []
         ; term_vars = [f]
         ; command = CutNeg (inner_ty, Variable f, dtor_term)
         }])))
 
-(** Helper: get signature from a data type *)
-and get_signature_of_type (sgns: signatures) (ty: LTy.typ) =
+(** Helper: get signature from a type (data or codata) *)
+and get_signature (sgns: signatures) (ty: LTy.typ) =
   match ty with
   | LTy.TyDef (LTy.Data dec) -> map_data dec
-  | LTy.TySym s ->
-    let sgn, _, _ = get_def sgns s in sgn
-  | LTy.TyApp (t, _) -> get_signature_of_type sgns t
-  | _ -> failwith "get_signature_of_type: not a data type"
-
-(** Helper: get signature from a codata type used in new *)
-and get_signature_of_new_type (sgns: signatures) (ty: LTy.typ) =
-  (* The type is ↑(codata), we need to extract the codata signature *)
-  match ty with
   | LTy.TyDef (LTy.Code dec) -> map_code dec
-  | LTy.TySym s ->
-    let sgn, _, _ = get_def sgns s in sgn
-  | LTy.TyApp (t, _) -> get_signature_of_new_type sgns t
-  | _ -> failwith "get_signature_of_new_type: not a codata type"
+  | LTy.TySym s -> let sgn, _, _ = get_def sgns s in sgn
+  | LTy.TyApp (t, _) -> get_signature sgns t
+  | _ -> failwith "get_signature: not a data/codata type"
 
-(** Helper: get codata signature *)
-and get_codata_signature (sgns: signatures) (ty: LTy.typ) =
-  get_signature_of_new_type sgns ty
+and get_signature_of_type sgns ty = get_signature sgns ty
+and get_signature_of_new_type sgns ty = get_signature sgns ty
+and get_codata_signature sgns ty = get_signature sgns ty
 
 (** Map a Lang xtor to Kore xtor *)
 and map_xtor (_sgns: signatures) (xtor: LTy.ty_xtor) =
@@ -849,7 +695,8 @@ and map_xtor (_sgns: signatures) (xtor: LTy.ty_xtor) =
       List.map (fun (v, k) -> (v, map_kinds k)
       ) xtor.LTy.quantified
   ; parameters =
-      List.map (fun t -> Lhs (map_type t)) xtor.LTy.sources
+      List.map (fun t -> Lhs (map_type t)
+      ) xtor.LTy.sources
   ; parent_arguments =
       List.map map_type xtor.LTy.arguments
   ; constraints =
