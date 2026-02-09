@@ -62,6 +62,11 @@ module Sym = struct
       let (x, y) = cantor_unpair (n - 3) in
       Arrow (decode x, decode y)
   
+  let compare_kinds k1 k2 =
+    let n1 = encode k1 in
+    let n2 = encode k2 in
+    compare n1 n2
+  
   let all_t k = Path.of_primitive (1000 + encode k) "all"
   let all_ins k = Path.access (all_t k) "insta"
 
@@ -119,22 +124,21 @@ module Prim = struct
     }
   let fun_t = TyNeg fun_sgn
 
-  let all_insta k =
+  let all_insta a k =
     let t = Ident.mk "t" in
-    let a = Ident.mk "a" in
     { name = Sym.all_ins k
     ; parent = Sym.all_t k
-    ; quantified = [(t, Arrow (k, Pos)); (a, k)]
+    ; quantified = [(t, Arrow (k, Neg)); (a, k)]
     ; parameters = [Rhs (TyApp (TyVar t, TyVar a))]
     ; parent_arguments = [TyVar t]
     ; constraints = None
     }
-  let all_sgn k =
+  let all_sgn a k =
     { name = Sym.all_t k
-    ; arguments = [(None, Arrow (k, Pos)); (None, k)]
-    ; xtors = [all_insta k]
+    ; arguments = [(None, Arrow (k, Neg)); (None, k)]
+    ; xtors = [all_insta a k]
     }
-  let all_t k = TyNeg (all_sgn k)
+  let all_t a k = TyNeg (all_sgn a k)
   
   let pos_close =
     let a = Ident.mk "a" in

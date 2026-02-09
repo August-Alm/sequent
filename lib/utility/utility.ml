@@ -22,3 +22,8 @@ let rec drop n lst =
   | [] -> []
   | _ :: xs -> drop (n - 1) xs
 
+let split_at_last lst =
+  match List.rev lst with
+  | [] -> failwith "split_at_last: empty list"
+  | last :: rev_init -> (List.rev rev_init, last)
+

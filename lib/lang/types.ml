@@ -47,8 +47,8 @@ type typ =
   | TySym of Path.t (** Reference to a type definition (never to a primitive type) *)
   | TyVar of Ident.t
   | TyApp of typ * typ
-  | TyFun of typ * typ (* `->` type constructor *)
-  | TyAll of (Ident.t * kind) * typ (* `forall` type constructor, `{a: k} ty` *)
+  | TyFun of typ * typ (** `->` type constructor *)
+  | TyAll of (Ident.t * kind) * typ (** `forall` type constructor, `{a: k} ty` *)
   | TyDef of ty_def
   | TyPrim of prim_typ
 

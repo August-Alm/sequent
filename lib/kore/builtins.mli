@@ -26,6 +26,8 @@ module Sym: sig
   val box_t: symbol
   val box_mk: symbol
 
+  val compare_kinds: kind -> kind -> int
+
   val all_t: kind -> symbol
   val all_ins: kind -> symbol
   val all_kind_opt: symbol -> kind option 
@@ -50,12 +52,12 @@ module Prim: sig
   val fun_apply: xtor
 
   (**
-    code ∀(F: k → +) where
+    code ∀(F: k → -) where
       ·{}: | ∀F ⊢{X} F(X)   --- insta{X}(cns F(X))
   *)
-  val all_t: kind -> tpe
-  val all_sgn: kind -> signature
-  val all_insta: kind -> xtor
+  val all_t: variable -> kind -> tpe
+  val all_sgn: variable -> kind -> signature
+  val all_insta: variable -> kind -> xtor
 
   (**
     data ↑(A:-) where

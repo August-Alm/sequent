@@ -6,10 +6,14 @@
   using the generalized type system from Cut.Types that supports higher-kinded
   types, polymorphism, and GADTs.
   
-  See cut/gadt.txt for the full typing rules.
+  See cut/specification.txt for the full typing rules.
 *)
 
 open Common.Identifiers
+
+(* ========================================================================= *)
+(* Abstract syntax                                                           *)
+(* ========================================================================= *)
 
 type symbol = Path.t
 
@@ -161,7 +165,10 @@ let string_of_definition (l, gamma, s) =
 let string_of_program prog =
   String.concat "\n\n" (List.map string_of_definition prog)
 
-(** Type checking *)
+
+(* ========================================================================= *)
+(* Type-checking                                                             *)
+(* ========================================================================= *)
 
 exception TypeError of string
 

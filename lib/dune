@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules linearization playground simple essence)
+ (modules polarize linearization playground simple essence)
  (libraries utility common lang cut kore))

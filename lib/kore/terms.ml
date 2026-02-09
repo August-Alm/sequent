@@ -4,6 +4,10 @@ open Types
 type variable = Ident.t
 type symbol = Path.t
 
+(* ========================================================================= *)
+(* Abstract syntax                                                           *)
+(* ========================================================================= *)
+
 (** Description of an external import *)
 type import =
   { name: Path.t
@@ -51,6 +55,10 @@ type definition =
   ; term_params: (variable * chiral_tpe) list
   ; body: command
   }
+
+(* ========================================================================= *)
+(* Type-checking                                                             *)
+(* ========================================================================= *)
 
 module Env = struct
   (** A top-level environment for type checking *)
