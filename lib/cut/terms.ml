@@ -84,93 +84,52 @@ module Symbol = struct
   let to_string = Path.name
 end
 
-(** Pretty printing *)
-
-let string_of_typ = Types.Pretty.typ_to_string
-
-let string_of_chirality = Types.Pretty.chirality_to_string
-
-let string_of_var_typ (v, ty) =
-  Ident.name v ^ " : " ^ string_of_chirality ty
-
-let string_of_typ_env gamma =
-  String.concat ", " (List.map string_of_var_typ gamma)
-
-let string_of_typ_list tys =
-  if tys = [] then ""
-  else "[" ^ String.concat ", " (List.map string_of_typ tys) ^ "]"
-
-let string_of_substitution (v1, v2) =
-  Ident.name v1 ^ " → " ^ Ident.name v2
-
-let string_of_substitutions subst =
-  "[" ^ String.concat ", " (List.map string_of_substitution subst) ^ "]"
-
-let rec string_of_statement ?(indent=0) s =
-  let ind = String.make (indent * 2) ' ' in
-  match s with
-  | Jump (l, tys) -> ind ^ "jump " ^ Label.to_string l ^ string_of_typ_list tys
-  
-  | Forward (x, k) -> ind ^ "forward " ^ Ident.name x ^ Ident.name k
-  
-  | Substitute (subst, s') ->
-    ind ^ "substitute " ^ string_of_substitutions subst ^ ";\n" ^
-    string_of_statement ~indent s'
-  
-  | Extern (f, vars, branches) ->
-    let vars_str = String.concat ", " (List.map Ident.name vars) in
-    ind ^ "extern " ^ Symbol.to_string f ^ "(" ^ vars_str ^ ") {\n" ^
-    string_of_extern_branches ~indent:(indent + 1) branches ^ "\n" ^
-    ind ^ "}"
-  
-  | Let (v, m, tys, gamma, s') ->
-    ind ^ "let " ^ Ident.name v ^ " = " ^ Symbol.to_string m ^
-    string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ");\n" ^
-    string_of_statement ~indent s'
-  
-  | New (v, ty, gamma, branches, s') ->
-    ind ^ "new " ^ Ident.name v ^ " : " ^ string_of_typ ty ^
-    " = (" ^ string_of_typ_env gamma ^ ") {\n" ^
-    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
-    ind ^ "};\n" ^
-    string_of_statement ~indent s'
-  
-  | Switch (v, branches) ->
-    ind ^ "switch " ^ Ident.name v ^ " {\n" ^
-    string_of_branches ~indent:(indent + 1) branches ^ "\n" ^
-    ind ^ "}"
-  
-  | Invoke (v, m, tys, args) ->
-    let arg_str = if args = [] then "" else "(" ^ String.concat ", " (List.map Ident.name args) ^ ")" in
-    ind ^ "invoke " ^ Ident.name v ^ " " ^ Symbol.to_string m ^ string_of_typ_list tys ^ arg_str
-  
-and string_of_branches ?(indent=0) branches =
-  let ind = String.make (indent * 2) ' ' in
-  String.concat "\n" (List.map (fun (m, tys, gamma, s) ->
-    ind ^ Symbol.to_string m ^ string_of_typ_list tys ^ "(" ^ string_of_typ_env gamma ^ ") ⇒\n" ^
-    string_of_statement ~indent:(indent + 1) s
-  ) branches)
-
-and string_of_extern_branches ?(indent=0) branches =
-  let ind = String.make (indent * 2) ' ' in
-  String.concat "\n" (List.map (fun (gamma, s) ->
-    ind ^ "(" ^ string_of_typ_env gamma ^ ") ⇒\n" ^
-    string_of_statement ~indent:(indent + 1) s
-  ) branches)
-
-let string_of_definition (l, gamma, s) =
-  "define " ^ Label.to_string l ^ "(" ^ string_of_typ_env gamma ^ ") =\n" ^
-  string_of_statement ~indent:1 s
-
-let string_of_program prog =
-  String.concat "\n\n" (List.map string_of_definition prog)
-
 
 (* ========================================================================= *)
 (* Type-checking                                                             *)
 (* ========================================================================= *)
 
-exception TypeError of string
+(* ========================================================================= *)
+(* Type errors                                                               *)
+(* ========================================================================= *)
+
+exception VariableNotInEnv of variable * typ_env
+exception LabelNotInEnv of label
+exception SignatureNotFound of symbol
+exception MethodNotFound of symbol * signature
+exception ExternNotFound of symbol
+exception EnvTooShort of int * typ_env
+exception EnvSplitMismatch of typ_env * typ_env
+exception VariableNotAtFront of variable * typ_env
+exception ForwardTypeMismatch of variable * chirality_type * variable * chirality_type
+exception ForwardNotProducer of variable * chirality_type
+exception ForwardNotConsumer of variable * chirality_type
+exception JumpEnvMismatch of label * typ_env * typ_env
+exception ExternArgCountMismatch of symbol * int * int
+exception ExternArgTypeMismatch of variable * chirality_type * chirality_type
+exception ExternBranchCountMismatch of symbol * int * int
+exception ExternBranchEnvMismatch of typ_env * typ_env
+exception LetTypeArgCountMismatch of symbol * int * int
+exception LetArgCountMismatch of symbol * int * int
+exception LetArgTypeMismatch of symbol * chirality_type * chirality_type
+exception NewBranchCountMismatch of symbol * int * int
+exception NewBranchMethodMismatch of symbol * symbol
+exception NewBranchArgCountMismatch of symbol * int * int
+exception NewBranchArgTypeMismatch of symbol * chirality_type * chirality_type
+exception NewExpectedSignatureType of typ
+exception SwitchNotProducer of variable * chirality_type
+exception SwitchVariableNotAtFront of variable * typ_env
+exception SwitchBranchCountMismatch of symbol * int * int
+exception SwitchBranchMethodMismatch of symbol * symbol
+exception SwitchBranchArgCountMismatch of symbol * int * int
+exception SwitchBranchArgTypeMismatch of symbol * chirality_type * chirality_type
+exception SwitchExpectedSignatureType of typ
+exception InvokeNotConsumer of variable * chirality_type
+exception InvokeVariableNotAtFront of variable * typ_env
+exception InvokeArgCountMismatch of symbol * int * int
+exception InvokeArgTypeMismatch of symbol * chirality_type * chirality_type
+exception InvokeArgNotInEnv of variable
+exception InvokeExpectedSignatureType of typ
 
 (* External symbol interface: (input types, output clauses) 
    Each output clause specifies the types of variables it binds *)
@@ -192,13 +151,7 @@ module Env = struct
   let lookup_exn (v: variable) (gamma: typ_env) : chirality_type =
     match lookup v gamma with
     | Some ty -> ty
-    | None -> 
-      Printf.eprintf "ERROR: Variable %s not in environment\n" (Ident.name v);
-      Printf.eprintf "Environment has %d variables:\n" (List.length gamma);
-      List.iter (fun (v', ty) ->
-        Printf.eprintf "  %s : %s\n" (Ident.name v') (Types.Pretty.chirality_to_string ty)
-      ) gamma;
-      raise (TypeError ("Variable not in environment: " ^ Ident.name v))
+    | None -> raise (VariableNotInEnv (v, gamma))
 
   (** Check if two type environments are equal *)
   let equal sigs (gamma1: typ_env) (gamma2: typ_env) : bool =
@@ -212,7 +165,7 @@ module Env = struct
     let rec take acc i rest =
       if i = 0 then (List.rev acc, rest)
       else match rest with
-      | [] -> raise (TypeError "Environment too short for split")
+      | [] -> raise (EnvTooShort (n, gamma))
       | x :: xs -> take (x :: acc) (i - 1) xs
     in
     take [] n gamma
@@ -221,7 +174,7 @@ module Env = struct
   let remove_front (v: variable) (gamma: typ_env) : typ_env =
     match gamma with
     | (v', _) :: rest when Ident.equal v v' -> rest
-    | _ -> raise (TypeError ("Variable " ^ Ident.name v ^ " not at front of environment"))
+    | _ -> raise (VariableNotAtFront (v, gamma))
 end
 
 (** Signature utilities - see gadt.txt for typing rules *)
@@ -250,7 +203,7 @@ module Signatures = struct
   let lookup_exn (ty_sym: symbol) (sigs: signatures) : signature * kind =
     match lookup ty_sym sigs with
     | Some sk -> sk
-    | None -> raise (TypeError ("Signature not found for type: " ^ Symbol.to_string ty_sym))
+    | None -> raise (SignatureNotFound ty_sym)
 
   (** Find a method in a signature *)
   let find_method (m: symbol) (sig_def: signature) : method_sig option =
@@ -267,8 +220,7 @@ module Signatures = struct
   let find_method_exn (m: symbol) (sig_def: signature) : method_sig =
     match find_method m sig_def with
     | Some msig -> msig
-    | None -> raise (TypeError ("Method not found: " ^ Symbol.to_string m ^ 
-                                " in signature " ^ Path.name sig_def.Types.symbol))
+    | None -> raise (MethodNotFound (m, sig_def))
 end
 
 module ExternEnv = struct
@@ -313,24 +265,11 @@ let rec check_statement
     let expected_gamma = 
       match LabelEnv.lookup l theta with
       | Some g -> g
-      | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
+      | None -> raise (LabelNotInEnv l)
     in
     (* TODO: Check type_args are well-kinded and apply type substitution θ to expected_gamma *)
-    if not (Env.equal sigs gamma expected_gamma) then begin
-      Printf.eprintf "\n=== Jump environment mismatch for label %s ===\n" (Label.to_string l);
-      Printf.eprintf "Expected environment (from label definition): [";
-      List.iter (fun (v, ty) -> 
-        Printf.eprintf "%s:%s; " (Ident.name v) (string_of_chirality ty)
-      ) expected_gamma;
-      Printf.eprintf "]\n";
-      Printf.eprintf "Actual environment (current context): [";
-      List.iter (fun (v, ty) -> 
-        Printf.eprintf "%s:%s; " (Ident.name v) (string_of_chirality ty)
-      ) gamma;
-      Printf.eprintf "]\n";
-      Printf.eprintf "=============================================\n\n";
-      raise (TypeError ("Jump: environment mismatch for label " ^ Label.to_string l))
-    end
+    if not (Env.equal sigs gamma expected_gamma) then
+      raise (JumpEnvMismatch (l, expected_gamma, gamma))
   
   | Forward (x, k) ->
     (* Rule [FORWARD]: Γ(x) = prd τ    Γ(k) = cns τ
@@ -341,12 +280,11 @@ let rec check_statement
     (match (x_ty, k_ty) with
     | (Types.Prd tx, Types.Cns tk) ->
       if not (Types.Type.equivalent sigs tx tk) then
-        raise (TypeError (Printf.sprintf "Return: type mismatch - x has type prd %s but k expects cns %s"
-          (string_of_typ tx) (string_of_typ tk)))
+        raise (ForwardTypeMismatch (x, x_ty, k, k_ty))
     | (Types.Prd _, _) ->
-      raise (TypeError ("Return: second argument must be a consumer, got " ^ string_of_chirality k_ty))
+      raise (ForwardNotConsumer (k, k_ty))
     | _ ->
-      raise (TypeError ("Return: first argument must be a producer, got " ^ string_of_chirality x_ty)))
+      raise (ForwardNotProducer (x, x_ty)))
 
   | Substitute (pairs, s') ->
     (* Rule [SUBSTITUTE]: Γ'(v′ᵢ) = τᵢ    Γ(vᵢ) = τᵢ    Γ' ⊢ s
@@ -382,20 +320,20 @@ let rec check_statement
     let (input_types, output_clauses) = 
       match ExternEnv.lookup m extern_env with
       | Some iface -> iface
-      | None -> raise (TypeError ("Extern symbol not found: " ^ Symbol.to_string m))
+      | None -> raise (ExternNotFound m)
     in
     if List.length vars <> List.length input_types then
-      raise (TypeError ("Extern: wrong number of arguments for " ^ Symbol.to_string m));
+      raise (ExternArgCountMismatch (m, List.length input_types, List.length vars));
     List.iter2 (fun v ty ->
       let v_ty = Env.lookup_exn v gamma in
       if not (Types.equivalent_chirality sigs v_ty ty) then
-        raise (TypeError ("Extern: argument type mismatch for " ^ Ident.name v))
+        raise (ExternArgTypeMismatch (v, v_ty, ty))
     ) vars input_types;
     if List.length branches <> List.length output_clauses then
-      raise (TypeError ("Extern: wrong number of branches for " ^ Symbol.to_string m));
+      raise (ExternBranchCountMismatch (m, List.length output_clauses, List.length branches));
     List.iter2 (fun (gamma_i, s_i) clause_gamma ->
       if not (Env.equal sigs gamma_i clause_gamma) then
-        raise (TypeError "Extern: branch environment mismatch");
+        raise (ExternBranchEnvMismatch (gamma_i, clause_gamma));
       let extended_gamma = gamma_i @ gamma in
       check_statement sigs delta theta extern_env extended_gamma s_i
     ) branches output_clauses
@@ -415,7 +353,7 @@ let rec check_statement
         Signatures.find_method m sig_def <> None
       ) sigs with
       | Some (_, sk) -> sk
-      | None -> raise (TypeError ("Method not found in any signature: " ^ Symbol.to_string m))
+      | None -> raise (MethodNotFound (m, { Types.symbol = m; parameters = []; methods = [] }))
     in
     let msig = Signatures.find_method_exn m sig_def in
     
@@ -424,8 +362,7 @@ let rec check_statement
        each method quantifies all type variables it needs, so θ = [β̄ ↦ σ̄] *)
     let expected_arity = List.length msig.Types.quantified in
     if List.length type_args <> expected_arity then
-      raise (TypeError (Printf.sprintf "Let: wrong number of type arguments for %s (expected %d, got %d)"
-        (Symbol.to_string m) expected_arity (List.length type_args)));
+      raise (LetTypeArgCountMismatch (m, expected_arity, List.length type_args));
     
     (* Build type substitution θ = [β̄ ↦ σ̄] (method quantifiers only) *)
     let method_quants = List.map fst msig.Types.quantified in
@@ -438,27 +375,17 @@ let rec check_statement
     
     (* Check that gamma0 types match expected types by position *)
     if List.length gamma0 <> List.length expected_types then
-      raise (TypeError (Printf.sprintf "Let: wrong number of producer arguments for %s (expected %d, got %d)"
-        (Symbol.to_string m) (List.length expected_types) (List.length gamma0)));
+      raise (LetArgCountMismatch (m, List.length expected_types, List.length gamma0));
     
     List.iter2 (fun (_var, actual_ty) expected_ty ->
       if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
-        raise (TypeError ("Let: producer argument type mismatch for " ^ Symbol.to_string m))
+        raise (LetArgTypeMismatch (m, actual_ty, expected_ty))
     ) gamma0 expected_types;
     
     (* Split environment: Γ, Γ₀ *)
     let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
-    if not (Env.equal sigs gamma0 gamma0_actual) then begin
-      Printf.eprintf "DEBUG Let environment split mismatch:\n";
-      Printf.eprintf "  Checking equality for %d pairs\n" (List.length gamma0);
-      List.iter2 (fun (v1, ty1) (v2, ty2) ->
-        Printf.eprintf "    %s vs %s: ID equal=%b, Type equal=%b\n"
-          (Ident.name v1) (Ident.name v2)
-          (Ident.equal v1 v2)
-          (Types.equivalent_chirality sigs ty1 ty2)
-      ) gamma0 gamma0_actual;
-      raise (TypeError "Let: environment split mismatch")
-    end;
+    if not (Env.equal sigs gamma0 gamma0_actual) then
+      raise (EnvSplitMismatch (gamma0, gamma0_actual));
     
     (* Result type is already polarized in the method signature *)
     let v_ty = Types.substitute_chirality subst msig.Types.result_type in
@@ -492,10 +419,10 @@ let rec check_statement
           | Types.TySym sym -> (sym, None)
           | Types.TyDef sig_def ->
             (sig_def.Types.symbol, Some sig_def)
-          | _ -> raise (TypeError "New: expected signature type")
+          | other -> raise (NewExpectedSignatureType other)
         in
         decompose ty_whnf
-      | _ -> raise (TypeError "New: expected signature type")
+      | other -> raise (NewExpectedSignatureType other)
     in
     
     (* Look up or use the signature *)
@@ -508,17 +435,17 @@ let rec check_statement
     
     (* Check all methods are present *)
     if List.length branches <> List.length sig_def.Types.methods then
-      raise (TypeError ("New: wrong number of branches for " ^ Path.name sig_sym));
+      raise (NewBranchCountMismatch (sig_sym, List.length sig_def.Types.methods, List.length branches));
     
-    (* Split environment: Γ, Γ₀ *)
+    (* Split environment: Γ, Γ0 *)
     let (gamma0_actual, gamma_rest) = Env.split_at (List.length gamma0) gamma in
     if not (Env.equal sigs gamma0 gamma0_actual) then
-      raise (TypeError "New: environment split mismatch");
+      raise (EnvSplitMismatch (gamma0, gamma0_actual));
     
     (* Check each branch *)
     List.iter2 (fun (m_i, branch_type_args, branch_gamma, s_i) msig ->
       if not (Path.equal m_i msig.Types.symbol) then
-        raise (TypeError ("New: branch method mismatch"));
+        raise (NewBranchMethodMismatch (m_i, msig.Types.symbol));
       
       (* Build substitution θ = [β̄ᵢ ↦ σ̄ᵢ] (method quantifiers only) *)
       let method_quants = List.map fst msig.Types.quantified in
@@ -532,12 +459,11 @@ let rec check_statement
       
       (* Check types match by position *)
       if List.length branch_gamma <> List.length expected_types then
-        raise (TypeError (Printf.sprintf "New: wrong number of arguments in branch for %s (expected %d, got %d)"
-          (Symbol.to_string m_i) (List.length expected_types) (List.length branch_gamma)));
+        raise (NewBranchArgCountMismatch (m_i, List.length expected_types, List.length branch_gamma));
       
       List.iter2 (fun (_var, actual_ty) expected_ty ->
         if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
-          raise (TypeError ("New: branch argument type mismatch for " ^ Symbol.to_string m_i))
+          raise (NewBranchArgTypeMismatch (m_i, actual_ty, expected_ty))
       ) branch_gamma expected_types;
       
       (* Check statement with Γᵖ, Γᶜ, Γ₀ *)
@@ -575,10 +501,10 @@ let rec check_statement
             | Types.TySym sym -> (sym, None)
             | Types.TyDef sig_def ->
               (sig_def.Types.symbol, Some sig_def)
-            | _ -> raise (TypeError "Switch: expected signature type")
+            | other -> raise (SwitchExpectedSignatureType other)
           in
           decompose ty_whnf
-        | _ -> raise (TypeError "Switch: expected signature type")
+        | other -> raise (SwitchExpectedSignatureType other)
       in
       
       let sig_def = match sig_def_opt with
@@ -589,12 +515,12 @@ let rec check_statement
       in
       
       if List.length branches <> List.length sig_def.Types.methods then
-        raise (TypeError ("Switch: wrong number of branches for " ^ Path.name sig_sym));
+        raise (SwitchBranchCountMismatch (sig_sym, List.length sig_def.Types.methods, List.length branches));
       
       (* Check each branch *)
       List.iter2 (fun (m_i, branch_type_args, branch_gamma, s_i) msig ->
         if not (Path.equal m_i msig.Types.symbol) then
-          raise (TypeError ("Switch: branch method mismatch"));
+          raise (SwitchBranchMethodMismatch (m_i, msig.Types.symbol));
         
         (* Build substitution θ = [β̄ᵢ ↦ σ̄ᵢ] (method quantifiers only) *)
         let method_quants = List.map fst msig.Types.quantified in
@@ -608,22 +534,21 @@ let rec check_statement
         
         (* Check types match by position *)
         if List.length branch_gamma <> List.length expected_types then
-          raise (TypeError (Printf.sprintf "Switch: wrong number of arguments in branch for %s (expected %d, got %d)"
-            (Symbol.to_string m_i) (List.length expected_types) (List.length branch_gamma)));
+          raise (SwitchBranchArgCountMismatch (m_i, List.length expected_types, List.length branch_gamma));
         
         List.iter2 (fun (_var, actual_ty) expected_ty ->
           if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
-            raise (TypeError ("Switch: branch argument type mismatch for " ^ Symbol.to_string m_i))
+            raise (SwitchBranchArgTypeMismatch (m_i, actual_ty, expected_ty))
         ) branch_gamma expected_types;
         
         (* Check statement with Γ, Γᵖ, Γᶜ *)
         let branch_env = branch_gamma @ gamma_rest in
         check_statement sigs delta theta extern_env branch_env s_i
       ) branches sig_def.Types.methods
-    | (v', _) :: _ when Ident.equal v v' ->
-      raise (TypeError ("Switch: variable " ^ Ident.name v ^ " is not a producer"))
+    | (v', ty) :: _ when Ident.equal v v' ->
+      raise (SwitchNotProducer (v, ty))
     | _ ->
-      raise (TypeError ("Switch: variable " ^ Ident.name v ^ " not at front of environment")))
+      raise (SwitchVariableNotAtFront (v, gamma)))
 
   | Invoke (v, m, type_args, args) ->
     (* Rule [INVOKE]: Invoking a method on a consumer
@@ -650,10 +575,10 @@ let rec check_statement
             | Types.TySym sym -> (sym, None)
             | Types.TyDef sig_def ->
               (sig_def.Types.symbol, Some sig_def)
-            | _ -> raise (TypeError "Invoke: expected signature type")
+            | other -> raise (InvokeExpectedSignatureType other)
           in
           decompose ty_whnf
-        | _ -> raise (TypeError "Invoke: expected signature type")
+        | other -> raise (InvokeExpectedSignatureType other)
       in
       
       let sig_def = match sig_def_opt with
@@ -679,22 +604,21 @@ let rec check_statement
       let actual_types = List.map (fun arg ->
         match Env.lookup arg gamma_rest with
         | Some typ -> typ
-        | None -> raise (TypeError ("Invoke: variable " ^ Ident.name arg ^ " not in environment"))
+        | None -> raise (InvokeArgNotInEnv arg)
       ) args in
       
       (* Check that actual types match expected types by position *)
       if List.length actual_types <> List.length expected_types then
-        raise (TypeError (Printf.sprintf "Invoke: wrong number of arguments for %s (expected %d, got %d)"
-          (Symbol.to_string m) (List.length expected_types) (List.length actual_types)));
+        raise (InvokeArgCountMismatch (m, List.length expected_types, List.length actual_types));
       
       List.iter2 (fun actual_ty expected_ty ->
         if not (Types.equivalent_chirality sigs actual_ty expected_ty) then
-          raise (TypeError ("Invoke: argument type mismatch for " ^ Symbol.to_string m))
+          raise (InvokeArgTypeMismatch (m, actual_ty, expected_ty))
       ) actual_types expected_types
-    | (v', _) :: _ when Ident.equal v v' ->
-      raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " is not a consumer"))
+    | (v', ty) :: _ when Ident.equal v v' ->
+      raise (InvokeNotConsumer (v, ty))
     | _ ->
-      raise (TypeError ("Invoke: variable " ^ Ident.name v ^ " not at front of environment")))
+      raise (InvokeVariableNotAtFront (v, gamma)))
 
 
 (** Check a program
@@ -718,10 +642,10 @@ let check_program
     let expected_gamma = 
       match LabelEnv.lookup l theta with
       | Some g -> g
-      | None -> raise (TypeError ("Label not in environment: " ^ Label.to_string l))
+      | None -> raise (LabelNotInEnv l)
     in
     if not (Env.equal sigs gamma expected_gamma) then
-      raise (TypeError ("Program: environment mismatch for label " ^ Label.to_string l));
+      raise (JumpEnvMismatch (l, expected_gamma, gamma));
     (* Check the statement in empty type variable context *)
     check_statement sigs delta theta extern_env gamma s
   ) prog

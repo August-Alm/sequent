@@ -79,7 +79,7 @@ module Prim: sig
 
   (**
     data □(A:ext) where
-      mk: A ⊢ □A   --- mk(x: prd A)
+      mk: A ⊢ □A |  --- mk(x: prd A)
   *)
   val box_t: tpe
   val box_sgn: signature

@@ -1,8 +1,12 @@
 (** 
-   Simplified (untyped) version of the Source → Target transformation.
+  This file contains a focusing normalization algorithm mapping a
+  polarized Source sequent calculus with user-defined type, down to
+  a Target language with eight statement form and no relations:
    
-   This strips away all intrinsic typing and presents the bare 
-   computational content of the algorithm.
+  ⟨C(Γ) | µ˜x.s⟩                 & ⟨µα.s |D(Γ)⟩
+  ⟨x | case {C(Γ) ⇒ s, ... }⟩    & ⟨cocase {D(Γ) ⇒ s, ... } | α⟩
+  ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩
+  ⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩
 *)
 
 open Common.Identifiers
