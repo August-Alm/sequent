@@ -1,9 +1,11 @@
+Surface language expression
+
 let a = 9 in
 let f = fun (x: Int) => a + x in
 let y = 1 in
 f y
 
-translate to
+translated to
 
 signature Cont = { ret(ext Int) }
 signature Func = { app(cns Cont, ext Int) }

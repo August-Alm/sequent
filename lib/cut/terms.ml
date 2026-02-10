@@ -493,22 +493,14 @@ let rec check_statement
     | (v', Types.Prd ty) :: gamma_rest when Ident.equal v v' ->
       (* Extract signature and type arguments from producer type using whnf *)
       let _, ty_whnf = Types.Type.whnf [] sigs ty in
-      let (sig_sym, sig_def_opt) = match ty_whnf with
-        | Types.TyDef sig_def ->
-          (sig_def.Types.symbol, Some sig_def)
-        | Types.TySym sym ->
-          (sym, None)
-        | Types.TyApp _ ->
-          let rec decompose = function
-            | Types.TyApp (t1, _t2) -> decompose t1
-            | Types.TySym sym -> (sym, None)
-            | Types.TyDef sig_def ->
-              (sig_def.Types.symbol, Some sig_def)
-            | other -> raise (SwitchExpectedSignatureType other)
-          in
-          decompose ty_whnf
+      (* Decompose to get the signature symbol *)
+      let rec decompose ty = match ty with
+        | Types.TyApp (t1, _t2) -> decompose t1
+        | Types.TySym sym -> (sym, None)
+        | Types.TyDef sig_def -> (sig_def.Types.symbol, Some sig_def)
         | other -> raise (SwitchExpectedSignatureType other)
       in
+      let (sig_sym, sig_def_opt) = decompose ty_whnf in
       
       let sig_def = match sig_def_opt with
         | Some sd -> sd

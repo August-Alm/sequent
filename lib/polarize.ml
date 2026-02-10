@@ -26,21 +26,24 @@ let mk_neg tt = TyApp (Prim.neg_t, tt)
 (* Instantiate close xtor for a given inner negative type *)
 let mk_close_xtor inner_ty =
   { Prim.pos_close with
-    parameters = [Lhs inner_ty]
+    quantified = []  (* Fully instantiated - no type variables *)
+  ; parameters = [Lhs inner_ty]
   ; parent_arguments = [inner_ty]
   }
 
 (* Instantiate thunk xtor for a given result type *)
 let mk_thunk_xtor ret_ty =
   { Prim.neg_thunk with
-    parameters = [Rhs ret_ty]
+    quantified = []  (* Fully instantiated - no type variables *)
+  ; parameters = [Rhs ret_ty]
   ; parent_arguments = [ret_ty]
   }
 
 (* Instantiate box xtor for ext int *)
 let mk_box_xtor () =
   { Prim.box_mk with
-    parameters = [Lhs Ext.int_t]
+    quantified = []  (* Fully instantiated - no type variables *)
+  ; parameters = [Lhs Ext.int_t]
   ; parent_arguments = [Ext.int_t]
   }
 
@@ -57,13 +60,13 @@ let mk_thunk_cocase ret_ty body =
   ; command = CutPos (ret_ty, body, Variable k')
   }])
 
-(* Build: close(inner) where inner : prd inner_ty *)
+(* Build: close(inner) where inner : prd inner_ty - no type args since xtor is instantiated *)
 let mk_close inner_ty inner =
-  Constructor (mk_close_xtor inner_ty, [inner_ty], [inner])
+  Constructor (mk_close_xtor inner_ty, [], [inner])
 
-(* Build: thunk(k) : cns ↓[ret_ty] *)
+(* Build: thunk(k) : cns ↓[ret_ty] - no type args since xtor is instantiated *)
 let mk_thunk ret_ty k =
-  Destructor (mk_thunk_xtor ret_ty, [ret_ty], [Variable k])
+  Destructor (mk_thunk_xtor ret_ty, [], [Variable k])
 
 (* Helper *)
 let rec go expand tt =
@@ -298,13 +301,14 @@ let build_app (arg_ty: tpe) (ret_ty: tpe) (t_term: term) (u_term: term) =
   let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
   let apply_xtor =
     { Prim.fun_apply with
-      parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
+      quantified = []  (* Fully instantiated - no type variables *)
+    ; parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
     ; parent_arguments = [arg_ty; mk_neg ret_ty]
     }
   in
-  (* apply(u, thunk(k)) *)
+  (* apply(u, thunk(k)) - no type arguments since xtor is instantiated *)
   let apply_dtor =
-    Destructor (apply_xtor, [arg_ty; mk_neg ret_ty], [u_term; mk_thunk ret_ty k])
+    Destructor (apply_xtor, [], [u_term; mk_thunk ret_ty k])
   in
   (* case {close(f) ⇒ ⟨f | apply(u, thunk(k))⟩} *)
   let match_term =

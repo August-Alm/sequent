@@ -315,14 +315,18 @@ let rec kind_of_ast = function
 let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : typ =
   match ty with
   | AST_TyVar x ->
-    (* first check if it's a type symbol *)
-    (match lookup_type_symbol ctx x with
-    | Some path -> TySym path
-    | None ->
-      (* otherwise look it up as a type variable *)
-      (match lookup_type_var ctx x with
-      | Some id -> TyVar id
-      | None -> failwith ("unbound type variable: " ^ x)))
+    (* first check for primitive types *)
+    (match x with
+    | "int" -> TyPrim Int
+    | _ ->
+      (* then check if it's a type symbol *)
+      (match lookup_type_symbol ctx x with
+      | Some path -> TySym path
+      | None ->
+        (* otherwise look it up as a type variable *)
+        (match lookup_type_var ctx x with
+        | Some id -> TyVar id
+        | None -> failwith ("unbound type variable: " ^ x))))
   
   | AST_TyApp (t, args) ->
     let t' = typ_of_ast ctx t in
@@ -341,10 +345,13 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : typ =
 
 (* extract arguments from a type application of the form parent(a1)...(aK) *)
 let extract_arguments (parent: Path.t) (ty: typ) : typ list =
+  (* For TyApp(TyApp(parent, a), b), we want [a, b] (in application order).
+     Walking the structure, we encounter b first (outermost), then a (innermost).
+     So we accumulate in reverse order and don't need to reverse at the end. *)
   let rec collect acc t =
     match t with
-    | TySym p when Path.equal p parent -> List.rev acc
-    | TyApp (t', arg) -> collect (arg :: acc) t'
+    | TySym p when Path.equal p parent -> acc  (* Don't reverse - acc is already in order *)
+    | TyApp (t', arg) -> collect (arg :: acc) t'  (* Prepend - inner args come later *)
     | _ -> failwith ("Expected type application of " ^ Path.name parent)
   in
   match ty with

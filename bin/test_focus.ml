@@ -240,22 +240,9 @@ let test_pair () =
         }
   " in
   run_test "Polymorphic pairs" (fun () ->
-    try
-      let ast = parse_lang input in
-      let defs = to_definitions ast in
-      let typed = typecheck_lang defs in
-      let kore_env = build_kore_env typed in
-      Printf.printf "  Kore:\n";
-      print_kore_env kore_env;
-      typecheck_kore kore_env;
-      Printf.printf "  Kore typechecked OK\n";
-      let cut_defs = focus_to_cut kore_env in
-      Printf.printf "  Cut:\n";
-      print_cut_program cut_defs;
-      typecheck_cut cut_defs;
-      Pass
-    with e ->
-      Fail (Printexc.to_string e))
+    expect_ok "pipeline" (fun () ->
+      let _ = full_pipeline input in ()
+    ))
 
 (** Test: lists *)
 let test_list () =
@@ -308,7 +295,7 @@ let test_int_arith () =
       let _ = full_pipeline input in ()
     ))
 
-(** Test: function composition *)
+(** Test: function composition - KNOWN ISSUE: CutNeg for function application not fully supported *)
 let test_compose () =
   let input = "
     let compose{a}{b}{c}(f: b -> c)(g: a -> b)(x: a): c =
@@ -319,7 +306,7 @@ let test_compose () =
       let _ = full_pipeline input in ()
     ))
 
-(** Test: higher-order function *)
+(** Test: higher-order function - KNOWN ISSUE: CutNeg for function application not fully supported *)
 let test_apply () =
   let input = "
     let apply{a}{b}(f: a -> b)(x: a): b =
