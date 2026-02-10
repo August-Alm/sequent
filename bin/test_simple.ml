@@ -181,6 +181,189 @@ let test6 () =
   print_endline ("Target: " ^ pp_target_command result)
 
 (* ========================================================================= *)
+(* Pretty Printing for Collapsed                                             *)
+(* ========================================================================= *)
+
+let rec pp_collapsed_command ?(indent=0) : Collapsed.command -> string = 
+  let pad = String.make indent ' ' in
+  function
+  | Collapsed.Let (_, idx, args, x, cont) ->
+    Printf.sprintf "let %s = m%d(%s);\n%s%s" 
+      (pp_var x) idx (String.concat ", " (List.map pp_var args)) 
+      pad (pp_collapsed_command ~indent cont)
+  | Collapsed.Switch (_, v, branches) ->
+    Printf.sprintf "switch %s {\n%s%s\n%s}" 
+      (pp_var v) pad (pp_collapsed_branches ~indent:(indent+2) branches) pad
+  | Collapsed.New (_, branches, x, cont) ->
+    Printf.sprintf "new %s = {\n%s%s\n%s};\n%s%s"
+      (pp_var x) pad (pp_collapsed_branches ~indent:(indent+2) branches) pad
+      pad (pp_collapsed_command ~indent cont)
+  | Collapsed.Invoke (_, idx, args, v) ->
+    Printf.sprintf "invoke %s m%d(%s)" (pp_var v) idx (String.concat ", " (List.map pp_var args))
+  | Collapsed.End -> "end"
+
+and pp_collapsed_branches ?(indent=0) (branches : Collapsed.branch list) : string =
+  let pad = String.make indent ' ' in
+  String.concat ("\n" ^ pad) (List.mapi (pp_collapsed_branch ~indent) branches)
+
+and pp_collapsed_branch ?(indent=0) (idx : int) (Collapsed.Clause (params, body)) : string =
+  let params_str = String.concat ", " (List.map pp_var params) in
+  Printf.sprintf "m%d(%s) => %s" idx params_str (pp_collapsed_command ~indent body)
+
+(* ========================================================================= *)
+(* Test 7: Function (Lambda) - Full Pipeline to Collapsed                    *)
+(* ========================================================================= *)
+
+(**
+  Hand-encoding the translation of:
+  
+    let f = λx. x in f 42
+    
+  In Kore (polarized sequent calculus), this becomes:
+  
+    Types:
+      Cont = pos { ret(cns Int) }         -- continuation expecting Int result  
+      Func = neg { app(prd Cont, prd Int) } -- function: takes continuation + arg
+    
+    The lambda λx.x becomes:
+      comatch { app(k, x) => ⟨x | k.ret⟩ }
+    
+    Application (f 42) becomes:
+      ⟨f | app(μ̃r.halt, 42)⟩
+    
+  In Source language terms (after Lang → Kore style encoding):
+  
+    CutNeg(Func)(
+      comatch { app(k, x) => CutPos(Cont)(x, k.ret) },
+      μ̃Rhs(f). CutNeg(Func)(f, app(μ̃Lhs(r).End, 42))
+    )
+    
+  But we need to represent 42 and the continuation properly.
+  For simplicity, let's use a Unit type for the argument.
+*)
+
+let test7 () =
+  print_endline "\n=== Test 7: Lambda (Identity Function) - Full Pipeline ===";
+  print_endline "Encoding: let f = λx. x in f ()";
+  print_endline "";
+  
+  (* 
+    Type signatures:
+    - Unit = pos { unit() }                      -- single nullary constructor
+    - Cont = pos { ret(prd Unit) }               -- continuation takes a Unit VALUE (producer)
+    - Func = neg { app(cns Cont, prd Unit) }     -- function takes continuation CONSUMER + Unit VALUE
+    
+    Note the chirality:
+    - In Func.app: first arg is cns (consumer of Cont), second is prd (producer of Unit)
+    - This means: function receives a continuation to send result to, and a value argument
+  *)
+  let unit_sig : signature = [ [] ] in                           (* Unit: one constructor, no args *)
+  let cont_sig : signature = [ [Lhs (Pos unit_sig)] ] in         (* Cont: ret(prd Unit) *)
+  let func_sig : signature = [ [Rhs (Pos cont_sig); Lhs (Pos unit_sig)] ] in  (* Func: app(cns Cont, prd Unit) *)
+  
+  print_endline "Signatures:";
+  print_endline "  Unit = pos { unit() }";
+  print_endline "  Cont = pos { ret(prd Unit) }";
+  print_endline "  Func = neg { app(cns Cont, prd Unit) }";
+  print_endline "";
+  
+  (*
+    The identity lambda: λx. x
+    
+    As a comatch (codata definition):
+      comatch { 
+        app(k, x) => ⟨x | k.ret⟩  -- when applied, return x to continuation k
+      }
+    
+    In Source terms:
+      Comatch(func_sig, [
+        Clause([k, x], CutPos(cont_sig, Variable(x), Destructor(cont_sig, 0, [Variable(k)])))
+      ])
+    
+    Wait - k is a CONSUMER of Cont (cns Cont), so we use it as a covariable.
+    And Cont is POSITIVE, so we destruct it? No - Cont is positive, so k receives constructors.
+    
+    Actually: k : cns (Pos Cont) means k expects to receive a Constructor of Cont.
+    To "invoke ret on k", we send Constructor(ret, [x]) to k:
+      CutPos(cont_sig, Constructor(cont_sig, 0, [x]), Variable(k))
+  *)
+  
+  let k = Ident.mk "k" in
+  let x = Ident.mk "x" in
+  
+  (* Body of lambda: send ret(x) to continuation k *)
+  (* ⟨ret(x) | k⟩ *)
+  let lambda_body =
+    Source.CutPos (cont_sig,
+      Source.Constructor (cont_sig, 0, [Source.Variable x]),  (* ret(x) *)
+      Source.Variable k)                                       (* k *)
+  in
+  
+  (* The lambda itself: comatch { app(k, x) => ⟨ret(x) | k⟩ } *)
+  let lambda =
+    Source.Comatch (func_sig, [
+      Source.Clause ([k; x], lambda_body)
+    ])
+  in
+  
+  (*
+    Application: f ()
+    
+    We need to apply the function to unit and provide a continuation.
+    The continuation just halts: μ̃r. End
+    
+    ⟨f | app(μ̃r.End, unit())⟩
+    
+    In Source terms:
+      CutNeg(func_sig, 
+        Variable(f), 
+        Destructor(func_sig, 0, [MuLhsPos(cont_sig, r, End), Constructor(unit_sig, 0, [])]))
+  *)
+  
+  let f = Ident.mk "f" in
+  let r = Ident.mk "r" in
+  
+  (* The halt continuation: μ̃r. End *)
+  let halt_cont = Source.MuLhsPos (cont_sig, r, Source.End) in
+  
+  (* The unit value: unit() *)
+  let unit_val = Source.Constructor (unit_sig, 0, []) in
+  
+  (* Application: ⟨f | app(halt_cont, unit_val)⟩ *)
+  let application =
+    Source.CutNeg (func_sig,
+      Source.Variable f,
+      Source.Destructor (func_sig, 0, [halt_cont; unit_val]))
+  in
+  
+  (*
+    Full program: let f = λx.x in f ()
+    
+    ⟨λx.x | μ̃f. ⟨f | app(...)⟩⟩
+    
+    In Source terms:
+      CutNeg(func_sig, lambda, MuRhsNeg(func_sig, f, application))
+  *)
+  
+  let full_program =
+    Source.CutNeg (func_sig,
+      lambda,
+      Source.MuRhsNeg (func_sig, f, application))
+  in
+  
+  print_endline ("Source:\n  " ^ pp_source_command full_program);
+  print_endline "";
+  
+  (* Transform to Target (8-form) *)
+  let target = Transform.transform_command full_program Sub.empty in
+  print_endline ("Target (8-form):\n  " ^ pp_target_command target);
+  print_endline "";
+  
+  (* Collapse to Mini-Cut (4-form) *)
+  let collapsed = Collapse.collapse_command target in
+  print_endline ("Collapsed (Mini-Cut 4-form):\n  " ^ pp_collapsed_command ~indent:2 collapsed)
+
+(* ========================================================================= *)
 (* Main                                                                      *)
 (* ========================================================================= *)
 
@@ -194,6 +377,7 @@ let () =
   test4 ();
   test5 ();
   test6 ();
+  test7 ();
   print_endline "\n========================================";
   print_endline "All tests completed!";
   print_endline "========================================"

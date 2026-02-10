@@ -365,3 +365,92 @@ module Transform = struct
     | CutNeg (_, _, _) -> 
         failwith "ill-typed: CutNeg requires (Variable|Comatch|MuLhsNeg) on LHS and (Variable|Destructor|MuRhsNeg) on RHS"
 end
+
+(* ========================================================================= *)
+(* Collapsed Language                                                           *)
+(* ========================================================================= *)
+
+module Collapsed = struct
+
+  (* Collapsed language makes no distinction between positive (data) and negative (codata) types *)
+  type signature = chiral_tpe list list
+
+  and chiral_tpe =
+    | Lhs of signature (* prd *)
+    | Rhs of signature (* cns *)
+
+  type command =
+    | Let of signature * int * Ident.t list * Ident.t * command  (** [⟨Cₙ(Γ) | μ̃x.s⟩] or [⟨μα.s | Dₙ(Γ)⟩] *)
+    | Switch of signature * Ident.t * branch list  (** [⟨x | case \{C₁(Γ₁) ⇒ s₁; …\}⟩] or [⟨cocase \{D₁(Γ₁) ⇒ s₁; …\} | α⟩] *)
+    | New of signature * branch list * Ident.t * command (* [⟨cocase \{D₁(Γ₁) ⇒ s₁; …\} | μ̃x.s⟩] or [⟨μα.s | case \{C₁(Γ₁) ⇒ s₁; …\}⟩] *)
+    | Invoke of signature * int * Ident.t list * Ident.t  (** [⟨Cₙ(Γ) | α⟩] or [⟨x | Dₙ(Γ)⟩] *)
+    | End  (** Terminal / halt *)
+
+  and branch = Clause of Ident.t list * command
+
+end
+
+(* ========================================================================= *)
+(* Collapse Transformation (Target → Collapsed)                              *)
+(* ========================================================================= *)
+
+module Collapse = struct
+  (** 
+    Collapse the 8-form Target language to the 4-form Collapsed language.
+    
+    Key insight: chirality flips for negative types.
+    - Positive type T: Lhs T → Lhs, Rhs T → Rhs  (preserved)
+    - Negative type T: Lhs T → Rhs, Rhs T → Lhs  (flipped)
+    
+    This ensures consistent variable typing:
+    - Let/Switch operate on producers (Lhs in Collapsed)
+    - New/Invoke operate on consumers (Rhs in Collapsed)
+  *)
+
+  (** Collapse a chiral type, flipping chirality for negative types *)
+  let rec collapse_chiral : chiral_tpe -> Collapsed.chiral_tpe = function
+    | Lhs (Pos sig_) -> Collapsed.Lhs (collapse_sig sig_)
+    | Rhs (Pos sig_) -> Collapsed.Rhs (collapse_sig sig_)
+    | Lhs (Neg sig_) -> Collapsed.Rhs (collapse_sig sig_)  (* flip! *)
+    | Rhs (Neg sig_) -> Collapsed.Lhs (collapse_sig sig_)  (* flip! *)
+
+  (** Collapse a signature (list of constructor/destructor parameter lists) *)
+  and collapse_sig (sig_ : signature) : Collapsed.signature =
+    List.map (List.map collapse_chiral) sig_
+
+  (** Collapse a branch *)
+  let rec collapse_branch (Target.Clause (params, body)) : Collapsed.branch =
+    Collapsed.Clause (params, collapse_command body)
+
+  (** Main collapse transformation *)
+  and collapse_command : Target.command -> Collapsed.command = function
+    (* Let: ⟨C(Γ)|μ̃x.s⟩ and ⟨μα.s|D(Γ)⟩ both become Let *)
+    | Target.LetConstructor (sig_, n, args, x, cont) ->
+        Collapsed.Let (collapse_sig sig_, n, args, x, collapse_command cont)
+    | Target.LetDestructor (sig_, n, args, a, cont) ->
+        Collapsed.Let (collapse_sig sig_, n, args, a, collapse_command cont)
+
+    (* Switch: ⟨x|case{…}⟩ and ⟨cocase{…}|α⟩ both become Switch *)
+    | Target.CutMatch (sig_, x, branches) ->
+        Collapsed.Switch (collapse_sig sig_, x, List.map collapse_branch branches)
+    | Target.CutComatch (sig_, branches, a) ->
+        Collapsed.Switch (collapse_sig sig_, a, List.map collapse_branch branches)
+
+    (* New: ⟨cocase{…}|μ̃x.s⟩ and ⟨μα.s|case{…}⟩ both become New *)
+    | Target.LetComatch (sig_, branches, x, cont) ->
+        Collapsed.New (collapse_sig sig_, List.map collapse_branch branches, x, collapse_command cont)
+    | Target.LetMatch (sig_, branches, a, cont) ->
+        Collapsed.New (collapse_sig sig_, List.map collapse_branch branches, a, collapse_command cont)
+
+    (* Invoke: ⟨C(Γ)|α⟩ and ⟨x|D(Γ)⟩ both become Invoke *)
+    | Target.CutConstructor (sig_, n, args, a) ->
+        Collapsed.Invoke (collapse_sig sig_, n, args, a)
+    | Target.CutDestructor (sig_, x, n, args) ->
+        Collapsed.Invoke (collapse_sig sig_, n, args, x)
+
+    | Target.End -> Collapsed.End
+
+  (** Full pipeline: Source → Target → Collapsed *)
+  let from_source (cmd : Source.command) : Collapsed.command =
+    collapse_command (Transform.transform_command cmd Sub.empty)
+end
