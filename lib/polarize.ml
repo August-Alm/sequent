@@ -1,6 +1,10 @@
 (**
   Module: Polarize
-  Description: Translates Lang to the positive fragment of Kore.
+  Description: Translates Lang to polarized Kore.
+  
+  - Lang data types → Kore positive types (data)
+  - Lang codata types → Kore negative types (codata)
+  - Functions A → B: codomain wrapped in ¬ only if B is positive
 *)
 
 module LTy = Lang.Types
@@ -12,29 +16,53 @@ open Kore.Types
 open Kore.Terms
 open Common.Identifiers
 
-(* All Lang types should be mapped to the positive fragment of Kore *)
+(* Map Lang kinds to Kore kinds *)
 let rec map_kinds (k: LTy.kind) =
   match k with
-  | LTy.KStar -> Pos
+  | LTy.KStar -> Pos  (* Default to Pos for now; refined by actual type def *)
   | LTy.KArrow (k1, k2) -> Arrow (map_kinds k1, map_kinds k2)
 
-(* Shifts from negative to positive polarity *)
-let mk_pos tt = TyApp (Prim.pos_t, tt)
-(* Shifts from positive to negative polarity *)
+(* Logical negation / continuation: ¬(X:+) *)
 let mk_neg tt = TyApp (Prim.neg_t, tt)
+
+(* Raise: ↑(A:-) - wraps negative in positive *)
+let mk_raise tt = TyApp (Prim.raise_t, tt)
+
+(* Lower: ↓(A:+) - wraps positive in negative (thunk) *)
+let mk_lower tt = TyApp (Prim.lower_t, tt)
+
+(* Check if a Lang type is positive (data or primitive) *)
+let rec is_positive_type (tt: LTy.typ) : bool =
+  match tt with
+  | LTy.TySym _ -> true  (* Assume symbol references are positive for now *)
+  | LTy.TyVar _ -> true  (* Type variables assumed positive *)
+  | LTy.TyApp (t1, _) -> is_positive_type t1
+  | LTy.TyFun (_, _) -> false  (* Functions are NEGATIVE (codata) *)
+  | LTy.TyAll (_, _) -> false  (* Foralls are NEGATIVE (codata) *)
+  | LTy.TyDef (Data _) -> true
+  | LTy.TyDef (Code _) -> false  (* Codata is negative *)
+  | LTy.TyPrim _ -> true  (* Primitives are positive *)
+
+(* Instantiate ret xtor for a given inner positive type *)
+let mk_ret_xtor inner_ty =
+  { Prim.neg_ret with
+    quantified = []
+  ; parameters = [Lhs inner_ty]
+  ; parent_arguments = [inner_ty]
+  }
 
 (* Instantiate close xtor for a given inner negative type *)
 let mk_close_xtor inner_ty =
-  { Prim.pos_close with
-    quantified = []  (* Fully instantiated - no type variables *)
+  { Prim.raise_close with
+    quantified = []
   ; parameters = [Lhs inner_ty]
   ; parent_arguments = [inner_ty]
   }
 
 (* Instantiate thunk xtor for a given result type *)
 let mk_thunk_xtor ret_ty =
-  { Prim.neg_thunk with
-    quantified = []  (* Fully instantiated - no type variables *)
+  { Prim.lower_thunk with
+    quantified = []
   ; parameters = [Rhs ret_ty]
   ; parent_arguments = [ret_ty]
   }
@@ -42,7 +70,7 @@ let mk_thunk_xtor ret_ty =
 (* Instantiate box xtor for ext int *)
 let mk_box_xtor () =
   { Prim.box_mk with
-    quantified = []  (* Fully instantiated - no type variables *)
+    quantified = []
   ; parameters = [Lhs Ext.int_t]
   ; parent_arguments = [Ext.int_t]
   }
@@ -50,25 +78,44 @@ let mk_box_xtor () =
 (* The type Box(ext int) *)
 let box_int_ty = TyApp (Prim.box_t, Ext.int_t)
 
+(* Build: cocase {ret(v) ⇒ ⟨body | μ̃v.cmd⟩} - no, wait...
+   Actually for ¬(X), we have ret(prd X), so:
+   Build: cocase {ret(k') ⇒ ⟨body | k'⟩} doesn't make sense either.
+   
+   The ¬ type receives a value, so to create a ¬X we do:
+   cocase {ret(v) ⇒ cmd_using_v}
+*)
+
 (* Build: cocase {thunk(k') ⇒ ⟨body | k'⟩} : prd ↓[ret_ty] *)
 let mk_thunk_cocase ret_ty body =
   let k' = Ident.fresh () in
-  New (Prim.neg_sgn, [{
+  New (Prim.lower_sgn, [{
     xtor = mk_thunk_xtor ret_ty
   ; type_vars = []
   ; term_vars = [k']
   ; command = CutPos (ret_ty, body, Variable k')
   }])
 
-(* Build: close(inner) where inner : prd inner_ty - no type args since xtor is instantiated *)
+(* Build: close(inner) where inner : prd inner_ty *)
 let mk_close inner_ty inner =
   Constructor (mk_close_xtor inner_ty, [], [inner])
 
-(* Build: thunk(k) : cns ↓[ret_ty] - no type args since xtor is instantiated *)
+(* Build: thunk(k) : cns ↓[ret_ty] *)
 let mk_thunk ret_ty k =
   Destructor (mk_thunk_xtor ret_ty, [], [Variable k])
 
-(* Helper *)
+(* Build: ret(v) : cns ¬[pos_ty] - destructor to send value to continuation *)
+let mk_ret pos_ty v =
+  Destructor (mk_ret_xtor pos_ty, [], [v])
+
+(* Helper: translate Lang type to Kore type
+   - Data types → positive (TyPos)
+   - Codata types → negative (TyNeg)
+   - Functions A → B → negative function type (stays negative!)
+   - Forall {a:k} T → negative forall type (stays negative!)
+   
+   Codomain wrapping: only wrap in ¬ when the codomain is positive.
+*)
 let rec go expand tt =
   match tt with
   | LTy.TySym s -> TySym s
@@ -76,29 +123,49 @@ let rec go expand tt =
   | LTy.TyApp (t1, t2) -> TyApp (go expand t1, go expand t2)
   | LTy.TyFun (t1, t2) ->
     (*
-      code (X:+) → (Y:−) where
-        ·: X | X → Y ⊢ Y   --- apply(prd X, cns Y)
+      [A → B] = code (X:+) → (Y:-) where apply(prd X, cns Y)
+      
+      The codomain Y:
+      - If B is positive (data/primitive): Y = ¬[B] (continuation)
+      - If B is negative (codata/function): Y = [B] directly
+      
+      The whole function type is NEGATIVE (codata).
     *)
+    let arg_ty = go expand t1 in
+    let codomain_ty = 
+      if is_positive_type t2 then
+        mk_neg (go expand t2)  (* ¬[B] for positive B *)
+      else
+        go expand t2  (* [B] directly for negative B *)
+    in
     if expand then
-      mk_pos (TyApp (TyApp (Prim.fun_t, go expand t1), mk_neg (go expand t2)))
-    else (* Use symbol reference instead *)
-      mk_pos (TyApp (TyApp (TySym Sym.fun_t, go expand t1), mk_neg (go expand t2)))
+      TyApp (TyApp (Prim.fun_t, arg_ty), codomain_ty)
+    else
+      TyApp (TyApp (TySym Sym.fun_t, arg_ty), codomain_ty)
   | LTy.TyAll ((a, k), t) ->
     (*
-      code ∀(F: k → -) where
-        ·{}: | ∀F ⊢{X} F(X)   --- insta{X}(cns F(X))
+      [{a:k} T] = code ∀(F: k → -) where insta{X}(cns F(X))
+      
+      Same codomain handling as functions.
+      The whole forall type is NEGATIVE (codata).
     *)
-    let k = map_kinds k in
+    let kind = map_kinds k in
+    let codomain_ty =
+      if is_positive_type t then
+        mk_neg (go expand t)
+      else
+        go expand t
+    in
     if expand then
-      mk_pos (TyApp (Prim.all_t a k, mk_neg (go expand t)))
-    else (* Use symbol reference instead *)
-      mk_pos (TyApp (TySym (Sym.all_t k), mk_neg (go expand t)))
+      TyApp (Prim.all_t a kind, codomain_ty)
+    else
+      TyApp (TySym (Sym.all_t kind), codomain_ty)
   | LTy.TyDef (Data dec) -> TyPos (go_dec true dec)
-  | LTy.TyDef (Code dec) -> mk_pos (TyNeg (go_dec false dec))
+  | LTy.TyDef (Code dec) -> TyNeg (go_dec false dec)  (* Codata stays negative! *)
   (* Box primitive types *)
   | LTy.TyPrim Int -> TyApp (Prim.box_t, Ext.int_t)
 
-and go_dec is_data (dec: LTy.ty_dec) =
+and go_dec _is_data (dec: LTy.ty_dec) =
   { name = dec.LTy.symbol
   ; arguments =
       List.map (fun (x_opt, k) ->
@@ -112,16 +179,9 @@ and go_dec is_data (dec: LTy.ty_dec) =
             List.map (fun (x, k) -> (x, map_kinds k)
             ) xtor.LTy.quantified
         ; parameters =
-            (if is_data then
-              List.map (fun t -> Lhs (go false t)
-              ) xtor.LTy.sources
-            else
-              (* Last source is the consumed codomain *)
-              let ps, c =
-                Utility.split_at_last xtor.LTy.sources
-              in
-              List.map (fun t -> Lhs (go false t)) ps
-              @ [Rhs (go false c)])
+            (* All parameters are producers (Lhs) - including continuation for codata *)
+            List.map (fun t -> Lhs (go false t)
+            ) xtor.LTy.sources
         ; parent_arguments =
             List.map (fun t -> go false t) xtor.LTy.arguments
         ; constraints =
@@ -255,114 +315,195 @@ let rec collect_type_and_term_args (tm: LTm.typed_term)
   | _ -> (tm, [], [])
 
 (**
-  Build a lambda term in the positive fragment:
-    [fun (x: A) ⇒ t] =
-      close(cocase {apply(x, k) ⇒ ⟨cocase {thunk(k') ⇒ ⟨[t] | k'⟩} | k⟩})
-  
-  Arguments:
-    - arg_ty: the type A (already mapped to Kore)
-    - ret_ty: the type B (already mapped to Kore)
-    - x: the bound variable
-    - body: the body term (already mapped to Kore)
+  Build a lambda term:
+    [fun (x: A) ⇒ t] where t : B
+    
+  Since function types are now NEGATIVE, a lambda is a cocase (New) directly.
+  No ↑ wrapping needed.
+    
+  If B is positive:
+    cocase {apply(x, k) ⇒ ⟨k | ret([t])⟩}
+    where k : cns ¬[B]
+    
+  If B is negative:
+    cocase {apply(x, k) ⇒ ⟨[t] | k⟩}
+    where k : cns [B]
 *)
-let build_lambda (arg_ty: tpe) (ret_ty: tpe) (x: variable) (body: term) =
-  let k = Ident.fresh () in   (* k : cns ↓[B] *)
-  let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
+let build_lambda (arg_ty: tpe) (ret_ty: tpe) (ret_is_pos: bool) (x: variable) (body: term) =
+  let k = Ident.fresh () in
+  let codomain_ty = if ret_is_pos then mk_neg ret_ty else ret_ty in
   let apply_xtor = 
     { Prim.fun_apply with
-      parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
-    ; parent_arguments = [arg_ty; mk_neg ret_ty]
+      quantified = []
+    ; parameters = [Lhs arg_ty; Lhs codomain_ty]  (* k is producer now! *)
+    ; parent_arguments = [arg_ty; codomain_ty]
     }
   in
-  (* cocase {apply(x, k) ⇒ ⟨cocase{thunk(k') ⇒ ⟨body|k'⟩} | k⟩} *)
-  let middle_cocase =
-    New (Prim.fun_sgn, [{
-      xtor = apply_xtor
-    ; type_vars = []
-    ; term_vars = [x; k]
-    ; command = CutNeg (mk_neg ret_ty, mk_thunk_cocase ret_ty body, Variable k)
-    }])
+  (* Build the body command *)
+  let body_cmd =
+    if ret_is_pos then
+      (* k : prd ¬[B] (a cocase representing the return continuation)
+         To return body : prd [B], we invoke k with neg.ret(body)
+         ⟨k | neg.ret(body)⟩ : sends body to the caller's continuation *)
+      let neg_ret_xtor =
+        { Prim.neg_ret with
+          quantified = []
+        ; parameters = [Lhs ret_ty]
+        ; parent_arguments = [ret_ty]
+        }
+      in
+      let invoker = Destructor (neg_ret_xtor, [], [body]) in
+      CutNeg (codomain_ty, Variable k, invoker)
+    else
+      (* k : prd [B] (body is negative), need to cut properly *)
+      CutNeg (ret_ty, Variable k, body)
   in
-  mk_close inner_fun_ty middle_cocase
+  (* Lambda is just a cocase - function type is negative *)
+  New (Prim.fun_sgn, [{
+    xtor = apply_xtor
+  ; type_vars = []
+  ; term_vars = [x; k]
+  ; command = body_cmd
+  }])
 
 (**
-  Build an application term in the positive fragment:
-    [t u] = μ(k: cns [B]). ⟨[t] | case {close(f) ⇒ ⟨f | apply([u], thunk(k))⟩}⟩
-  
-  Arguments:
-    - arg_ty: type of the argument u (already mapped)
-    - ret_ty: type of the result (already mapped)
-    - t_term: the function term (already mapped)
-    - u_term: the argument term (already mapped)
+  Build an application term:
+    [t u] where t : A → B
+    
+  Since function types are now NEGATIVE, t is a codata value.
+  We apply by sending a destructor (apply) to it.
+    
+  If B is positive:
+    μk. ⟨[t] | apply([u], cocase{ret(r) => ⟨r|k⟩})⟩
+    where k : cns [B], and we build a cocase that forwards received value to k:
+    - cocase{ret(r) => ⟨r|k⟩} : prd ¬[B]
+    - When function invokes this with ret(result), we get result and forward to k
+    
+  If B is negative:
+    μk. ⟨[t] | apply([u], k)⟩
+    where k : prd [B] directly (continuation is the value)
 *)
-let build_app (arg_ty: tpe) (ret_ty: tpe) (t_term: term) (u_term: term) =
+let build_app (arg_ty: tpe) (ret_ty: tpe) (ret_is_pos: bool) (t_term: term) (u_term: term) =
   let k = Ident.fresh () in
-  let f = Ident.fresh () in
-  let inner_fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), mk_neg ret_ty) in
-  let apply_xtor =
-    { Prim.fun_apply with
-      quantified = []  (* Fully instantiated - no type variables *)
-    ; parameters = [Lhs arg_ty; Rhs (mk_neg ret_ty)]
-    ; parent_arguments = [arg_ty; mk_neg ret_ty]
-    }
+  let codomain_ty = if ret_is_pos then mk_neg ret_ty else ret_ty in
+  let fun_ty = TyApp (TyApp (Prim.fun_t, arg_ty), codomain_ty) in
+  (* Use the full polymorphic xtor, but with concrete type arguments *)
+  let apply_xtor = Prim.fun_apply in
+  (* Build the continuation argument to apply *)
+  let cont_arg =
+    if ret_is_pos then
+      (* Build cocase{ret(r) => ⟨r|k⟩} : prd ¬[B]
+         When function calls ret(result), we forward result to k *)
+      let r = Ident.fresh () in
+      let neg_ret_xtor =
+        { Prim.neg_ret with
+          quantified = []
+        ; parameters = [Lhs ret_ty]
+        ; parent_arguments = [ret_ty]
+        }
+      in
+      New (Prim.neg_sgn, [{
+        xtor = neg_ret_xtor
+      ; type_vars = []
+      ; term_vars = [r]
+      ; command = CutPos (ret_ty, Variable r, Variable k)
+      }])
+    else
+      (* k directly : prd [B] (where B is negative) *)
+      Variable k
   in
-  (* apply(u, thunk(k)) - no type arguments since xtor is instantiated *)
   let apply_dtor =
-    Destructor (apply_xtor, [], [u_term; mk_thunk ret_ty k])
+    Destructor (apply_xtor, [], [u_term; cont_arg])
   in
-  (* case {close(f) ⇒ ⟨f | apply(u, thunk(k))⟩} *)
-  let match_term =
-    Match (Prim.pos_sgn, [{
-      xtor = mk_close_xtor inner_fun_ty
-    ; type_vars = []
-    ; term_vars = [f]
-    ; command = CutNeg (inner_fun_ty, Variable f, apply_dtor)
-    }])
-  in
-  MuLhsPos (ret_ty, k, CutPos (mk_pos inner_fun_ty, t_term, match_term))
+  (* Use MuLhsPos for positive return, MuLhsNeg for negative return *)
+  if ret_is_pos then
+    MuLhsPos (ret_ty, k, CutNeg (fun_ty, t_term, apply_dtor))
+  else
+    MuLhsNeg (ret_ty, k, CutNeg (fun_ty, t_term, apply_dtor))
 
 (**
-  Build a type instantiation in the positive fragment:
-    [t{A}] = μ(k: cns [B]). ⟨[t] | case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩}⟩
+  Build a type instantiation:
+    [t{A}] where t : {a:k} B
+    
+  Since forall types are NEGATIVE, t is a codata value.
+  We apply by sending a destructor (insta) to it.
+    
+  If B is positive:
+    μk. ⟨[t] | insta{A}(cocase{ret(r) => ⟨r|k⟩})⟩
+    where we build a cocase that forwards received value to k
+    
+  If B is negative:
+    μk. ⟨[t] | insta{A}(k)⟩
 *)
-let build_inst (kind: kind) (ty_arg: tpe) (ret_ty: tpe) (t_term: term) =
+let build_inst (kind: kind) (ty_arg: tpe) (ret_ty: tpe) (ret_is_pos: bool) (t_term: term) =
   let a = Ident.fresh () in
   let k = Ident.fresh () in
-  let f = Ident.fresh () in
-  let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
-  (* insta{ty_arg}(thunk(k)) *)
+  let codomain_ty = if ret_is_pos then mk_neg ret_ty else ret_ty in
+  let all_ty = TyApp (Prim.all_t a kind, codomain_ty) in
   let insta_xtor = Prim.all_insta a kind in
-  let insta_dtor = Destructor (insta_xtor, [ty_arg], [mk_thunk ret_ty k]) in
-  (* case {close(f) ⇒ ⟨f | insta{A}(thunk(k))⟩} *)
-  let match_term =
-    Match (Prim.pos_sgn, [{
-      xtor = mk_close_xtor inner_all_ty
-    ; type_vars = []
-    ; term_vars = [f]
-    ; command = CutNeg (inner_all_ty, Variable f, insta_dtor)
-    }])
+  (* Build the continuation argument to insta *)
+  let cont_arg =
+    if ret_is_pos then
+      (* Build cocase{ret(r) => ⟨r|k⟩} : prd ¬[B] *)
+      let r = Ident.fresh () in
+      let neg_ret_xtor =
+        { Prim.neg_ret with
+          quantified = []
+        ; parameters = [Lhs ret_ty]
+        ; parent_arguments = [ret_ty]
+        }
+      in
+      New (Prim.neg_sgn, [{
+        xtor = neg_ret_xtor
+      ; type_vars = []
+      ; term_vars = [r]
+      ; command = CutPos (ret_ty, Variable r, Variable k)
+      }])
+    else
+      Variable k
   in
-  MuLhsPos (ret_ty, k, CutPos (mk_pos inner_all_ty, t_term, match_term))
+  let insta_dtor = Destructor (insta_xtor, [ty_arg], [cont_arg]) in
+  (* Use MuLhsPos for positive return, MuLhsNeg for negative return *)
+  if ret_is_pos then
+    MuLhsPos (ret_ty, k, CutNeg (all_ty, t_term, insta_dtor))
+  else
+    MuLhsNeg (ret_ty, k, CutNeg (all_ty, t_term, insta_dtor))
 
 (**
-  Build a type abstraction in the positive fragment:
-    [{a:k} t] =
-      close(cocase {insta{a}(k) ⇒ ⟨cocase {thunk(k') ⇒ ⟨〚t〛| k'⟩} | k⟩})
+  Build a type abstraction:
+    [{a:k} t] where t : B
+    
+  Since forall types are NEGATIVE (codata), we just build a cocase.
+  The continuation k : prd codomain_ty is provided by the caller.
+  We invoke k with the result via neg.ret if positive, or cut directly if negative.
 *)
-let build_type_abs (a: variable) (kind: kind) (ret_ty: tpe) (body: term) =
+let build_type_abs (a: variable) (kind: kind) (ret_ty: tpe) (ret_is_pos: bool) (body: term) =
   let k = Ident.fresh () in
-  let inner_all_ty = TyApp (Prim.all_t a kind, mk_neg ret_ty) in
+  let codomain_ty = if ret_is_pos then mk_neg ret_ty else ret_ty in
   let insta_xtor = Prim.all_insta a kind in
-  (* cocase {insta{a}(k) ⇒ ⟨cocase{thunk(k')⇒⟨body|k'⟩} | k⟩} *)
-  let middle_cocase =
-    New (Prim.all_sgn a kind, [{
-      xtor = insta_xtor
-    ; type_vars = [(a, kind)]
-    ; term_vars = [k]
-    ; command = CutNeg (mk_neg ret_ty, mk_thunk_cocase ret_ty body, Variable k)
-    }])
+  let body_cmd =
+    if ret_is_pos then
+      (* k : prd ¬[B], invoke with neg.ret(body) *)
+      let neg_ret_xtor =
+        { Prim.neg_ret with
+          quantified = []
+        ; parameters = [Lhs ret_ty]
+        ; parent_arguments = [ret_ty]
+        }
+      in
+      let invoker = Destructor (neg_ret_xtor, [], [body]) in
+      CutNeg (codomain_ty, Variable k, invoker)
+    else
+      (* k : prd [B] (negative type), cut properly *)
+      CutNeg (ret_ty, Variable k, body)
   in
-  mk_close inner_all_ty middle_cocase
+  (* Type abstraction is just a cocase - forall type is negative *)
+  New (Prim.all_sgn a kind, [{
+    xtor = insta_xtor
+  ; type_vars = [(a, kind)]
+  ; term_vars = [k]
+  ; command = body_cmd
+  }])
 
 (** Translates Lang terms to Kore producers (LHS terms) *)
 let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
@@ -371,19 +512,21 @@ let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
 
   | LTm.TyTmLam (x, arg_ty, body, _ty) ->
     (* fun (x: A) => t *)
-    let ret_ty = LTm.get_type body in
+    let ret_ty_lang = LTm.get_type body in
     let arg_ty' = map_type arg_ty in
-    let ret_ty' = map_type ret_ty in
+    let ret_ty' = map_type ret_ty_lang in
+    let ret_is_pos = is_positive_type ret_ty_lang in
     let body' = map_term sgns body in
-    build_lambda arg_ty' ret_ty' x body'
+    build_lambda arg_ty' ret_ty' ret_is_pos x body'
 
   | LTm.TyTmAll ((a, k), body, _ty) ->
     (* {a: k} t *)
-    let ret_ty = LTm.get_type body in
+    let ret_ty_lang = LTm.get_type body in
     let kind = map_kinds k in
-    let ret_ty' = map_type ret_ty in
+    let ret_ty' = map_type ret_ty_lang in
+    let ret_is_pos = is_positive_type ret_ty_lang in
     let body' = map_term sgns body in
-    build_type_abs a kind ret_ty' body'
+    build_type_abs a kind ret_ty' ret_is_pos body'
 
   | LTm.TyTmApp (t, u, _ty_ret) ->
     (* Collect all type and term arguments *)
@@ -444,23 +587,44 @@ let rec map_term (sgns: signatures) (trm: LTm.typed_term) : term =
 
   | LTm.TyTmNew (_ty_opt, clauses, ty) ->
     (* new { D₁(args) => e₁ ; ... }
-       → close(cocase {D₁(args, k) =>
-          ⟨cocase{thunk(k') => ⟨[e₁] | k'⟩} | k⟩ ; ...}) *)
+       Now codata types stay negative! The handler k receives:
+       - For positive body: k : cns ¬[body_ty], send via ret
+       - For negative body: k : cns [body_ty], send directly
+    *)
     let codata_sgn = get_signature_of_new_type sgns ty in
     let branches = List.map (fun (xtor, type_vars, term_vars, body) ->
-      let body_ty = LTm.get_type body in
+      let body_ty_lang = LTm.get_type body in
       let body' = map_term sgns body in
-      let body_ty' = map_type body_ty in
+      let body_ty' = map_type body_ty_lang in
+      let body_is_pos = is_positive_type body_ty_lang in
       let k = Ident.fresh () in
       let xtor' = map_xtor sgns xtor in
       let type_vars_with_kinds =
         List.map2 (fun v (_, knd) -> (v, map_kinds knd)
         ) type_vars xtor.LTy.quantified
       in
+      let codomain_ty = if body_is_pos then mk_neg body_ty' else body_ty' in
+      let body_cmd =
+        if body_is_pos then
+          (* k : prd ¬B, invoke with neg.ret(body) 
+             ⟨k | ret(body)⟩ *)
+          let neg_ret_xtor =
+            { Prim.neg_ret with
+              quantified = []
+            ; parameters = [Lhs body_ty']
+            ; parent_arguments = [body_ty']
+            }
+          in
+          let invoker = Destructor (neg_ret_xtor, [], [body']) in
+          CutNeg (codomain_ty, Variable k, invoker)
+        else
+          (* k : prd B (negative type), cut: ⟨k | body⟩ *)
+          CutNeg (body_ty', Variable k, body')
+      in
       { xtor = xtor'
       ; type_vars = type_vars_with_kinds
       ; term_vars = term_vars @ [k]
-      ; command = CutNeg (mk_neg body_ty', mk_thunk_cocase body_ty' body', Variable k)
+      ; command = body_cmd
       }
     ) clauses in
     let inner_ty = TyNeg codata_sgn in
@@ -559,21 +723,24 @@ and map_application (sgns: signatures) (head: LTm.typed_term)
       | ty :: rest_tys, [] ->
         (* Type instantiation *)
         let ret_ty = instantiate_forall t_ty ty in
+        let ret_is_pos = is_positive_type ret_ty in
         let kind = get_forall_kind t_ty in
-        let t' = build_inst kind (map_type ty) (map_type ret_ty) t in
+        let t' = build_inst kind (map_type ty) (map_type ret_ty) ret_is_pos t in
         apply_args t' ret_ty rest_tys []
       | tys, arg :: rest_args ->
         (* First consume all type args, then term args *)
         let t', t_ty' = 
           List.fold_left (fun (t, ty) ty_arg ->
             let ret_ty = instantiate_forall ty ty_arg in
+            let ret_is_pos = is_positive_type ret_ty in
             let kind = get_forall_kind ty in
-            (build_inst kind (map_type ty_arg) (map_type ret_ty) t, ret_ty)
+            (build_inst kind (map_type ty_arg) (map_type ret_ty) ret_is_pos t, ret_ty)
           ) (t, t_ty) tys
         in
         let arg_ty, ret_ty = get_fun_arg_ret t_ty' in
+        let ret_is_pos = is_positive_type ret_ty in
         let arg' = map_term sgns arg in
-        let t'' = build_app (map_type arg_ty) (map_type ret_ty) t' arg' in
+        let t'' = build_app (map_type arg_ty) (map_type ret_ty) ret_is_pos t' arg' in
         apply_args t'' ret_ty [] rest_args
     in
     let head' = map_term sgns head in
@@ -602,12 +769,14 @@ and build_partial_application
         sgns sym sym_ty ty_args 
         (provided_args @ [Variable x]) rest_tys
     in
-    let inner_ty = 
-      List.fold_right (fun t acc -> 
-        mk_pos (TyApp (TyApp (Prim.fun_t, map_type t), mk_neg acc))
-      ) rest_tys (map_type (get_return_type sym_ty))
+    (* Compute the inner type - a chain of functions ending in ret_ty *)
+    let final_ret_ty = get_return_type sym_ty in
+    let inner_ty_lang = 
+      List.fold_right (fun t acc -> LTy.TyFun (t, acc)) rest_tys final_ret_ty
     in
-    build_lambda arg_ty' inner_ty x inner
+    let inner_ty = map_type inner_ty_lang in
+    let inner_is_pos = is_positive_type inner_ty_lang in
+    build_lambda arg_ty' inner_ty inner_is_pos x inner
 
 (** Map constructor application (possibly partial) *)
 and map_ctor_application
@@ -655,12 +824,13 @@ and build_partial_ctor
       build_partial_ctor sgns ctor ty_args 
         (provided_args @ [Variable x]) rest_tys result_ty
     in
-    let inner_ty =
-      List.fold_right (fun t acc ->
-        mk_pos (TyApp (TyApp (Prim.fun_t, map_type t), mk_neg acc))
-      ) rest_tys (map_type result_ty)
+    (* Compute inner type - chain of functions ending in result_ty *)
+    let inner_ty_lang =
+      List.fold_right (fun t acc -> LTy.TyFun (t, acc)) rest_tys result_ty
     in
-    build_lambda arg_ty' inner_ty x inner
+    let inner_ty = map_type inner_ty_lang in
+    let inner_is_pos = is_positive_type inner_ty_lang in
+    build_lambda arg_ty' inner_ty inner_is_pos x inner
 
 (** Map destructor application *)
 and map_dtor_application
@@ -675,17 +845,32 @@ and map_dtor_application
     let self' = map_term sgns self in
     let self_ty' = map_type self_ty in
     let ret_ty' = map_type result_ty in
+    let ret_is_pos = is_positive_type result_ty in
     let xtor' = map_xtor sgns dtor in
     let tys = List.map map_type ty_args in
     let args = List.map (map_term sgns) rest in
     let k = Ident.fresh () in
     let f = Ident.fresh () in
     let inner_ty = TyNeg (get_codata_signature sgns self_ty) in
-    let dtor_term = Destructor (xtor', tys, args @ [mk_thunk ret_ty' k]) in
-    (* μk. ⟨self | case{close(f) ⇒ ⟨f | D(args, thunk(k))⟩}⟩ *)
+    (* Build continuation argument based on result polarity *)
+    let cont_arg =
+      if ret_is_pos then
+        (* cocase{ret(r) => ⟨r|k⟩} : prd ¬[ret_ty] *)
+        let r = Ident.fresh () in
+        New (Prim.neg_sgn, [{
+          xtor = mk_ret_xtor ret_ty'
+        ; type_vars = []
+        ; term_vars = [r]
+        ; command = CutPos (ret_ty', Variable r, Variable k)
+        }])
+      else
+        Variable k
+    in
+    let dtor_term = Destructor (xtor', tys, args @ [cont_arg]) in
+    (* μk. ⟨self | case{close(f) ⇒ ⟨f | D(args, cont)⟩}⟩ *)
     MuLhsPos (ret_ty', k,
       CutPos (self_ty', self',
-        Match (Prim.pos_sgn, [{
+        Match (Prim.raise_sgn, [{
           xtor = mk_close_xtor inner_ty
         ; type_vars = []
         ; term_vars = [f]

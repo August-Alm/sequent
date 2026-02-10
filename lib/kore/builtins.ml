@@ -18,11 +18,14 @@ module Sym = struct
   let fun_t = Path.of_primitive 100 "fun"
   let fun_apply = Path.access fun_t "apply"
 
-  let pos_t = Path.of_primitive 200 "pos"
-  let pos_close = Path.access pos_t "close"
-
   let neg_t = Path.of_primitive 201 "neg"
-  let neg_thunk = Path.access neg_t "thunk"
+  let neg_ret = Path.access neg_t "ret"
+
+  let raise_t = Path.of_primitive 200 "raise"
+  let raise_close = Path.access raise_t "close"
+
+  let lower_t = Path.of_primitive 203 "lower"  (* Fixed: was 201, conflicting with neg_t *)
+  let lower_thunk = Path.access lower_t "thunk"
 
   let box_t = Path.of_primitive 202 "box"
   let box_mk = Path.access box_t "mk"
@@ -120,7 +123,7 @@ module Prim = struct
     { name = Sym.fun_apply
     ; parent = Sym.fun_t
     ; quantified = [(a, Pos); (b, Neg)]
-    ; parameters = [Lhs (TyVar a); Rhs (TyVar b)]
+    ; parameters = [Lhs (TyVar a); Lhs (TyVar b)]  (* Both are producers! *)
     ; parent_arguments = [TyVar a; TyVar b]
     ; constraints = None
     }
@@ -136,7 +139,7 @@ module Prim = struct
     { name = Sym.all_ins k
     ; parent = Sym.all_t k
     ; quantified = [(t, Arrow (k, Neg)); (a, k)]
-    ; parameters = [Rhs (TyApp (TyVar t, TyVar a))]
+    ; parameters = [Lhs (TyApp (TyVar t, TyVar a))]  (* Continuation is producer *)
     ; parent_arguments = [TyVar t]
     ; constraints = None
     }
@@ -147,37 +150,53 @@ module Prim = struct
     }
   let all_t a k = TyNeg (all_sgn a k)
   
-  let pos_close =
+  let neg_ret =
     let a = Ident.mk "a" in
-    { name = Sym.pos_close
-    ; parent = Sym.pos_t
-    ; quantified = [(a, Neg)]
-    ; parameters = [Lhs (TyVar a)]
-    ; parent_arguments = [TyVar a]
-    ; constraints = None
-    }
-  let pos_sgn =
-    { name = Sym.pos_t
-    ; arguments = [(None, Neg)]
-    ; xtors = [pos_close]
-    }
-  let pos_t = TyPos pos_sgn
-
-  let neg_thunk =
-    let a = Ident.mk "a" in
-    { name = Sym.neg_thunk
+    { name = Sym.neg_ret
     ; parent = Sym.neg_t
     ; quantified = [(a, Pos)]
-    ; parameters = [Rhs (TyVar a)]
+    ; parameters = [Lhs (TyVar a)]
     ; parent_arguments = [TyVar a]
     ; constraints = None
     }
   let neg_sgn =
     { name = Sym.neg_t
     ; arguments = [(None, Pos)]
-    ; xtors = [neg_thunk]
+    ; xtors = [neg_ret]
     }
   let neg_t = TyNeg neg_sgn
+
+  let raise_close =
+    let a = Ident.mk "a" in
+    { name = Sym.raise_close
+    ; parent = Sym.raise_t
+    ; quantified = [(a, Neg)]
+    ; parameters = [Lhs (TyVar a)]
+    ; parent_arguments = [TyVar a]
+    ; constraints = None
+    }
+  let raise_sgn =
+    { name = Sym.raise_t
+    ; arguments = [(None, Neg)]
+    ; xtors = [raise_close]
+    }
+  let raise_t = TyPos raise_sgn
+
+  let lower_thunk =
+    let a = Ident.mk "a" in
+    { name = Sym.lower_thunk
+    ; parent = Sym.lower_t
+    ; quantified = [(a, Pos)]
+    ; parameters = [Rhs (TyVar a)]
+    ; parent_arguments = [TyVar a]
+    ; constraints = None
+    }
+  let lower_sgn =
+    { name = Sym.lower_t
+    ; arguments = [(None, Pos)]
+    ; xtors = [lower_thunk]
+    }
+  let lower_t = TyNeg lower_sgn
 
   let box_mk =
     let a = Ident.mk "a" in
@@ -193,15 +212,16 @@ module Prim = struct
     ; arguments = [(None, Ext)]
     ; xtors = [box_mk]
     }
-  let box_t = TyNeg box_sgn
+  let box_t = TyPos box_sgn  (* Box is data (positive)! *)
   
   let signatures =
     List.fold_left (fun tbl (s, pol, sgn, k) ->
       Path.add s (sgn, pol, k) tbl
     ) Path.emptytbl
       [ (Sym.fun_t, Negative, fun_sgn, Arrow (Pos, Neg))
-      ; (Sym.pos_t, Positive, pos_sgn, Arrow (Neg, Pos))
       ; (Sym.neg_t, Negative, neg_sgn, Arrow (Pos, Neg))
+      ; (Sym.raise_t, Positive, raise_sgn, Arrow (Neg, Pos))
+      ; (Sym.lower_t, Negative, lower_sgn, Arrow (Pos, Neg))  (* ↓ takes + gives - *)
       ; (Sym.box_t, Positive, box_sgn, Arrow (Ext, Pos))
       ]
 end

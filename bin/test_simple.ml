@@ -248,23 +248,24 @@ let test7 () =
   print_endline "";
   
   (* 
-    Type signatures:
+    Type signatures (matching example.txt):
     - Unit = pos { unit() }                      -- single nullary constructor
-    - Cont = pos { ret(prd Unit) }               -- continuation takes a Unit VALUE (producer)
-    - Func = neg { app(cns Cont, prd Unit) }     -- function takes continuation CONSUMER + Unit VALUE
+    - Cont = pos { ret(prd Unit) }               -- ret takes a VALUE (producer)
+    - Func = neg { app(cns Cont, prd Unit) }     -- app takes CONSUMER cont + VALUE arg
     
-    Note the chirality:
-    - In Func.app: first arg is cns (consumer of Cont), second is prd (producer of Unit)
-    - This means: function receives a continuation to send result to, and a value argument
+    Key insight from example.txt:
+    - k : cns Cont means k is a consumer - you SEND values TO it
+    - ret(prd Unit) means ret carries a value
+    - When we "invoke k ret(x)", we're sending the value x to continuation k
   *)
   let unit_sig : signature = [ [] ] in                           (* Unit: one constructor, no args *)
-  let cont_sig : signature = [ [Lhs (Pos unit_sig)] ] in         (* Cont: ret(prd Unit) *)
+  let cont_sig : signature = [ [Lhs (Pos unit_sig)] ] in         (* Cont: ret(prd Unit) - ret carries a value *)
   let func_sig : signature = [ [Rhs (Pos cont_sig); Lhs (Pos unit_sig)] ] in  (* Func: app(cns Cont, prd Unit) *)
   
-  print_endline "Signatures:";
+  print_endline "Signatures (matching example.txt pattern):";
   print_endline "  Unit = pos { unit() }";
-  print_endline "  Cont = pos { ret(prd Unit) }";
-  print_endline "  Func = neg { app(cns Cont, prd Unit) }";
+  print_endline "  Cont = pos { ret(prd Unit) }      -- ret carries a VALUE";
+  print_endline "  Func = neg { app(cns Cont, prd Unit) }  -- app takes CONSUMER k + VALUE x";
   print_endline "";
   
   (*

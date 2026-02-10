@@ -1,36 +1,38 @@
 Surface language expression
 
-let a = 9 in
-let f = fun (x: Int) => a + x in
-let y = 1 in
-f y
+let foo () : Int =
+  let a = 9 in
+  let f = fun (x: Int) => a + x in
+  let y = 1 in
+  f y
 
 translated to
 
 signature Cont = { ret(ext Int) }
 signature Func = { app(cns Cont, ext Int) }
 
-extern lit_9() {
-  (a: ext Int) => {
-    new f = (a: ext Int){
-      app(k, x) => {
-        extern add(a, x) {
-          (b: ext Int) => {
-            substitute [k → k, b → b];
-            invoke k ret           // ← no (b)
+def foo(k : cns Cont) =
+  extern lit_9() {
+    (a: ext Int) => {
+      new f = (a: ext Int){
+        app(k, x) => {
+          extern add(a, x) {
+            (b: ext Int) => {
+              substitute [k → k, b → b];
+              invoke k ret           // ← no (b)
+            }
           }
         }
-      }
-    };
-    new k = (){
-      ret(r) => { extern return(r) {} }
-    };
-    extern lit_1() {
-      (y: ext Int) => {
-        substitute [f → f, k → k, y → y];
-        invoke f app              // ← no (k, y), and 'app' not 'apply'
+      };
+      // new k = (){
+      //   ret(r) => { extern return(r) {} }
+      // };
+      extern lit_1() {
+        (y: ext Int) => {
+          substitute [f → f, k → k, y → y];
+          invoke f app              // ← no (k, y), and 'app' not 'apply'
+        }
       }
     }
   }
-}
 

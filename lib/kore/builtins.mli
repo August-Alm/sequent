@@ -18,11 +18,14 @@ module Sym: sig
   val fun_t: symbol
   val fun_apply: symbol
 
-  val pos_t: symbol
-  val pos_close: symbol
-
   val neg_t: symbol
-  val neg_thunk: symbol
+  val neg_ret: symbol
+
+  val lower_t: symbol
+  val lower_thunk: symbol
+
+  val raise_t: symbol
+  val raise_close: symbol
 
   val box_t: symbol
   val box_mk: symbol
@@ -61,21 +64,29 @@ module Prim: sig
   val all_sgn: variable -> kind -> signature
   val all_insta: variable -> kind -> xtor
 
+  (** 
+    codata ¬(X:+) where
+      ¬: (X:+ |¬X ⊢)
+  *)
+  val neg_t: tpe
+  val neg_sgn: signature
+  val neg_ret: xtor
+
   (**
     data ↑(A:-) where
       close: A ⊢ ↑A |   --- close(x: prd A)
   *)
-  val pos_t: tpe
-  val pos_sgn: signature
-  val pos_close: xtor
+  val raise_t: tpe
+  val raise_sgn: signature
+  val raise_close: xtor
 
   (**
-    code ↓(A:+) where
+    codata ↓(A:+) where
       thunk: | ↓A ⊢ A   --- thunk(k: cns A)
   *)
-  val neg_t: tpe
-  val neg_sgn: signature
-  val neg_thunk: xtor
+  val lower_t: tpe
+  val lower_sgn: signature
+  val lower_thunk: xtor
 
   (**
     data □(A:ext) where

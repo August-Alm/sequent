@@ -1,6 +1,6 @@
 (executables
- (names main test_parser test_mutual test_playground test_simple test_focus)
- (public_names sequent test_parser test_mutual test_playground test_simple test_focus)
+ (names main test_parser test_mutual test_playground test_simple test_focus debug_apply test_compose test_compose_debug test_let_debug)
+ (public_names sequent test_parser test_mutual test_playground test_simple test_focus debug_apply test_compose test_compose_debug test_let_debug)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 
