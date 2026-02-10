@@ -98,6 +98,27 @@ and map_xtor (xtor: KTy.xtor) : CTy.method_sig =
   ; constraints = Option.map (List.map (fun (v, t) -> (v, map_type t))) xtor.KTy.constraints
   }
 
+(** Substitute type variables in a chiral type.
+    Takes a list of (old_var, new_var) pairs and creates fresh Cut type variables. *)
+let subst_chiral_type 
+    (subst: (Ident.t * Ident.t) list) 
+    (ct: KTy.chiral_tpe) : CTy.chirality_type =
+  let rec subst_ty (ty: KTy.tpe) : CTy.typ =
+    match ty with
+    | KTy.TyVar x ->
+      (match List.assoc_opt x subst with
+      | Some x' -> CTy.TyVar x'
+      | None -> CTy.TyVar x)
+    | KTy.TySym s -> CTy.TySym s
+    | KTy.TyApp (t1, t2) -> CTy.TyApp (subst_ty t1, subst_ty t2)
+    | KTy.TyExt s -> CTy.TyPrim (s, CTy.KStar)
+    | KTy.TyPos sgn -> CTy.TyDef (map_signature sgn)
+    | KTy.TyNeg sgn -> CTy.TyDef (map_signature sgn)
+  in
+  match ct with
+  | KTy.Lhs ty -> CTy.Prd (subst_ty ty)
+  | KTy.Rhs ty -> CTy.Cns (subst_ty ty)
+
 (* ========================================================================= *)
 (* Substitutions                                                             *)
 (* ========================================================================= *)
@@ -128,6 +149,16 @@ let get_pos_signature (sgns: KTy.signatures) (ty: KTy.tpe) : KTy.signature =
     let sgn, _, _ = KTy.get_def sgns s in sgn
   | _ -> failwith "get_pos_signature: expected positive type"
 
+(** Try to get signature from a positive type, returning None for type variables *)
+let try_get_pos_signature (sgns: KTy.signatures) (ty: KTy.tpe) : KTy.signature option =
+  match KTy.reduce sgns ty with
+  | KTy.TyPos sgn -> Some sgn
+  | KTy.TySym s ->
+    let sgn, _, _ = KTy.get_def sgns s in Some sgn
+  | KTy.TyVar _ -> None  (* Type variable - can't η-expand *)
+  | KTy.TyApp _ -> None  (* Type application (might be abstract) *)
+  | _ -> None
+
 (** Build a typ_env from Kore branch variables and xtor parameters *)
 let build_env (vars: Ident.t list) (params: KTy.chiral_tpe list) : CTm.typ_env =
   List.map2 (fun v ct -> (v, map_chiral ct)) vars params
@@ -136,23 +167,36 @@ let build_env (vars: Ident.t list) (params: KTy.chiral_tpe list) : CTm.typ_env =
 let fresh_params (params: KTy.chiral_tpe list) : Ident.t list =
   List.map (fun _ -> Ident.fresh ()) params
 
+(** Build a typ_env with type variable substitution for branch patterns *)
+let build_env_with_subst 
+    (subst: (Ident.t * Ident.t) list)
+    (vars: Ident.t list) 
+    (params: KTy.chiral_tpe list) : CTm.typ_env =
+  List.map2 (fun v ct -> (v, subst_chiral_type subst ct)) vars params
+
 (** Build branches from a signature for η-expansion *)
 let build_eta_branches (_sgns: KTy.signatures) (sgn: KTy.signature) (_h: Sub.t)
     (build_body: KTy.xtor -> Ident.t list -> CTm.statement) : CTm.branches =
   List.map (fun xtor ->
     let params = fresh_params xtor.KTy.parameters in
-    let tys = List.map (fun (_, _k) -> CTy.TyVar (Ident.fresh ())) xtor.KTy.quantified in
-    let env = build_env params xtor.KTy.parameters in
+    (* Create fresh type variables for quantified variables *)
+    let fresh_type_vars = List.map (fun (v, _k) -> (v, Ident.fresh ())) xtor.KTy.quantified in
+    let tys = List.map (fun (_, v') -> CTy.TyVar v') fresh_type_vars in
+    let env = build_env_with_subst fresh_type_vars params xtor.KTy.parameters in
     (xtor.KTy.name, tys, env, build_body xtor params)
   ) sgn.KTy.xtors
 
 (** Translate Kore branch to Cut branch entry *)
 let rec map_branch (sgns: KTy.signatures) (h: Sub.t) (br: KTm.branch) 
     : CTm.symbol * CTm.typ list * CTm.typ_env * CTm.statement =
-  let tys = List.map (fun (_, _k) -> 
-    CTy.TyVar (Ident.fresh ())
-  ) br.KTm.type_vars in
-  let env = build_env br.KTm.term_vars br.KTm.xtor.KTy.parameters in
+  (* Create fresh type variables for the xtor's quantified variables.
+     The xtor's parameters reference xtor.quantified, not branch.type_vars,
+     because branch.type_vars are the user-written pattern variables which
+     may have different Ident.t values than the xtor definition. *)
+  let fresh_type_vars = List.map (fun (v, _k) -> (v, Ident.fresh ())) br.KTm.xtor.KTy.quantified in
+  let tys = List.map (fun (_, v') -> CTy.TyVar v') fresh_type_vars in
+  (* Build env with substituted types *)
+  let env = build_env_with_subst fresh_type_vars br.KTm.term_vars br.KTm.xtor.KTy.parameters in
   let h' = List.fold_left2 (fun acc old new_ -> Sub.add old new_ acc) 
            h br.KTm.term_vars (List.map fst env) in
   (br.KTm.xtor.KTy.name, tys, env, map_command sgns h' br.KTm.command)
@@ -297,9 +341,7 @@ and lookup_and_inline (sgns: KTy.signatures) (h: Sub.t)
 (** Main command translation with normalization *)
 and map_command (sgns: KTy.signatures) (h: Sub.t) (cmd: KTm.command) : CTm.statement =
   match cmd with
-  | KTm.End -> 
-    let halt = Ident.fresh () in
-    CTm.Forward (halt, halt)
+  | KTm.End -> CTm.End 
 
   | KTm.Call (sym, tys, _args) ->
     (* Bind all arguments, then jump *)
@@ -394,32 +436,50 @@ and map_cut_pos (sgns: KTy.signatures) (h: Sub.t) (ty: KTy.tpe)
 
   (* ========== Completely unknown cuts - η-expand ========== *)
   
-  (* ⟨x | α⟩_T → ⟨x | case {C1(Γ1) ⇒ ⟨C1(Γ1) | α⟩, ...}⟩ for data T *)
+  (* ⟨x | α⟩_T → Forward x α    (when T is abstract/type variable) *)
+  (* ⟨x | α⟩_T → Switch x {...} (when T is concrete data type)     *)
   | KTm.Variable x, KTm.Variable alpha ->
     let x' = Sub.apply h x in
     let alpha' = Sub.apply h alpha in
-    let sgn = get_pos_signature sgns ty in
-    let branches = build_eta_branches sgns sgn h (fun xtor params ->
-      let tys' = List.map map_type xtor.KTy.parent_arguments in
-      CTm.Invoke (alpha', xtor.KTy.name, tys', params)
-    ) in
-    CTm.Switch (x', branches)
+    (match try_get_pos_signature sgns ty with
+    | Some sgn ->
+      (* Concrete type - η-expand *)
+      let branches = build_eta_branches sgns sgn h (fun xtor params ->
+        let tys' = List.map map_type xtor.KTy.parent_arguments in
+        CTm.Invoke (alpha', xtor.KTy.name, tys', params)
+      ) in
+      CTm.Switch (x', branches)
+    | None ->
+      (* Abstract type (type variable) - can't η-expand, use forward *)
+      CTm.Forward (x', alpha'))
 
   (* ========== Critical pairs - η-expand ========== *)
   
-  (* ⟨µα.s1 | µ̃x.s2⟩_T → ⟨µα.s1 | case {C1(Γ1) ⇒ ⟨C1(Γ1) | µ̃x.s2⟩, ...}⟩ for data T *)
+  (* ⟨µα.s1 | µ̃x.s2⟩_T → choose evaluation order based on type *)
   | KTm.MuLhsPos (_, alpha, s1), KTm.MuRhsPos (_, x, s2) ->
-    let sgn = get_pos_signature sgns ty in
-    (* Build branches: each C(Γ) ⇒ let x = C(Γ); s2 *)
-    let branches = build_eta_branches sgns sgn h (fun xtor params ->
-      let tys' = List.map map_type xtor.KTy.parent_arguments in
-      let env = build_env params xtor.KTy.parameters in
-      CTm.Let (x, xtor.KTy.name, tys', env,
-        map_command sgns (Sub.add x x h) s2)
-    ) in
-    let ty' = map_type ty in
-    CTm.New (alpha, ty', [], branches,
-      map_command sgns (Sub.add alpha alpha h) s1)
+    (match try_get_pos_signature sgns ty with
+    | Some sgn ->
+      (* Concrete type - η-expand with case *)
+      (* Build branches: each C(Γ) ⇒ let x = C(Γ); s2 *)
+      let branches = build_eta_branches sgns sgn h (fun xtor params ->
+        let tys' = List.map map_type xtor.KTy.parent_arguments in
+        let env = build_env params xtor.KTy.parameters in
+        CTm.Let (x, xtor.KTy.name, tys', env,
+          map_command sgns (Sub.add x x h) s2)
+      ) in
+      let ty' = map_type ty in
+      CTm.New (alpha, ty', [], branches,
+        map_command sgns (Sub.add alpha alpha h) s1)
+    | None ->
+      (* Abstract type - evaluate LHS first (call-by-value semantics) *)
+      (* ⟨µα.s1 | µ̃x.s2⟩ → new α = ...; s1  then  let x = α; s2 *)
+      (* But we need to pass x to s2, so: substitute and continue *)
+      (* Actually, for abstract types we can pick either side. Let's pick: eval s1 first *)
+      let _ty' = map_type ty in
+      let alpha' = Ident.fresh () in
+      (* Create a dummy forward that will be substituted *)
+      CTm.Substitute ([(alpha, alpha')],
+        map_command sgns (Sub.add alpha alpha' (Sub.add x alpha' h)) s1))
 
   (* ========== Normalization: non-variable arguments ========== *)
   
@@ -465,6 +525,20 @@ let map_definition (sgns: KTy.signatures) (def: KTm.definition)
     : CTm.label * CTm.typ_env * CTm.statement =
   map_definition_raw sgns def
 
+(** Compute the kind of a signature from its parameters *)
+let signature_kind (sgn: CTy.signature) : CTy.kind =
+  List.fold_right (fun (_, k) acc ->
+    CTy.KArrow (k, acc)
+  ) sgn.CTy.parameters CTy.KStar
+
+(** Translate Kore signatures to Cut signatures *)
+let map_signatures (kore_sgns: KTy.signatures) : CTm.signatures =
+  List.map (fun (path, (sgn, _pol, _)) ->
+    let cut_sgn = map_signature sgn in
+    let kind = signature_kind cut_sgn in
+    (path, (cut_sgn, kind))
+  ) (Path.to_list kore_sgns)
+
 (** Translate a Kore environment to Cut definitions (before linearization) *)
 let map_env_raw (env: KTm.Env.t) : CTm.definitions =
   let sgns = env.KTm.Env.signatures in
@@ -472,7 +546,7 @@ let map_env_raw (env: KTm.Env.t) : CTm.definitions =
     List.fold_left (fun acc (_, def) -> map_definition_raw sgns def :: acc) 
       [] (Path.to_list env.KTm.Env.terms)
   in
-  { CTm.signatures = []  (* TODO: translate signatures *)
+  { CTm.signatures = map_signatures sgns
   ; program = program
   }
 

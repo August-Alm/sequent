@@ -132,6 +132,28 @@ let infer_polarity (sgns: signatures) (ctx: kind Ident.tbl) (t: tpe) =
 (* Type-level operations                                                     *)
 (* ========================================================================= *)
 
+(** Add a signature without validating its xtors. Used for mutually recursive
+  type definitions where the signature may reference types not yet added. *)
+let add_def_unchecked (sgns: signatures) (polarity: polarity) (sgn: signature) =
+  let base = match polarity with Positive -> Pos | Negative -> Neg in
+  let k = compute_kind base sgn in
+  Path.add sgn.name (sgn, polarity, k) sgns
+
+(** Validate all xtors in a signature against the given signatures context.
+  Should be called after all signatures have been added with add_def_unchecked. *)
+let validate_signature (sgns: signatures) (sgn: signature) =
+  let ctx = Ident.emptytbl in
+  let arg_kinds = List.map snd sgn.arguments in
+  List.iter (fun xtor ->
+    let ctx' =
+      List.fold_left (fun acc (x, k) -> Ident.add x k acc) ctx xtor.quantified
+    in
+    List.iter2 (check_kind sgns ctx') xtor.parent_arguments arg_kinds;
+    List.iter (fun ty ->
+      ignore (infer_kind sgns ctx' (match ty with Lhs t | Rhs t -> t))
+    ) xtor.parameters
+  ) sgn.xtors
+
 (** Add the signature as either positive or negative polarity. Will fail if the
   signature is ill-kinded.*)
 let add_def (sgns: signatures) (polarity: polarity) (sgn: signature) =

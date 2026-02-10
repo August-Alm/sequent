@@ -198,18 +198,32 @@ let alls_from_typed_defs (defs: LTm.typed_definitions) =
   KindSet.to_list ks
 
 (** Extracts all the signatures, including primitive ones, and kind-checks
-  them in the process. *)
+  them in the process. Uses two-phase approach for mutually recursive types:
+  1. Add all signatures without validating xtor contents
+  2. Validate all xtors after all signatures are available *)
 let signatures (defs: LTm.typed_definitions) =
+  (* Phase 1: Add all signatures without validating xtors *)
   let primitives =
     List.fold_left (fun sgns (a, k) ->
-      add_def sgns Negative (Prim.all_sgn a k)
+      add_def_unchecked sgns Negative (Prim.all_sgn a k)
     ) Prim.signatures (alls_from_typed_defs defs)
   in
-  List.fold_left (fun sgns (_, (dec, _)) ->
-    match dec with
-    | LTy.Data dec -> add_def sgns Positive (map_data dec)
-    | LTy.Code dec -> add_def sgns Negative (map_code dec)
-  ) primitives defs.LTm.type_defs
+  let user_sigs =
+    List.map (fun (_, (dec, _)) ->
+      match dec with
+      | LTy.Data dec -> (Positive, map_data dec)
+      | LTy.Code dec -> (Negative, map_code dec)
+    ) defs.LTm.type_defs
+  in
+  let sgns = List.fold_left (fun sgns (pol, sgn) ->
+    add_def_unchecked sgns pol sgn
+  ) primitives user_sigs
+  in
+  (* Phase 2: Validate all user-defined signatures *)
+  List.iter (fun (_, sgn) ->
+    validate_signature sgns sgn
+  ) user_sigs;
+  sgns
 
 (* Helper: Decompose a function type into arg types and return type *)
 let rec decompose_fun_type (ty: LTy.typ) : LTy.typ list * LTy.typ =

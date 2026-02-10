@@ -223,6 +223,9 @@ let rec statement_to_string ?(cfg=default_config) ?(indent_level=0) (s: statemen
     in
     ind ^ "invoke " ^ var_to_string v ^ " " ^ 
     sym_to_string m ^ typ_list_to_string tys ^ args_str
+  
+  (* end *)
+  | End -> ind ^ "end"
 
 (* branches b ::= {m[τ, ...](Γ) ⇒ s, ...} *)
 and branches_to_string ?(cfg=default_config) ?(indent_level=0) 

@@ -88,6 +88,8 @@ let rec free_vars_statement (s: statement) : (Ident.t * int) list =
     (* The variable v and all args *)
     [(v, 1)] @ count_occurrences args
   
+  | End -> []
+  
 
 (** Free variables in a branch *)
 and free_vars_branch
@@ -318,6 +320,10 @@ let rec linearize_statement
     let needed = v :: args in
     let (subst, _env_after) = build_substitution current_env needed [] [] in
     prepend_subst subst (Invoke (v, dtor, type_args, args))
+  
+  | End ->
+    (* No variables used, so just return End *)
+    End
 
 (** Linearize a branch 
     The branch binds new variables in its pattern and has a body

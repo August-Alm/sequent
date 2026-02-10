@@ -400,5 +400,13 @@ let check_definitions
     }
   in
   List.iter (fun (_, def) ->
-    check_command env Ctx.empty def.body
+    (* Build context with type parameters *)
+    let ctx_with_kinds = List.fold_left (fun ctx (tv, k) ->
+      Ctx.add_kind ctx tv k
+    ) Ctx.empty def.type_params in
+    (* Add term parameters *)
+    let ctx_with_terms = List.fold_left (fun ctx (v, ty) ->
+      Ctx.add_type ctx v ty
+    ) ctx_with_kinds def.term_params in
+    check_command env ctx_with_terms def.body
   ) (Path.to_list definitions)

@@ -60,6 +60,8 @@ type statement =
   | Switch of variable * branches
   (* invoke v m[τ, ...](v, ...) - from ⟨x | D(Γ)⟩, v : cns T *)
   | Invoke of variable * symbol * typ list * variable list
+  (* end *)
+  | End
 
 (* branches b ::= {m[τ, ...](Γ) ⇒ s, ...} - with type instantiation *)
 and branches = (symbol * typ list * typ_env * statement) list
@@ -255,7 +257,8 @@ let rec check_statement
       | New _ -> "New"
       | Switch _ -> "Switch"
       | Invoke _ -> "Invoke"
-      | Extern _ -> "Extern");
+      | Extern _ -> "Extern"
+      | End -> "End");
   end;
   match s with
   | Jump (l, _type_args) ->
@@ -619,6 +622,12 @@ let rec check_statement
       raise (InvokeNotConsumer (v, ty))
     | _ ->
       raise (InvokeVariableNotAtFront (v, gamma)))
+  | End ->
+    (* Rule [END]: Γ is empty
+                    -------------
+                    Γ ⊢ end *)
+    if gamma <> [] then
+      raise (EnvTooShort (0, gamma))
 
 
 (** Check a program
