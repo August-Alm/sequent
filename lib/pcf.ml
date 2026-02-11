@@ -114,7 +114,7 @@ module Seq = struct
     | DtorThunk of neg_typ * term
     | MatchApply of pos_typ * neg_typ * var * var * command
     | MatchReturn of pos_typ * var * command
-    | MatchEval of neg_typ * var * command
+    | MatchThunk of neg_typ * var * command
     | ComatchApply of pos_typ * neg_typ * var * var * command
     | ComatchReturn of pos_typ * var * command
     | ComatchEval of neg_typ * var * command
@@ -148,10 +148,10 @@ module Seq = struct
         MatchReturn (a, z, cmd)  (* Shadowing *)
     | MatchReturn (a, z, cmd) ->
         MatchReturn (a, z, rename_cmd (x, y) cmd)
-    | MatchEval (b, z, cmd) when Ident.equal z x ->
-        MatchEval (b, z, cmd)  (* Shadowing *)
-    | MatchEval (b, z, cmd) ->
-        MatchEval (b, z, rename_cmd (x, y) cmd)
+    | MatchThunk (b, z, cmd) when Ident.equal z x ->
+        MatchThunk (b, z, cmd)  (* Shadowing *)
+    | MatchThunk (b, z, cmd) ->
+        MatchThunk (b, z, rename_cmd (x, y) cmd)
     | ComatchApply (a, b, z, k, cmd) when Ident.equal z x || Ident.equal k x ->
         ComatchApply (a, b, z, k, cmd)  (* Shadowing *)
     | ComatchApply (a, b, z, k, cmd) ->
@@ -225,8 +225,8 @@ module Seq = struct
     | MatchReturn (a, x, cmd) ->
         "case { ctor_return[" ^ pp_pos a ^ "]("
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
-    | MatchEval (b, x, cmd) ->
-        "case { ctor_eval[" ^ pp_neg b ^ "]("
+    | MatchThunk (b, x, cmd) ->
+        "case { ctor_thunk[" ^ pp_neg b ^ "]("
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
     | ComatchApply (a, b, x, k, cmd) ->
         "cocase { dtor_apply[" ^ pp_pos a ^ ", " ^ pp_neg b ^ "]("
@@ -350,7 +350,7 @@ module Seq = struct
         let ctx' = Ident.add x (Lhs (Pos a)) ctx in
         infer_command_typ ctx' cmd |> ignore; (* Just check *)
         Rhs (Pos (Data (Return a)))
-    | MatchEval (b, x, cmd) ->
+    | MatchThunk (b, x, cmd) ->
         let ctx' = Ident.add x (Rhs (Neg b)) ctx in
         infer_command_typ ctx' cmd |> ignore; (* Just check *)
         Rhs (Pos (Data (Thunk b)))
@@ -418,30 +418,29 @@ module Encode = struct
         let k = Ident.fresh () in
         (match map_typ a, map_typ b with
           Pos a', Pos b' ->
-            (* case { apply[a', ↓b'](x, k) => ⟨return[b'](body') | k⟩ } *)
+            (* case { apply[a', ↓b'](x, k) ⇒ ⟨return[b'](body') | k⟩ } *)
             MatchApply (a', lower b', x, k,
               CutNeg (lower b', CtorReturn (b', body'), Variable k))
         | Pos a', Neg b' ->
-            (* case { apply[a', b'](x, k) => ⟨body' | k⟩ } *)
+            (* case { apply[a', b'](x, k) ⇒ ⟨body' | k⟩ } *)
             MatchApply (a', b', x, k,
               CutNeg (b', body', Variable k))
         | Neg a', Pos b' ->
-            (* TODO: This is probably wrong! *)
-            (* case { apply[↑a', ↓b'](x, k) => ⟨μ-L α.⟨return[b'](body'') | k⟩ | thunk[a'](x)⟩ } *)
-            let alpha = Ident.fresh () in
-            let body'' = rename (x, alpha) body' in
-            MatchApply (raise a', lower b', x, k,
-              CutNeg (lower b',
-                MuLhsNeg (a', alpha, CutNeg (lower b', CtorReturn (b', body''), Variable k)),
-                CtorThunk (a', Variable x)))
+            (* case { apply[↑a', ↓b'](x', k) ⇒
+              ⟨x' | case { thunk[a'](x) ⇒ ⟨return[b'](body') | k⟩ }⟩ } *)
+            let x' = Ident.fresh () in
+            MatchApply (raise a', lower b', x', k,
+              CutNeg (a',
+                Variable x',
+                MatchThunk (a', x, CutNeg (lower b', CtorReturn (b', body'), Variable k))))
         | Neg a', Neg b' ->
-            (* case { apply[↑a', b'](x, k) => ⟨μ-L α.⟨body'' | k⟩ | thunk[a'](x)⟩ } *)
-            let alpha = Ident.fresh () in
-            let body'' = rename (x, alpha) body' in
-            MatchApply (raise a', b', x, k,
-              CutNeg (b',
-                MuLhsNeg (a', alpha, CutNeg (b', body'', Variable k)),
-                CtorThunk (a', Variable x))))
+            (* case { apply[↑a', b'](x', k) ⇒
+              ⟨x' | case { thunk[a'](x) ⇒ ⟨body' | k⟩ }⟩ } *)
+            let x' = Ident.fresh () in
+            MatchApply (raise a', b', x', k,
+              CutNeg (a',
+                Variable x',
+                MatchThunk (a', x, CutNeg (b', body', Variable k)))))
     | Pcf.App (t1, t2) ->
         failwith "TODO"
     | Pcf.Lit n -> Lit n
