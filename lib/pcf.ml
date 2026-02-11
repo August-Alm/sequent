@@ -859,6 +859,54 @@ module Focus = struct
   let subst_params (params: var list) (args: var list) (cmd: command) : command =
     List.fold_left2 (fun c p a -> rename_cmd (p, a) c) cmd params args
 
+  (** Substitute a term for a variable in a Seq command.
+      This enables on-demand substitution for pack optimization. *)
+  let rec subst_term_in_cmd (x: var) (t: term) (cmd: command) : command =
+    match cmd with
+    | Cut (ty, lhs, rhs) ->
+        Cut (ty, subst_term_in_term x t lhs, subst_term_in_term x t rhs)
+    | Add (t1, t2, t3) ->
+        Add (subst_term_in_term x t t1, subst_term_in_term x t t2, subst_term_in_term x t t3)
+    | Ifz (cond, then_cmd, else_cmd) ->
+        Ifz (subst_term_in_term x t cond, subst_term_in_cmd x t then_cmd, subst_term_in_cmd x t else_cmd)
+    | End -> End
+
+  and subst_term_in_term (x: var) (t: term) (tm: term) : term =
+    match tm with
+    | Variable y when Ident.equal y x -> t
+    | Variable y -> Variable y
+    | Lit n -> Lit n
+    | CtorApply (a, b, arg, cont) ->
+        CtorApply (a, b, subst_term_in_term x t arg, subst_term_in_term x t cont)
+    | CtorReturn (a, arg) -> CtorReturn (a, subst_term_in_term x t arg)
+    | CtorPack (a, arg) -> CtorPack (a, subst_term_in_term x t arg)
+    | DtorApply (a, b, arg, cont) ->
+        DtorApply (a, b, subst_term_in_term x t arg, subst_term_in_term x t cont)
+    | DtorReturn (a, arg) -> DtorReturn (a, subst_term_in_term x t arg)
+    | DtorPack (a, arg) -> DtorPack (a, subst_term_in_term x t arg)
+    | MatchApply (a, b, y, k, cmd) ->
+        if Ident.equal y x || Ident.equal k x then tm  (* shadowing *)
+        else MatchApply (a, b, y, k, subst_term_in_cmd x t cmd)
+    | MatchReturn (a, y, cmd) ->
+        if Ident.equal y x then tm else MatchReturn (a, y, subst_term_in_cmd x t cmd)
+    | MatchPack (a, y, cmd) ->
+        if Ident.equal y x then tm else MatchPack (a, y, subst_term_in_cmd x t cmd)
+    | ComatchApply (a, b, y, k, cmd) ->
+        if Ident.equal y x || Ident.equal k x then tm
+        else ComatchApply (a, b, y, k, subst_term_in_cmd x t cmd)
+    | ComatchReturn (a, y, cmd) ->
+        if Ident.equal y x then tm else ComatchReturn (a, y, subst_term_in_cmd x t cmd)
+    | ComatchPack (a, y, cmd) ->
+        if Ident.equal y x then tm else ComatchPack (a, y, subst_term_in_cmd x t cmd)
+    | MuLhs (ty, y, cmd) ->
+        if Ident.equal y x then tm else MuLhs (ty, y, subst_term_in_cmd x t cmd)
+    | MuRhs (ty, y, cmd) ->
+        if Ident.equal y x then tm else MuRhs (ty, y, subst_term_in_cmd x t cmd)
+
+  (** Substitute multiple terms for params *)
+  let subst_terms_in_cmd (params: var list) (terms: term list) (cmd: command) : command =
+    List.fold_left2 (fun c p t -> subst_term_in_cmd p t c) cmd params terms
+
   (** Bind multiple terms to variables *)
   let rec bind_terms (terms: term list) (k: var list -> Cut.command) : Cut.command =
     match terms with
@@ -1090,15 +1138,24 @@ module Focus = struct
         bind_terms args (fun arg_vars ->
           Cut.Invoke (y, xtor, arg_vars))
 
-    (* Ctor/Dtor | Match/Comatch: inline the branch *)
+    (* CtorPack/DtorPack | MatchPack/ComatchPack: direct substitution without binding *)
+    (* This eliminates the pack/unpack pattern by inlining directly *)
+    | (CtorPack (a, arg) | DtorPack (a, arg)),
+      (MatchPack (a', x, cmd) | ComatchPack (a', x, cmd)) when a = a' ->
+        (* The pack and unpack cancel: just bind arg to x *)
+        bind_term arg (fun v ->
+          transform_command (rename_cmd (x, v) cmd))
+
+    (* Ctor/Dtor | Match/Comatch: inline the branch using term-level substitution *)
+    (* This allows CtorPack args to be substituted as terms, so they can meet MatchPack directly *)
     | (CtorApply _ | CtorReturn _ | CtorPack _ |
        DtorApply _ | DtorReturn _ | DtorPack _ as c),
       (MatchApply _ | MatchReturn _ | MatchPack _ |
        ComatchApply _ | ComatchReturn _ | ComatchPack _ as m) ->
         let (_, args) = ctor_info c in
         let (_, params, cmd) = match_info m in
-        bind_terms args (fun arg_vars ->
-          transform_command (subst_params params arg_vars cmd))
+        (* Substitute terms directly into the command, then transform *)
+        transform_command (subst_terms_in_cmd params args cmd)
 
     (* Ctor/Dtor | MuRhs: Let binding *)
     | (CtorApply _ | CtorReturn _ | CtorPack _ |
