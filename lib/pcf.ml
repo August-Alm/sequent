@@ -226,10 +226,10 @@ module Seq = struct
     | Sig (Thunk a) -> "Raise(" ^ pp_typ a ^ ")"
 
   (* Determine the "natural chirality" of a type:
-     - Int is positive (data-like), so values are Lhs
-     - Sig(Return A) is positive - it's data packaging a value/computation
-     - Sig(Thunk A) is positive - it's data packaging a suspended computation
-     - Sig(Apply ...) is negative - functions are codata-like (demand-driven) *)
+    - Int is positive (data-like), so values are Lhs
+    - Sig(Return A) is positive - it's data packaging a value/computation
+    - Sig(Thunk A) is positive - it's data packaging a suspended computation
+    - Sig(Apply ...) is negative - functions are codata-like (demand-driven) *)
   let is_positive_typ = function
     | Int -> true
     | Sig (Return _) -> true   (* Lower makes something data-like *)
@@ -237,8 +237,8 @@ module Seq = struct
     | Sig (Apply _) -> false   (* Functions are codata-like *)
   
   (* The chirality of a term of type A:
-     - If A is positive, terms are Lhs (producers/values)
-     - If A is negative, terms are Rhs (consumers/computations) *)
+    - If A is positive, terms are Lhs (producers/values)
+    - If A is negative, terms are Rhs (consumers/computations) *)
   let natural_chirality ty =
     if is_positive_typ ty then Lhs ty else Rhs ty
 
@@ -324,7 +324,7 @@ module Seq = struct
         else failwith "Type error in DtorThunk"
     | MatchApply (a, b, x, k, cmd) ->
         (* x receives the argument (always Lhs - values are passed)
-           k receives the continuation (always Rhs - continuations consume) *)
+          k receives the continuation (always Rhs - continuations consume) *)
         let ctx' =
           Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx)
         in
@@ -340,7 +340,7 @@ module Seq = struct
         Rhs (Sig (Thunk a))
     | ComatchApply (a, b, x, k, cmd) ->
         (* x receives the argument (always Lhs - values are passed)
-           k receives the continuation (always Rhs - continuations consume) *)
+          k receives the continuation (always Rhs - continuations consume) *)
         let ctx' =
           Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx)
         in
@@ -385,11 +385,11 @@ module Encode = struct
         let a' = map_typ a in
         let b' = map_typ b in
         (* We always lower the codomain because the body of a lambda
-           must be in producer position (Lhs) to cut against the continuation.
-           For arguments:
-           - Positive args (Int) stay as-is: they're values (Lhs)
-           - Negative args (functions) are raised: they're computations 
-             that need to be suspended into values (Lhs) *)
+          must be in producer position (Lhs) to cut against the continuation.
+          For arguments:
+          - Positive args (Int) stay as-is: they're values (Lhs)
+          - Negative args (functions) are raised: they're computations 
+            that need to be suspended into values (Lhs) *)
         match is_positive a with
         | true -> Sig (Apply (a', lower b'))
         | false -> Sig (Apply (raise a', lower b'))
@@ -399,8 +399,8 @@ module Encode = struct
       Pcf.Var x -> Variable x
     | Pcf.Lam (x, a, body) ->
         (* λx:A. body  where body: B
-           Type is Fun(A', Lower(B')) where A' may be raised if A is negative.
-           The encoding wraps body' in CtorReturn since we always lower the result. *)
+          Type is Fun(A', Lower(B')) where A' may be raised if A is negative.
+          The encoding wraps body' in CtorReturn since we always lower the result. *)
         let ctx' = Ident.add x a ctx in
         let b = Pcf.infer_typ ctx' body in
         let body' = map_term ctx' body in
@@ -422,9 +422,9 @@ module Encode = struct
                 MatchThunk (a', x, Cut (lower b', CtorReturn (b', body'), Variable k)))))
     | Pcf.App (t1, t2) ->
         (* t1 t2  where t1 : A → B, t2 : A
-           A function call is: ⟨ctor_apply[A', Lower(B')](t2', k) | t1'⟩
-           where k is a continuation that receives the result.
-           We wrap in μL/μR based on whether B is positive/negative. *)
+          A function call is: ⟨ctor_apply[A', Lower(B')](t2', k) | t1'⟩
+          where k is a continuation that receives the result.
+          We wrap in μL/μR based on whether B is positive/negative. *)
         let t1_ty = Pcf.infer_typ ctx t1 in
         let (a, b) = match t1_ty with
           | Pcf.Arrow (a, b) -> (a, b)
@@ -442,8 +442,8 @@ module Encode = struct
           (fun ty k cmd -> MuRhs (ty, k, cmd))
         in
         (* Inner cut between return value x and continuation k.
-           For positive b': x is Lhs, k is Rhs (from MuLhs), so Cut(b', x, k)
-           For negative b': x is Rhs (natural chirality), k is Lhs (from MuRhs), so Cut(b', k, x) *)
+          For positive b': x is Lhs, k is Rhs (from MuLhs), so Cut(b', x, k)
+          For negative b': x is Rhs (natural chirality), k is Lhs (from MuRhs), so Cut(b', k, x) *)
         let make_inner_cut b' x k =
           if is_positive_typ b' then
             Cut (b', Variable x, Variable k)
@@ -472,23 +472,37 @@ module Encode = struct
     | Pcf.Lit n -> Lit n
     | Pcf.Add (t1, t2) ->
         (* t1 + t2  where t1, t2 : Int
-           Translates to: μL k. add(t1', t2', k) *)
+          Translates to: μL k. add(t1', t2', k) *)
         let t1' = map_term ctx t1 in
         let t2' = map_term ctx t2 in
         let k = Ident.fresh () in
         MuLhs (Int, k, Add (t1', t2', Variable k))
     | Pcf.Ifz (t1, t2, t3) ->
         (* ifz t1 then t2 else t3  where t1 : Int, t2 and t3 : B
-           Translates to: μL k. ifz(t1') then ⟨t2' | k⟩ else ⟨t3' | k⟩ *)
+          Translates to: μ k. ifz(t1') then ⟨t2' | k⟩ else ⟨t3' | k⟩
+          Use μL/μR and swap cut order based on whether B is positive/negative *)
         let b = Pcf.infer_typ ctx t2 in
         let t1' = map_term ctx t1 in
         let t2' = map_term ctx t2 in
         let t3' = map_term ctx t3 in
         let k = Ident.fresh () in
         let b' = map_typ b in
-        MuLhs (b', k,
-          Ifz (t1', 
-            Cut (b', t2', Variable k),
-            Cut (b', t3', Variable k)))
+        let make_mu = if is_positive b then
+          (fun ty k cmd -> MuLhs (ty, k, cmd))
+        else
+          (fun ty k cmd -> MuRhs (ty, k, cmd))
+        in
+        (* For positive b': t2'/t3' are Lhs, k is Rhs, so Cut(b', t2'/t3', k)
+          For negative b': t2'/t3' are Rhs, k is Lhs, so Cut(b', k, t2'/t3') *)
+        let make_branch_cut b' branch k =
+          if is_positive_typ b' then
+            Cut (b', branch, Variable k)
+          else
+            Cut (b', Variable k, branch)
+        in
+        make_mu b' k
+          (Ifz (t1', 
+            make_branch_cut b' t2' k,
+            make_branch_cut b' t3' k))
 
 end

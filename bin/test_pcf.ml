@@ -156,6 +156,212 @@ let () =
     ~manual_repr:"((λf:(Int -> Int). λx:Int. f x) (λy:Int. y + 1)) 10"
     ho_app;
 
+  (* ══════════════════════════════════════════════════════════════════
+     Test 9: Function composition - compose two functions
+     (λf. λg. λx. f (g x)) (λa. a + 1) (λb. b + 2) 10
+     compose : (Int->Int) -> (Int->Int) -> Int -> Int
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let g = Ident.mk "g" in
+  let x = Ident.mk "x" in
+  let a = Ident.mk "a" in
+  let b = Ident.mk "b" in
+  let int_to_int = Pcf.Arrow (Pcf.Int, Pcf.Int) in
+  let compose = Pcf.Lam (f, int_to_int,
+    Pcf.Lam (g, int_to_int,
+      Pcf.Lam (x, Pcf.Int,
+        Pcf.App (Pcf.Var f, Pcf.App (Pcf.Var g, Pcf.Var x))))) in
+  let inc1 = Pcf.Lam (a, Pcf.Int, Pcf.Add (Pcf.Var a, Pcf.Lit 1)) in
+  let inc2 = Pcf.Lam (b, Pcf.Int, Pcf.Add (Pcf.Var b, Pcf.Lit 2)) in
+  let composed = Pcf.App (Pcf.App (Pcf.App (compose, inc1), inc2), Pcf.Lit 10) in
+  run_test
+    ~name:"Composition: compose (+1) (+2) 10 = 13"
+    ~manual_repr:"(λf. λg. λx. f (g x)) (λa. a+1) (λb. b+2) 10"
+    composed;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 10: Twice - apply a function twice
+     (λf. λx. f (f x)) (λy. y + 3) 5
+     twice : (Int->Int) -> Int -> Int
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let x = Ident.mk "x" in
+  let y = Ident.mk "y" in
+  let twice = Pcf.Lam (f, int_to_int,
+    Pcf.Lam (x, Pcf.Int,
+      Pcf.App (Pcf.Var f, Pcf.App (Pcf.Var f, Pcf.Var x)))) in
+  let add3 = Pcf.Lam (y, Pcf.Int, Pcf.Add (Pcf.Var y, Pcf.Lit 3)) in
+  let twice_applied = Pcf.App (Pcf.App (twice, add3), Pcf.Lit 5) in
+  run_test
+    ~name:"Twice: twice (+3) 5 = 11"
+    ~manual_repr:"(λf. λx. f (f x)) (λy. y+3) 5"
+    twice_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 11: Church numeral style - apply f three times
+     (λf. λx. f (f (f x))) (λn. n + 1) 0
+     three : (Int->Int) -> Int -> Int
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let x = Ident.mk "x" in
+  let n = Ident.mk "n" in
+  let three = Pcf.Lam (f, int_to_int,
+    Pcf.Lam (x, Pcf.Int,
+      Pcf.App (Pcf.Var f,
+        Pcf.App (Pcf.Var f,
+          Pcf.App (Pcf.Var f, Pcf.Var x))))) in
+  let succ = Pcf.Lam (n, Pcf.Int, Pcf.Add (Pcf.Var n, Pcf.Lit 1)) in
+  let three_applied = Pcf.App (Pcf.App (three, succ), Pcf.Lit 0) in
+  run_test
+    ~name:"Church 3: (λf. λx. f(f(f x))) succ 0 = 3"
+    ~manual_repr:"(λf. λx. f (f (f x))) (λn. n+1) 0"
+    three_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 12: Higher-order returning higher-order
+     (λn. λf. λx. f (x + n)) 5 (λy. y + y) 3
+     Returns a function that adds n before applying f
+     addBefore : Int -> (Int->Int) -> Int -> Int
+     ══════════════════════════════════════════════════════════════════ *)
+  let n = Ident.mk "n" in
+  let f = Ident.mk "f" in
+  let x = Ident.mk "x" in
+  let y = Ident.mk "y" in
+  let add_before = Pcf.Lam (n, Pcf.Int,
+    Pcf.Lam (f, int_to_int,
+      Pcf.Lam (x, Pcf.Int,
+        Pcf.App (Pcf.Var f, Pcf.Add (Pcf.Var x, Pcf.Var n))))) in
+  let double = Pcf.Lam (y, Pcf.Int, Pcf.Add (Pcf.Var y, Pcf.Var y)) in
+  let add_before_applied = Pcf.App (Pcf.App (Pcf.App (add_before, Pcf.Lit 5), double), Pcf.Lit 3) in
+  run_test
+    ~name:"AddBefore: (λn. λf. λx. f(x+n)) 5 double 3 = 16"
+    ~manual_repr:"(λn. λf. λx. f (x+n)) 5 (λy. y+y) 3"
+    add_before_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 13: Function that returns a function builder
+     (λx. λy. λz. x + y + z) 1 2 3
+     Curried addition of three numbers
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let y = Ident.mk "y" in
+  let z = Ident.mk "z" in
+  let add3_curried = Pcf.Lam (x, Pcf.Int,
+    Pcf.Lam (y, Pcf.Int,
+      Pcf.Lam (z, Pcf.Int,
+        Pcf.Add (Pcf.Var x, Pcf.Add (Pcf.Var y, Pcf.Var z))))) in
+  let add3_applied = Pcf.App (Pcf.App (Pcf.App (add3_curried, Pcf.Lit 1), Pcf.Lit 2), Pcf.Lit 3) in
+  run_test
+    ~name:"Curried add3: (λx. λy. λz. x+y+z) 1 2 3 = 6"
+    ~manual_repr:"(λx. λy. λz. x+y+z) 1 2 3"
+    add3_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 14: Nested higher-order - compose composed with itself
+     Let compose = λf. λg. λx. f (g x)
+     (compose compose compose) (+1) (+2) 10
+     = compose (compose (+1)) (+2) 10
+     = (compose (+1)) ((+2) 10)
+     = (compose (+1)) 12
+     = λx. (+1) (12 x) ... wait, that's wrong
+     Actually: compose compose compose f g x = compose (compose f) g x
+                                              = (compose f) (g x)
+                                              = λy. f ((g x) y)
+     Hmm, types don't work out simply. Let's do something else.
+     ══════════════════════════════════════════════════════════════════ *)
+  (* Test 14: Conditional with higher-order result
+     ifz 0 then (λx. x+1) else (λx. x+2) applied to 10
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let branch1 = Pcf.Lam (x, Pcf.Int, Pcf.Add (Pcf.Var x, Pcf.Lit 1)) in
+  let x2 = Ident.mk "x" in
+  let branch2 = Pcf.Lam (x2, Pcf.Int, Pcf.Add (Pcf.Var x2, Pcf.Lit 2)) in
+  let cond_fn = Pcf.Ifz (Pcf.Lit 0, branch1, branch2) in
+  let cond_applied = Pcf.App (cond_fn, Pcf.Lit 10) in
+  run_test
+    ~name:"Cond HO: (ifz 0 then (+1) else (+2)) 10 = 11"
+    ~manual_repr:"(ifz 0 then (λx.x+1) else (λx.x+2)) 10"
+    cond_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 15: S combinator style - flip and apply
+     (λf. λg. λx. f x (g x)) (λa. λb. a+b) (λc. c+c) 3
+     S f g x = f x (g x)
+     Here: f = λa.λb.a+b, g = λc.c+c, x = 3
+     = (λa.λb.a+b) 3 ((λc.c+c) 3)
+     = (λb.3+b) 6
+     = 3 + 6 = 9
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let g = Ident.mk "g" in
+  let x = Ident.mk "x" in
+  let a = Ident.mk "a" in
+  let b = Ident.mk "b" in
+  let c = Ident.mk "c" in
+  let int_to_int_to_int = Pcf.Arrow (Pcf.Int, Pcf.Arrow (Pcf.Int, Pcf.Int)) in
+  let s_comb = Pcf.Lam (f, int_to_int_to_int,
+    Pcf.Lam (g, int_to_int,
+      Pcf.Lam (x, Pcf.Int,
+        Pcf.App (Pcf.App (Pcf.Var f, Pcf.Var x), Pcf.App (Pcf.Var g, Pcf.Var x))))) in
+  let add_fn = Pcf.Lam (a, Pcf.Int, Pcf.Lam (b, Pcf.Int, Pcf.Add (Pcf.Var a, Pcf.Var b))) in
+  let double_fn = Pcf.Lam (c, Pcf.Int, Pcf.Add (Pcf.Var c, Pcf.Var c)) in
+  let s_applied = Pcf.App (Pcf.App (Pcf.App (s_comb, add_fn), double_fn), Pcf.Lit 3) in
+  run_test
+    ~name:"S combinator: S add double 3 = 9"
+    ~manual_repr:"(λf. λg. λx. f x (g x)) (λa.λb.a+b) (λc.c+c) 3"
+    s_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 16: K combinator (flip) with functions
+     (λx. λy. x) (λa. a+1) (λb. b+2) applied to 5
+     K returns its first argument, ignoring the second
+     = (λa. a+1) 5 = 6
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let y = Ident.mk "y" in
+  let a = Ident.mk "a" in
+  let b = Ident.mk "b" in
+  let k_comb = Pcf.Lam (x, int_to_int,
+    Pcf.Lam (y, int_to_int, Pcf.Var x)) in
+  let fn1 = Pcf.Lam (a, Pcf.Int, Pcf.Add (Pcf.Var a, Pcf.Lit 1)) in
+  let fn2 = Pcf.Lam (b, Pcf.Int, Pcf.Add (Pcf.Var b, Pcf.Lit 2)) in
+  let k_applied = Pcf.App (Pcf.App (Pcf.App (k_comb, fn1), fn2), Pcf.Lit 5) in
+  run_test
+    ~name:"K combinator: K (+1) (+2) 5 = 6"
+    ~manual_repr:"(λx. λy. x) (λa.a+1) (λb.b+2) 5"
+    k_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 17: Deeply nested application - 4 levels of functions
+     (λf. λg. λh. λx. f (g (h x))) (+1) (+2) (+3) 0
+     = (+1) ((+2) ((+3) 0))
+     = (+1) ((+2) 3)
+     = (+1) 5
+     = 6
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let g = Ident.mk "g" in
+  let h = Ident.mk "h" in
+  let x = Ident.mk "x" in
+  let n1 = Ident.mk "n1" in
+  let n2 = Ident.mk "n2" in
+  let n3 = Ident.mk "n3" in
+  let compose3 = Pcf.Lam (f, int_to_int,
+    Pcf.Lam (g, int_to_int,
+      Pcf.Lam (h, int_to_int,
+        Pcf.Lam (x, Pcf.Int,
+          Pcf.App (Pcf.Var f,
+            Pcf.App (Pcf.Var g,
+              Pcf.App (Pcf.Var h, Pcf.Var x))))))) in
+  let add1 = Pcf.Lam (n1, Pcf.Int, Pcf.Add (Pcf.Var n1, Pcf.Lit 1)) in
+  let add2 = Pcf.Lam (n2, Pcf.Int, Pcf.Add (Pcf.Var n2, Pcf.Lit 2)) in
+  let add3 = Pcf.Lam (n3, Pcf.Int, Pcf.Add (Pcf.Var n3, Pcf.Lit 3)) in
+  let compose3_applied = Pcf.App (Pcf.App (Pcf.App (Pcf.App (compose3, add1), add2), add3), Pcf.Lit 0) in
+  run_test
+    ~name:"Compose3: (λf.λg.λh.λx. f(g(h x))) (+1)(+2)(+3) 0 = 6"
+    ~manual_repr:"(λf.λg.λh.λx. f(g(h x))) (+1) (+2) (+3) 0"
+    compose3_applied;
+
   (* Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Results: %d/%d tests passed\n" !pass_count !test_count;
