@@ -84,7 +84,8 @@ let run_test ~name ~manual_repr (term: Pcf.term) =
           print_endline "Machine Evaluation:";
           (try
             let trace = false in  (* Set to true to trace specific test *)
-            let (final_cmd, final_env) = Cut.Machine.eval ~trace closed in
+            let ((final_cmd, final_env), step_count) = Cut.Machine.eval ~trace closed in
+            Printf.printf "  Steps: %d\n" step_count;
             Printf.printf "  Final: %s\n" (Cut.pp_command final_cmd);
             Printf.printf "  Env: %s\n" (Cut.Machine.pp_env final_env);
             (* Check if we got a result *)
@@ -410,6 +411,59 @@ let () =
     ~name:"Compose3: (λf.λg.λh.λx. f(g(h x))) (+1)(+2)(+3) 0 = 6"
     ~manual_repr:"(λf.λg.λh.λx. f(g(h x))) (+1) (+2) (+3) 0"
     compose3_applied;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 18: Let binding with literal
+     let x = 5 in x + 1 = 6
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let let_lit = Pcf.Let (x, Pcf.Lit 5, Pcf.Add (Pcf.Var x, Pcf.Lit 1)) in
+  run_test
+    ~name:"Let literal: let x = 5 in x + 1 = 6"
+    ~manual_repr:"let x = 5 in x + 1"
+    let_lit;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 19: Let binding with function
+     let f = (λy. y + 2) in f 10 = 12
+     ══════════════════════════════════════════════════════════════════ *)
+  let f = Ident.mk "f" in
+  let y = Ident.mk "y" in
+  let add2 = Pcf.Lam (y, Pcf.Int, Pcf.Add (Pcf.Var y, Pcf.Lit 2)) in
+  let let_fn = Pcf.Let (f, add2, Pcf.App (Pcf.Var f, Pcf.Lit 10)) in
+  run_test
+    ~name:"Let function: let f = (λy. y+2) in f 10 = 12"
+    ~manual_repr:"let f = (λy. y+2) in f 10"
+    let_fn;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 20: Nested let bindings
+     let x = 3 in let y = 4 in x + y = 7
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let y = Ident.mk "y" in
+  let nested_let = Pcf.Let (x, Pcf.Lit 3, 
+    Pcf.Let (y, Pcf.Lit 4, 
+      Pcf.Add (Pcf.Var x, Pcf.Var y))) in
+  run_test
+    ~name:"Nested let: let x = 3 in let y = 4 in x + y = 7"
+    ~manual_repr:"let x = 3 in let y = 4 in x + y"
+    nested_let;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 21: Let with closure capture
+     let a = 9 in let f = λx. x + a in f 1 = 10
+     ══════════════════════════════════════════════════════════════════ *)
+  let a = Ident.mk "a" in
+  let f = Ident.mk "f" in
+  let x = Ident.mk "x" in
+  let nested_unused = Pcf.Let (a, Pcf.Lit 9,
+    Pcf.Let (f, Pcf.Lam (x, Pcf.Int, Pcf.Add (Pcf.Var x, Pcf.Var a)),
+      Pcf.App (Pcf.Var f, Pcf.Lit 1))) in
+  run_test
+    ~name:"Nested let with unused: let a=9 in let f=λx.x+a in f 1 = 10"
+    ~manual_repr:"let a = 9 in let f = λx. x+a in f 1"
+    nested_unused;
 
   (* Summary *)
   print_endline "════════════════════════════════════════════════════════════════";

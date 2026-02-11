@@ -19,7 +19,7 @@ def foo(k : cns Cont) =
           extern add(a, x) {
             (b: ext Int) => {
               substitute [k → k, b → b];
-              invoke k ret           // ← no (b)
+              invoke k ret
             }
           }
         }
@@ -30,7 +30,7 @@ def foo(k : cns Cont) =
       extern lit_1() {
         (y: ext Int) => {
           substitute [f → f, k → k, y → y];
-          invoke f app              // ← no (k, y), and 'app' not 'apply'
+          invoke f app
         }
       }
     }

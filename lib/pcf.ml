@@ -10,6 +10,7 @@ module Pcf = struct
       Var of var
     | Lam of var * typ * term
     | App of term * term
+    | Let of var * term * term
     | Lit of int
     | Add of term * term
     | Ifz of term * term * term
@@ -35,6 +36,8 @@ module Pcf = struct
           | Lam _ -> "(" ^ pp_term t1 ^ ")"
           | _ -> pp_term t1
         in t1_str ^ " " ^ pp_term t2
+    | Let (x, t1, t2) ->
+        "let " ^ Ident.name x ^ " = " ^ pp_term t1 ^ " in " ^ pp_term t2
     | Lit n -> string_of_int n
     | Add (t1, t2) -> "(" ^ pp_term t1 ^ " + " ^ pp_term t2 ^ ")"
     | Ifz (t1, t2, t3) ->
@@ -55,6 +58,10 @@ module Pcf = struct
           if arg_ty = t2_ty then ret_ty
           else failwith "Type error: argument type mismatch"
         | _ -> failwith "Type error: expected a function")
+    | Let (x, t1, t2) ->
+        let t1_ty = infer_typ ctx t1 in
+        let ctx' = Ident.add x t1_ty ctx in
+        infer_typ ctx' t2
     | Lit _ -> Int
     | Add (t1, t2) ->
         let t1_ty = infer_typ ctx t1 in
@@ -78,7 +85,7 @@ module Seq = struct
   and xtor =
       Apply of typ * typ (** Xtor of Fun(A, B) **)
     | Return of typ (** Xtor of Lower(A) - shifts to consumer **)
-    | Thunk of typ (** Xtor of Raise(A) - shifts to producer **)
+    | Pack of typ (** Xtor of Raise(A) - shifts to producer **)
 
   (** Chirality: Lhs = producer, Rhs = consumer **)
   type chiral_typ = Lhs of typ | Rhs of typ
@@ -95,19 +102,19 @@ module Seq = struct
     (** Constructors build data (Lhs/producer) **)
     | CtorApply of typ * typ * term * term
     | CtorReturn of typ * term
-    | CtorThunk of typ * term
+    | CtorPack of typ * term
     (** Destructors build codata (Rhs/consumer) **)
     | DtorApply of typ * typ * term * term
     | DtorReturn of typ * term
-    | DtorThunk of typ * term
+    | DtorPack of typ * term
     (** Match consumes data (Rhs/consumer) **)
     | MatchApply of typ * typ * var * var * command
     | MatchReturn of typ * var * command
-    | MatchThunk of typ * var * command
+    | MatchPack of typ * var * command
     (** Comatch produces codata (Lhs/producer) **)
     | ComatchApply of typ * typ * var * var * command
     | ComatchReturn of typ * var * command
-    | ComatchThunk of typ * var * command
+    | ComatchPack of typ * var * command
     (** Mu binds a continuation **)
     | MuLhs of typ * var * command  (** μL binds Rhs var, produces Lhs **)
     | MuRhs of typ * var * command  (** μR binds Lhs var, produces Rhs **)
@@ -121,14 +128,14 @@ module Seq = struct
         CtorApply (a, b, rename (x, y) arg, rename (x, y) cont)
     | CtorReturn (a, arg) ->
         CtorReturn (a, rename (x, y) arg)
-    | CtorThunk (a, arg) ->
-        CtorThunk (a, rename (x, y) arg)
+    | CtorPack (a, arg) ->
+        CtorPack (a, rename (x, y) arg)
     | DtorApply (a, b, arg, cont) ->
         DtorApply (a, b, rename (x, y) arg, rename (x, y) cont)
     | DtorReturn (a, arg) ->
         DtorReturn (a, rename (x, y) arg)
-    | DtorThunk (a, arg) ->
-        DtorThunk (a, rename (x, y) arg)
+    | DtorPack (a, arg) ->
+        DtorPack (a, rename (x, y) arg)
     | MatchApply (a, b, z, k, cmd) when Ident.equal z x || Ident.equal k x ->
         MatchApply (a, b, z, k, cmd)  (* Shadowing: do not rename inside *)
     | MatchApply (a, b, z, k, cmd) ->
@@ -137,10 +144,10 @@ module Seq = struct
         MatchReturn (a, z, cmd)  (* Shadowing *)
     | MatchReturn (a, z, cmd) ->
         MatchReturn (a, z, rename_cmd (x, y) cmd)
-    | MatchThunk (a, z, cmd) when Ident.equal z x ->
-        MatchThunk (a, z, cmd)  (* Shadowing *)
-    | MatchThunk (a, z, cmd) ->
-        MatchThunk (a, z, rename_cmd (x, y) cmd)
+    | MatchPack (a, z, cmd) when Ident.equal z x ->
+        MatchPack (a, z, cmd)  (* Shadowing *)
+    | MatchPack (a, z, cmd) ->
+        MatchPack (a, z, rename_cmd (x, y) cmd)
     | ComatchApply (a, b, z, k, cmd) when Ident.equal z x || Ident.equal k x ->
         ComatchApply (a, b, z, k, cmd)  (* Shadowing *)
     | ComatchApply (a, b, z, k, cmd) ->
@@ -149,10 +156,10 @@ module Seq = struct
         ComatchReturn (a, z, cmd)  (* Shadowing *)
     | ComatchReturn (a, z, cmd) ->
         ComatchReturn (a, z, rename_cmd (x, y) cmd)
-    | ComatchThunk (a, z, cmd) when Ident.equal z x ->
-        ComatchThunk (a, z, cmd)  (* Shadowing *)
-    | ComatchThunk (a, z, cmd) ->
-        ComatchThunk (a, z, rename_cmd (x, y) cmd)
+    | ComatchPack (a, z, cmd) when Ident.equal z x ->
+        ComatchPack (a, z, cmd)  (* Shadowing *)
+    | ComatchPack (a, z, cmd) ->
+        ComatchPack (a, z, rename_cmd (x, y) cmd)
     | MuLhs (a, z, cmd) when Ident.equal z x ->
         MuLhs (a, z, cmd)  (* Shadowing *)
     | MuLhs (a, z, cmd) ->
@@ -188,23 +195,23 @@ module Seq = struct
           ^ pp_term arg ^ ", " ^ pp_term cont ^ ")"
     | CtorReturn (a, arg) ->
         "ctor_return[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
-    | CtorThunk (a, arg) ->
-        "ctor_thunk[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
+    | CtorPack (a, arg) ->
+        "ctor_pack[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
     | DtorApply (a, b, arg, cont) ->
         "dtor_apply[" ^ pp_typ a ^ ", " ^ pp_typ b ^ "](" 
           ^ pp_term arg ^ ", " ^ pp_term cont ^ ")"
     | DtorReturn (a, arg) ->
         "dtor_return[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
-    | DtorThunk (a, arg) ->
-        "dtor_thunk[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
+    | DtorPack (a, arg) ->
+        "dtor_pack[" ^ pp_typ a ^ "](" ^ pp_term arg ^ ")"
     | MatchApply (a, b, x, k, cmd) ->
         "case { ctor_apply[" ^ pp_typ a ^ ", " ^ pp_typ b ^ "](" 
           ^ Ident.name x ^ ", " ^ Ident.name k ^ ") ⇒ " ^ pp_command cmd ^ "}"
     | MatchReturn (a, x, cmd) ->
         "case { ctor_return[" ^ pp_typ a ^ "](" 
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
-    | MatchThunk (a, x, cmd) ->
-        "case { ctor_thunk[" ^ pp_typ a ^ "](" 
+    | MatchPack (a, x, cmd) ->
+        "case { ctor_pack[" ^ pp_typ a ^ "](" 
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
     | ComatchApply (a, b, x, k, cmd) ->
         "cocase { dtor_apply[" ^ pp_typ a ^ ", " ^ pp_typ b ^ "](" 
@@ -212,8 +219,8 @@ module Seq = struct
     | ComatchReturn (a, x, cmd) ->
         "cocase { dtor_return[" ^ pp_typ a ^ "](" 
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
-    | ComatchThunk (a, x, cmd) ->
-        "cocase { dtor_thunk[" ^ pp_typ a ^ "](" 
+    | ComatchPack (a, x, cmd) ->
+        "cocase { dtor_pack[" ^ pp_typ a ^ "](" 
           ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
     | MuLhs (_, k, cmd) -> "μL " ^ Ident.name k ^ ". " ^ pp_command cmd
     | MuRhs (_, k, cmd) -> "μR " ^ Ident.name k ^ ". " ^ pp_command cmd
@@ -223,17 +230,17 @@ module Seq = struct
       Int -> "Int"
     | Sig (Apply (a, b)) -> "Fun(" ^ pp_typ a ^ ", " ^ pp_typ b ^ ")"
     | Sig (Return a) -> "↓" ^ pp_typ a
-    | Sig (Thunk a) -> "↑" ^ pp_typ a
+    | Sig (Pack a) -> "↑" ^ pp_typ a
 
   (* Determine the "natural chirality" of a type:
     - Int is positive (data-like), so values are Lhs
     - Sig(Return A) is positive - it's data packaging a value/computation
-    - Sig(Thunk A) is positive - it's data packaging a suspended computation
+    - Sig(Pack A) is positive - it's data packaging a suspended computation
     - Sig(Apply ...) is negative - functions are codata-like (demand-driven) *)
   let is_positive_typ = function
     | Int -> true
     | Sig (Return _) -> true   (* Lower makes something data-like *)
-    | Sig (Thunk _) -> true    (* Raise makes something data-like (thunk is a value) *)
+    | Sig (Pack _) -> true    (* Raise makes something data-like (pack is a value) *)
     | Sig (Apply _) -> false   (* Functions are codata-like *)
   
   (* The chirality of a term of type A:
@@ -296,13 +303,13 @@ module Seq = struct
         if arg_ty = expected then
           Lhs (Sig (Return a))
         else failwith "Type error in CtorReturn"
-    | CtorThunk (a, arg) ->
+    | CtorPack (a, arg) ->
         let arg_ty = infer_typ ctx arg in
-        (* Thunk suspends a computation, so arg should match natural chirality of a *)
+        (* Pack suspends a computation, so arg should match natural chirality of a *)
         let expected = natural_chirality a in
         if arg_ty = expected then
-          Lhs (Sig (Thunk a))
-        else failwith "Type error in CtorThunk"
+          Lhs (Sig (Pack a))
+        else failwith "Type error in CtorPack"
     | DtorApply (a, b, arg, cont) ->
         let arg_ty = infer_typ ctx arg in
         let cont_ty = infer_typ ctx cont in
@@ -316,12 +323,12 @@ module Seq = struct
         if arg_ty = expected then
           Lhs (Sig (Return a))  (* Producer - placed on left against MatchReturn *)
         else failwith "Type error in DtorReturn"
-    | DtorThunk (a, arg) ->
+    | DtorPack (a, arg) ->
         let arg_ty = infer_typ ctx arg in
         let expected = natural_chirality a in
         if arg_ty = expected then
-          Lhs (Sig (Thunk a))  (* Producer - placed on left against MatchThunk *)
-        else failwith "Type error in DtorThunk"
+          Lhs (Sig (Pack a))  (* Producer - placed on left against MatchPack *)
+        else failwith "Type error in DtorPack"
     | MatchApply (a, b, x, k, cmd) ->
         (* x receives the argument (always Lhs - values are passed)
           k receives the continuation (always Rhs - continuations consume) *)
@@ -334,10 +341,10 @@ module Seq = struct
         let ctx' = Ident.add x (natural_chirality a) ctx in
         infer_command_typ ctx' cmd |> ignore;
         Rhs (Sig (Return a))
-    | MatchThunk (a, x, cmd) ->
+    | MatchPack (a, x, cmd) ->
         let ctx' = Ident.add x (natural_chirality a) ctx in
         infer_command_typ ctx' cmd |> ignore;
-        Rhs (Sig (Thunk a))
+        Rhs (Sig (Pack a))
     | ComatchApply (a, b, x, k, cmd) ->
         (* x receives the argument (always Lhs - values are passed)
           k receives the continuation (always Rhs - continuations consume) *)
@@ -350,10 +357,10 @@ module Seq = struct
         let ctx' = Ident.add x (natural_chirality a) ctx in
         infer_command_typ ctx' cmd |> ignore;
         Rhs (Sig (Return a))  (* Consumer - placed on right against CtorReturn *)
-    | ComatchThunk (a, x, cmd) ->
+    | ComatchPack (a, x, cmd) ->
         let ctx' = Ident.add x (natural_chirality a) ctx in
         infer_command_typ ctx' cmd |> ignore;
-        Rhs (Sig (Thunk a))  (* Consumer - placed on right against CtorThunk *)
+        Rhs (Sig (Pack a))  (* Consumer - placed on right against CtorPack *)
     | MuLhs (ty, x, cmd) ->
         let ctx' = Ident.add x (Rhs ty) ctx in
         infer_command_typ ctx' cmd |> ignore;
@@ -371,16 +378,16 @@ module Encode = struct
   
   (* Lower shifts a type to consumer position (CPS return) *)
   let lower ty = Sig (Return ty)
-  (* Raise shifts a type to producer position (thunk/suspend) *)
-  let raise ty = Sig (Thunk ty)
+  (* Raise shifts a type to producer position (pack/suspend) *)
+  let raise ty = Sig (Pack ty)
 
   (* Determine if a PCF type is "positive" (data-like) or "negative" (codata-like) *)
   let is_positive = function
-    | Pcf.Int -> true
+      Pcf.Int -> true
     | Pcf.Arrow _ -> false
 
   let rec map_typ = function
-    | Pcf.Int -> Int
+      Pcf.Int -> Int
     | Pcf.Arrow (a, b) ->
         let a' = map_typ a in
         let b' = map_typ b in
@@ -394,8 +401,7 @@ module Encode = struct
         | true -> Sig (Apply (a', lower b'))
         | false -> Sig (Apply (raise a', lower b'))
     
-  let rec map_term (ctx: Pcf.typ Ident.tbl) =
-    function
+  let rec map_term (ctx: Pcf.typ Ident.tbl) = function
       Pcf.Var x -> Variable x
     | Pcf.Lam (x, a, body) ->
         (* λx:A. body  where body: B
@@ -408,18 +414,18 @@ module Encode = struct
         let a' = map_typ a in
         let b' = map_typ b in
         (match is_positive a with
-        | true ->
+          true ->
             (* case { ctor_apply[a', lower b'](x, k) ⇒ ⟨ctor_return[b'](body') | k⟩ } *)
             MatchApply (a', lower b', x, k,
               Cut (lower b', CtorReturn (b', body'), Variable k))
         | false ->
             (* case { ctor_apply[raise a', lower b'](x', k) ⇒
-                 ⟨x' | case { ctor_thunk[a'](x) ⇒ ⟨ctor_return[b'](body') | k⟩ }⟩ } *)
+                 ⟨x' | case { ctor_pack[a'](x) ⇒ ⟨ctor_return[b'](body') | k⟩ }⟩ } *)
             let x' = Ident.fresh () in
             MatchApply (raise a', lower b', x', k,
               Cut (raise a',
                 Variable x',
-                MatchThunk (a', x, Cut (lower b', CtorReturn (b', body'), Variable k)))))
+                MatchPack (a', x, Cut (lower b', CtorReturn (b', body'), Variable k)))))
     | Pcf.App (t1, t2) ->
         (* t1 t2  where t1 : A → B, t2 : A
           A function call is: ⟨ctor_apply[A', Lower(B')](t2', k) | t1'⟩
@@ -451,7 +457,7 @@ module Encode = struct
             Cut (b', Variable k, Variable x)
         in
         (match is_positive a with
-        | true ->
+          true ->
             (* μ k. ⟨ctor_apply[a', lower b'](t2', cocase{dtor_return[b'](x) ⇒ ⟨x | k⟩}) | t1'⟩ *)
             let x = Ident.fresh () in
             make_mu b' k
@@ -460,15 +466,20 @@ module Encode = struct
                   ComatchReturn (b', x, make_inner_cut b' x k)),
                 t1'))
         | false ->
-            (* μ k. ⟨ctor_apply[raise a', lower b'](ctor_thunk[a'](t2'), 
+            (* μ k. ⟨ctor_apply[raise a', lower b'](ctor_pack[a'](t2'), 
                       cocase{dtor_return[b'](x) ⇒ ⟨x | k⟩}) | t1'⟩ *)
             let x = Ident.fresh () in
             make_mu b' k
               (Cut (Sig (Apply (raise a', lower b')),
                 CtorApply (raise a', lower b',
-                  CtorThunk (a', t2'),
+                  CtorPack (a', t2'),
                   ComatchReturn (b', x, make_inner_cut b' x k)),
                 t1')))
+    | Pcf.Let (x, t1, t2) ->
+        (* let x = t1 in t2  is equivalent to  (λx:A. t2) t1
+           where A is the type of t1 *)
+        let a = Pcf.infer_typ ctx t1 in
+        map_term ctx (Pcf.App (Pcf.Lam (x, a, t2), t1))
     | Pcf.Lit n -> Lit n
     | Pcf.Add (t1, t2) ->
         (* t1 + t2  where t1, t2 : Int
@@ -531,23 +542,24 @@ module Cut = struct
     | Add of var * var * var * command
       (* ifz(v) {() ⇒ sThen; () ⇒ sElse} *)
     | Ifz of var * command * command
-    | End
       (* ret ty v - return the value of v at type ty (terminal) *)
     | Ret of Seq.typ * var
+      (* end *)
+    | End
   
   and branch = var list * command
 
   let pp_xtor = function
-    | Seq.Apply (a, b) -> "apply[" ^ Seq.pp_typ a ^ ", " ^ Seq.pp_typ b ^ "]"
+      Seq.Apply (a, b) -> "apply[" ^ Seq.pp_typ a ^ ", " ^ Seq.pp_typ b ^ "]"
     | Seq.Return a -> "return[" ^ Seq.pp_typ a ^ "]"
-    | Seq.Thunk a -> "thunk[" ^ Seq.pp_typ a ^ "]"
+    | Seq.Pack a -> "pack[" ^ Seq.pp_typ a ^ "]"
 
   let pp_vars vs = String.concat ", " (List.map Ident.name vs)
 
   let indent n = String.make (n * 2) ' '
 
   let rec pp_cmd n = function
-    | Let (x, xtor, args, body) ->
+      Let (x, xtor, args, body) ->
         indent n ^ "let " ^ Ident.name x ^ " = " ^ pp_xtor xtor ^ "(" ^ pp_vars args ^ ");\n" ^
         pp_cmd n body
     | Switch (sig_, x, (params, body)) ->
@@ -584,9 +596,10 @@ module Cut = struct
 
   (** Abstract machine semantics *)
   module Machine = struct
+    
     (** Values in the machine *)
     type value =
-      | Producer of xtor * env        (** {m; E} - a constructor with its environment *)
+        Producer of xtor * env        (** {m; E} - a constructor with its environment *)
       | Consumer of env * branch      (** {E; b} - a branch with its environment *)
       | IntVal of int                 (** Literals *)
 
@@ -600,7 +613,7 @@ module Cut = struct
 
     let lookup (e: env) (x: var) : value =
       match Ident.find_opt x e with
-      | Some v -> v
+        Some v -> v
       | None -> failwith ("unbound variable: " ^ Ident.name x)
 
     let lookup_opt (e: env) (x: var) : value option =
@@ -608,17 +621,17 @@ module Cut = struct
 
     let lookup_int (e: env) (x: var) : int =
       match lookup e x with
-      | IntVal n -> n
+        IntVal n -> n
       | _ -> failwith ("expected int value for: " ^ Ident.name x)
 
     let lookup_producer (e: env) (x: var) : xtor * env =
       match lookup e x with
-      | Producer (m, e0) -> (m, e0)
+        Producer (m, e0) -> (m, e0)
       | _ -> failwith ("expected producer value for: " ^ Ident.name x)
 
     let lookup_consumer (e: env) (x: var) : env * branch =
       match lookup e x with
-      | Consumer (e0, b) -> (e0, b)
+        Consumer (e0, b) -> (e0, b)
       | _ -> failwith ("expected consumer value for: " ^ Ident.name x)
 
     let extend (e: env) (x: var) (v: value) : env =
@@ -630,7 +643,7 @@ module Cut = struct
 
     (** Pretty-print a value *)
     let pp_value = function
-      | Producer (m, _) -> "{" ^ pp_xtor m ^ "; ...}"
+        Producer (m, _) -> "{" ^ pp_xtor m ^ "; ...}"
       | Consumer (_, (params, _)) -> "{...; (" ^ pp_vars params ^ ") ⇒ ...}"
       | IntVal n -> string_of_int n
 
@@ -652,7 +665,7 @@ module Cut = struct
       match cmd with
       (* (let) ⟨let v = m(Γ); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|Γ}⟩ 
          Creates a producer: the xtor m with captured environment for args *)
-      | Let (v, m, args, body) ->
+        Let (v, m, args, body) ->
           let e0 = sub_env e args in
           let e' = extend e v (Producer (m, e0)) in
           Some (body, e')
@@ -755,7 +768,7 @@ module Cut = struct
     (** Check if machine terminated with a result *)
     let get_result ((cmd, e): config) : value option =
       match cmd with
-      | Ret (_, v) -> Some (lookup e v)
+        Ret (_, v) -> Some (lookup e v)
       | Axiom (v1, v2) when lookup_opt e v2 = None ->
           Some (lookup e v1)
       | _ -> None
@@ -763,13 +776,13 @@ module Cut = struct
     (** Check if machine is stuck on an open term (axiom with unbound continuation) *)
     let is_open_result ((cmd, e): config) : (var * value) option =
       match cmd with
-      | Axiom (v1, v2) when lookup_opt e v2 = None ->
+        Axiom (v1, v2) when lookup_opt e v2 = None ->
           Some (v2, lookup e v1)
       | _ -> None
 
     (** Short name for a command (for tracing) *)
     let cmd_name = function
-      | Let (v, _, _, _) -> "let " ^ Ident.name v
+        Let (v, _, _, _) -> "let " ^ Ident.name v
       | New (_, v, _, _) -> "new " ^ Ident.name v
       | Switch (_, v, _) -> "switch " ^ Ident.name v
       | Invoke (v, xtor, _) -> Ident.name v ^ "." ^ pp_xtor xtor
@@ -780,23 +793,24 @@ module Cut = struct
       | End -> "end"
       | Ret (_, v) -> "ret " ^ Ident.name v
 
-    (** Run the machine until it stops *)
-    let rec run ?(trace=false) (cfg: config) : config =
+    (** Run the machine until it stops. Returns (final_config, step_count) *)
+    let rec run ?(trace=false) ?(steps=0) (cfg: config) : config * int =
       let (cmd, e) = cfg in
       if trace then 
-        Printf.printf "    %s | env has %d bindings\n" (cmd_name cmd) (List.length (Ident.to_list e));
+        Printf.printf "    [%d] %s | env has %d bindings\n"
+          steps (cmd_name cmd) (List.length (Ident.to_list e));
       match step cfg with
-      | None -> cfg
-      | Some cfg' -> run ~trace cfg'
+        None -> (cfg, steps)
+      | Some cfg' -> run ~trace ~steps:(steps + 1) cfg'
 
     (** Run with tracing *)
     let rec run_trace (cfg: config) : config list =
       cfg :: (match step cfg with
-              | None -> []
+                None -> []
               | Some cfg' -> run_trace cfg')
 
-    (** Initialize and run a command *)
-    let eval ?(trace=false) (cmd: command) : config =
+    (** Initialize and run a command. Returns (final_config, step_count) *)
+    let eval ?(trace=false) (cmd: command) : config * int =
       run ~trace (cmd, empty_env)
 
     (** Initialize and run with trace *)
@@ -811,34 +825,34 @@ module Focus = struct
 
   (** Get the xtor from a Sig type *)
   let xtor_of_typ : typ -> xtor = function
-    | Int -> failwith "Int has no xtor"
+      Int -> failwith "Int has no xtor"
     | Sig x -> x
 
   (** Generate fresh parameter names for an xtor *)
   let fresh_params (x: xtor) : var list =
     match x with
-    | Apply (_, _) -> [Ident.fresh (); Ident.fresh ()]
+      Apply (_, _) -> [Ident.fresh (); Ident.fresh ()]
     | Return _ -> [Ident.fresh ()]
-    | Thunk _ -> [Ident.fresh ()]
+    | Pack _ -> [Ident.fresh ()]
 
   (** Extract xtor and arguments from a constructor/destructor term *)
   let ctor_info : term -> xtor * term list = function
-    | CtorApply (a, b, arg, cont) -> (Apply (a, b), [arg; cont])
+      CtorApply (a, b, arg, cont) -> (Apply (a, b), [arg; cont])
     | CtorReturn (a, arg) -> (Return a, [arg])
-    | CtorThunk (a, arg) -> (Thunk a, [arg])
+    | CtorPack (a, arg) -> (Pack a, [arg])
     | DtorApply (a, b, arg, cont) -> (Apply (a, b), [arg; cont])
     | DtorReturn (a, arg) -> (Return a, [arg])
-    | DtorThunk (a, arg) -> (Thunk a, [arg])
+    | DtorPack (a, arg) -> (Pack a, [arg])
     | _ -> failwith "Not a constructor/destructor"
 
   (** Extract xtor, params, and body from a match/comatch term *)
   let match_info : term -> xtor * var list * command = function
-    | MatchApply (a, b, x, k, cmd) -> (Apply (a, b), [x; k], cmd)
+      MatchApply (a, b, x, k, cmd) -> (Apply (a, b), [x; k], cmd)
     | MatchReturn (a, x, cmd) -> (Return a, [x], cmd)
-    | MatchThunk (a, x, cmd) -> (Thunk a, [x], cmd)
+    | MatchPack (a, x, cmd) -> (Pack a, [x], cmd)
     | ComatchApply (a, b, x, k, cmd) -> (Apply (a, b), [x; k], cmd)
     | ComatchReturn (a, x, cmd) -> (Return a, [x], cmd)
-    | ComatchThunk (a, x, cmd) -> (Thunk a, [x], cmd)
+    | ComatchPack (a, x, cmd) -> (Pack a, [x], cmd)
     | _ -> failwith "Not a match/comatch"
 
   (** Substitute variables: replace params with args in cmd *)
@@ -848,7 +862,7 @@ module Focus = struct
   (** Bind multiple terms to variables *)
   let rec bind_terms (terms: term list) (k: var list -> Cut.command) : Cut.command =
     match terms with
-    | [] -> k []
+      [] -> k []
     | t :: rest ->
         bind_term t (fun v ->
           bind_terms rest (fun vs -> k (v :: vs)))
@@ -856,7 +870,7 @@ module Focus = struct
   (** Bind a single term to a variable, calling continuation with the variable *)
   and bind_term (t: term) (k: var -> Cut.command) : Cut.command =
     match t with
-    | Variable x -> k x
+      Variable x -> k x
     | Lit n ->
         let v = Ident.fresh () in
         Cut.Lit (n, v, k v)
@@ -869,10 +883,10 @@ module Focus = struct
         bind_term arg (fun v ->
           let x = Ident.fresh () in
           Cut.Let (x, Return a, [v], k x))
-    | CtorThunk (a, arg) ->
+    | CtorPack (a, arg) ->
         bind_term arg (fun v ->
           let x = Ident.fresh () in
-          Cut.Let (x, Thunk a, [v], k x))
+          Cut.Let (x, Pack a, [v], k x))
     (* Destructors also become Let bindings (same as Ctor in collapsed view) *)
     | DtorApply (a, b, arg, cont) ->
         bind_terms [arg; cont] (fun vs ->
@@ -882,10 +896,10 @@ module Focus = struct
         bind_term arg (fun v ->
           let x = Ident.fresh () in
           Cut.Let (x, Return a, [v], k x))
-    | DtorThunk (a, arg) ->
+    | DtorPack (a, arg) ->
         bind_term arg (fun v ->
           let x = Ident.fresh () in
-          Cut.Let (x, Thunk a, [v], k x))
+          Cut.Let (x, Pack a, [v], k x))
     (* Matches become New bindings *)
     | MatchApply (a, b, x, kv, cmd) ->
         let bound = Ident.fresh () in
@@ -893,9 +907,9 @@ module Focus = struct
     | MatchReturn (a, x, cmd) ->
         let bound = Ident.fresh () in
         Cut.New (Return a, bound, ([x], transform_command cmd), k bound)
-    | MatchThunk (a, x, cmd) ->
+    | MatchPack (a, x, cmd) ->
         let bound = Ident.fresh () in
-        Cut.New (Thunk a, bound, ([x], transform_command cmd), k bound)
+        Cut.New (Pack a, bound, ([x], transform_command cmd), k bound)
     (* Comatches also become New bindings *)
     | ComatchApply (a, b, x, kv, cmd) ->
         let bound = Ident.fresh () in
@@ -903,13 +917,13 @@ module Focus = struct
     | ComatchReturn (a, x, cmd) ->
         let bound = Ident.fresh () in
         Cut.New (Return a, bound, ([x], transform_command cmd), k bound)
-    | ComatchThunk (a, x, cmd) ->
+    | ComatchPack (a, x, cmd) ->
         let bound = Ident.fresh () in
-        Cut.New (Thunk a, bound, ([x], transform_command cmd), k bound)
+        Cut.New (Pack a, bound, ([x], transform_command cmd), k bound)
     (* MuLhs: bind continuation, transform body *)
     | MuLhs (ty, x, cmd) ->
         (match ty with
-        | Int ->
+          Int ->
             (* For Int: the body will produce a value that jumps to x.
                We create a New that captures this pattern. *)
             let bound = Ident.fresh () in
@@ -928,7 +942,7 @@ module Focus = struct
     (* MuRhs: similar but for consumers *)
     | MuRhs (ty, x, cmd) ->
         (match ty with
-        | Int ->
+          Int ->
             let bound = Ident.fresh () in
             bind_mu_int bound (transform_command (rename_cmd (x, bound) cmd)) k
         | Sig xtor ->
@@ -941,37 +955,37 @@ module Focus = struct
   (** Handle MuLhs/MuRhs at Int type - we need to thread the continuation *)
   and bind_mu_int (bound: var) (body: Cut.command) (k: var -> Cut.command) : Cut.command =
     (* The body should end with Jump(v, bound) for some v.
-       We want to replace that with: let result = v in k result
-       For now, just return body - proper handling would need CPS transform *)
-    replace_int_jump bound body k
+      We want to replace that with: let result = v in k result
+      For now, just return body - proper handling would need CPS transform *)
+    replace_int_axiom bound body k
 
-  (** Replace Jump(v, target) with continuation applied to v *)
-  and replace_int_jump (target: var) (cmd: Cut.command) (k: var -> Cut.command) : Cut.command =
+  (** Replace Axiom(v, target) with continuation applied to v *)
+  and replace_int_axiom (target: var) (cmd: Cut.command) (k: var -> Cut.command) : Cut.command =
     match cmd with
-    | Cut.Axiom (v, dest) when Ident.equal dest target ->
+      Cut.Axiom (v, dest) when Ident.equal dest target ->
         k v
     | Cut.Axiom (v, dest) -> Cut.Axiom (v, dest)
     | Cut.Let (x, xtor, args, body) ->
-        Cut.Let (x, xtor, args, replace_int_jump target body k)
+        Cut.Let (x, xtor, args, replace_int_axiom target body k)
     | Cut.Switch (sig_, x, (params, body)) ->
-        Cut.Switch (sig_, x, (params, replace_int_jump target body k))
+        Cut.Switch (sig_, x, (params, replace_int_axiom target body k))
     | Cut.New (sig_, x, (params, branch), body) ->
-        Cut.New (sig_, x, (params, replace_int_jump target branch k),
-                 replace_int_jump target body k)
+        Cut.New (sig_, x, (params, replace_int_axiom target branch k),
+                 replace_int_axiom target body k)
     | Cut.Invoke (x, xtor, args) -> Cut.Invoke (x, xtor, args)
     | Cut.Lit (n, x, body) ->
-        Cut.Lit (n, x, replace_int_jump target body k)
+        Cut.Lit (n, x, replace_int_axiom target body k)
     | Cut.Add (a, b, r, body) ->
-        Cut.Add (a, b, r, replace_int_jump target body k)
+        Cut.Add (a, b, r, replace_int_axiom target body k)
     | Cut.Ifz (x, then_cmd, else_cmd) ->
-        Cut.Ifz (x, replace_int_jump target then_cmd k,
-                    replace_int_jump target else_cmd k)
+        Cut.Ifz (x, replace_int_axiom target then_cmd k,
+                    replace_int_axiom target else_cmd k)
     | Cut.End -> Cut.End
     | Cut.Ret (ty, v) -> Cut.Ret (ty, v)
 
   (** Main transformation: Seq.command -> Cut.command *)
   and transform_command : command -> Cut.command = function
-    | End -> Cut.End
+      End -> Cut.End
     | Add (t1, t2, t3) ->
         bind_term t1 (fun v1 ->
           bind_term t2 (fun v2 ->
@@ -991,13 +1005,13 @@ module Focus = struct
   (** Transform a Cut based on the shapes of lhs and rhs *)
   and transform_cut ty lhs rhs =
     match ty with
-    | Int -> transform_cut_int lhs rhs
+      Int -> transform_cut_int lhs rhs
     | Sig _ -> transform_cut_sig ty lhs rhs
 
   (** Transform cuts at Int type *)
   and transform_cut_int lhs rhs =
     match lhs, rhs with
-    | Variable x, Variable y ->
+      Variable x, Variable y ->
         Cut.Axiom (x, y)
     | Variable x, MuRhs (_, a, cmd) ->
         transform_command (rename_cmd (a, x) cmd)
@@ -1012,7 +1026,7 @@ module Focus = struct
         (* Connect: result of mu_cmd goes to a in rhs_cmd *)
         let transformed_mu = transform_command (rename_cmd (x, a) mu_cmd) in
         let transformed_rhs = transform_command rhs_cmd in
-        replace_int_jump a transformed_mu (fun v ->
+        replace_int_axiom a transformed_mu (fun v ->
           subst_var_cmd a v transformed_rhs)
     | _ -> failwith "ill-typed cut at Int"
 
@@ -1021,7 +1035,7 @@ module Focus = struct
     let sv y = if Ident.equal y x then v else y in
     let sv_list = List.map sv in
     match cmd with
-    | Cut.Let (y, xtor, args, body) ->
+      Cut.Let (y, xtor, args, body) ->
         if Ident.equal y x then Cut.Let (y, xtor, sv_list args, body)
         else Cut.Let (y, xtor, sv_list args, subst_var_cmd x v body)
     | Cut.Switch (sig_, y, (params, body)) ->
@@ -1055,13 +1069,13 @@ module Focus = struct
     let xtor = xtor_of_typ ty in
     match lhs, rhs with
     (* Variable | Variable: eta-expand *)
-    | Variable x, Variable y ->
+      Variable x, Variable y ->
         let params = fresh_params xtor in
         Cut.Switch (xtor, x, (params, Cut.Invoke (y, xtor, params)))
 
     (* Variable | Match/Comatch: Switch *)
-    | Variable x, (MatchApply _ | MatchReturn _ | MatchThunk _ |
-                   ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+    | Variable x, (MatchApply _ | MatchReturn _ | MatchPack _ |
+                   ComatchApply _ | ComatchReturn _ | ComatchPack _ as m) ->
         let (_, params, cmd) = match_info m in
         Cut.Switch (xtor, x, (params, transform_command cmd))
 
@@ -1070,48 +1084,48 @@ module Focus = struct
         transform_command (rename_cmd (a, x) cmd)
 
     (* Ctor/Dtor | Variable: Invoke *)
-    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
-       DtorApply _ | DtorReturn _ | DtorThunk _ as c), Variable y ->
+    | (CtorApply _ | CtorReturn _ | CtorPack _ |
+       DtorApply _ | DtorReturn _ | DtorPack _ as c), Variable y ->
         let (xtor, args) = ctor_info c in
         bind_terms args (fun arg_vars ->
           Cut.Invoke (y, xtor, arg_vars))
 
     (* Ctor/Dtor | Match/Comatch: inline the branch *)
-    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
-       DtorApply _ | DtorReturn _ | DtorThunk _ as c),
-      (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+    | (CtorApply _ | CtorReturn _ | CtorPack _ |
+       DtorApply _ | DtorReturn _ | DtorPack _ as c),
+      (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m) ->
         let (_, args) = ctor_info c in
         let (_, params, cmd) = match_info m in
         bind_terms args (fun arg_vars ->
           transform_command (subst_params params arg_vars cmd))
 
     (* Ctor/Dtor | MuRhs: Let binding *)
-    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
-       DtorApply _ | DtorReturn _ | DtorThunk _ as c), MuRhs (_, a, cmd) ->
+    | (CtorApply _ | CtorReturn _ | CtorPack _ |
+       DtorApply _ | DtorReturn _ | DtorPack _ as c), MuRhs (_, a, cmd) ->
         let (xtor, args) = ctor_info c in
         bind_terms args (fun arg_vars ->
           Cut.Let (a, xtor, arg_vars, transform_command cmd))
 
     (* Match/Comatch | Variable: bind the match and invoke on k *)
-    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m), Variable y ->
+    | (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m), Variable y ->
         bind_term m (fun x ->
           let params = fresh_params xtor in
           Cut.Switch (xtor, x, (params, Cut.Invoke (y, xtor, params))))
 
     (* Match/Comatch | Match/Comatch: eta-expand *)
-    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m1),
-      (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m2) ->
+    | (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m1),
+      (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m2) ->
         bind_term m1 (fun x ->
           let (_, params, cmd) = match_info m2 in
           Cut.Switch (xtor, x, (params, transform_command cmd)))
 
     (* Match/Comatch | MuRhs: bind the match *)
-    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m), MuRhs (_, a, cmd) ->
+    | (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m), MuRhs (_, a, cmd) ->
         bind_term m (fun x ->
           transform_command (rename_cmd (a, x) cmd))
 
@@ -1121,8 +1135,8 @@ module Focus = struct
 
     (* MuLhs | Match/Comatch: New *)
     | MuLhs (_, x, mu_cmd),
-      (MatchApply _ | MatchReturn _ | MatchThunk _ |
-       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+      (MatchApply _ | MatchReturn _ | MatchPack _ |
+       ComatchApply _ | ComatchReturn _ | ComatchPack _ as m) ->
         let (xtor, params, match_cmd) = match_info m in
         Cut.New (xtor, x, (params, transform_command match_cmd), 
                  transform_command mu_cmd)
