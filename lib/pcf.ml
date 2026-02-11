@@ -532,6 +532,8 @@ module Cut = struct
       (* ifz(v) {() ⇒ sThen; () ⇒ sElse} *)
     | Ifz of var * command * command
     | End
+      (* ret v - return the Int value of v (terminal) *)
+    | Ret of var
   
   and branch = var list * command
 
@@ -576,8 +578,231 @@ module Cut = struct
         pp_cmd (n+1) else_cmd ^ "\n" ^
         indent n ^ "}"
     | End -> indent n ^ "end"
+    | Ret v -> indent n ^ "ret " ^ Ident.name v
 
   let pp_command cmd = pp_cmd 0 cmd
+
+  (** Abstract machine semantics *)
+  module Machine = struct
+    (** Values in the machine *)
+    type value =
+      | Producer of xtor * env        (** {m; E} - a constructor with its environment *)
+      | Consumer of env * branch      (** {E; b} - a branch with its environment *)
+      | IntVal of int                 (** Literals *)
+
+    (** Environment maps variables to values *)
+    and env = value Ident.tbl
+
+    (** Configuration: command + environment *)
+    type config = command * env
+
+    let empty_env : env = Ident.emptytbl
+
+    let lookup (e: env) (x: var) : value =
+      match Ident.find_opt x e with
+      | Some v -> v
+      | None -> failwith ("unbound variable: " ^ Ident.name x)
+
+    let lookup_opt (e: env) (x: var) : value option =
+      Ident.find_opt x e
+
+    let lookup_int (e: env) (x: var) : int =
+      match lookup e x with
+      | IntVal n -> n
+      | _ -> failwith ("expected int value for: " ^ Ident.name x)
+
+    let lookup_producer (e: env) (x: var) : xtor * env =
+      match lookup e x with
+      | Producer (m, e0) -> (m, e0)
+      | _ -> failwith ("expected producer value for: " ^ Ident.name x)
+
+    let lookup_consumer (e: env) (x: var) : env * branch =
+      match lookup e x with
+      | Consumer (e0, b) -> (e0, b)
+      | _ -> failwith ("expected consumer value for: " ^ Ident.name x)
+
+    let extend (e: env) (x: var) (v: value) : env =
+      Ident.add x v e
+
+    (** Build sub-environment for a list of variables *)
+    let sub_env (e: env) (vars: var list) : env =
+      List.fold_left (fun acc x -> extend acc x (lookup e x)) empty_env vars
+
+    (** Pretty-print a value *)
+    let pp_value = function
+      | Producer (m, _) -> "{" ^ pp_xtor m ^ "; ...}"
+      | Consumer (_, (params, _)) -> "{...; (" ^ pp_vars params ^ ") ⇒ ...}"
+      | IntVal n -> string_of_int n
+
+    (** Pretty-print environment (just the bindings) *)
+    let pp_env (e: env) : string =
+      let bindings = Ident.to_list e in
+      String.concat ", " (List.map (fun (x, v) -> Ident.name x ^ " → " ^ pp_value v) bindings)
+
+    (** Pretty-print configuration *)
+    let pp_config ((cmd, e): config) : string =
+      "⟨" ^ pp_command cmd ^ " ∥ {" ^ pp_env e ^ "}⟩"
+
+    (** Merge two environments (e2 values override e1 on conflicts) *)
+    let merge_env (e1: env) (e2: env) : env =
+      List.fold_left (fun acc (x, v) -> extend acc x v) e1 (Ident.to_list e2)
+
+    (** Single step of the machine. Returns None if stuck or terminal. *)
+    let step ((cmd, e): config) : config option =
+      match cmd with
+      (* (let) ⟨let v = m(Γ); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|Γ}⟩ 
+         Creates a producer: the xtor m with captured environment for args *)
+      | Let (v, m, args, body) ->
+          let e0 = sub_env e args in
+          let e' = extend e v (Producer (m, e0)) in
+          Some (body, e')
+
+      (* (new) ⟨new v = {(Γ) ⇒ b}; s ∥ E⟩ → ⟨s ∥ E, v → {E; b}⟩
+         Creates a consumer: captures current env, branch will bind params when invoked *)
+      | New (_, v, branch, body) ->
+          let e' = extend e v (Consumer (e, branch)) in
+          Some (body, e')
+
+      (* (switch) ⟨switch v {(Γ) ⇒ b} ∥ E⟩
+         For producers: destructure and bind captured values to branch params
+         For consumers: this is an eta-expansion - bind the consumer itself to params *)
+      | Switch (_, v, (params, branch_body)) ->
+          (match lookup e v with
+           | Producer (_m, e0) ->
+               (* Destructure producer: e0 has captured values, bind to params *)
+               (* Note: e0 was built with fold_left, so to_list is reversed. Fix order. *)
+               let e0_list = List.rev (Ident.to_list e0) in
+               let e' = List.fold_left2 (fun acc p (_, v) -> extend acc p v) e params e0_list in
+               Some (branch_body, e')
+           | Consumer _ as c ->
+               (* For a consumer value, the switch "unpacks" it - but consumers have 
+                  no components to unpack. This represents eta-expansion where we 
+                  just re-package the same consumer. Bind the whole consumer to the first param? 
+                  Actually, for function types, params are [arg, cont] and we're forwarding. *)
+               (* The consumer is the function itself; bind it to the single param (the cont) *)
+               if List.length params = 2 then
+                 (* Apply pattern: params = [arg, cont]; forward consumer to cont *)
+                 let e' = List.fold_left (fun acc p -> extend acc p c) e params in
+                 Some (branch_body, e')
+               else
+                 failwith "switch on consumer with unexpected params"
+           | IntVal n ->
+               (* For int values, bind to the single param *)
+               let e' = extend e (List.hd params) (IntVal n) in
+               Some (branch_body, e'))
+
+      (* (invoke) ⟨v.m(Γ) ∥ E, v → {E0; b}⟩ → ⟨b ∥ E0[params↦E(Γ)]⟩
+         Invokes a consumer: binds args to branch params in captured env *)
+      | Invoke (v, _m, args) ->
+          let (e0, (params, branch_body)) = lookup_consumer e v in
+          (* Bind the current values of args to the branch params *)
+          let arg_vals = List.map (fun a -> lookup e a) args in
+          (* Merge current env with captured env, then add params *)
+          let e_merged = merge_env e0 e in
+          let e' = List.fold_left2 extend e_merged params arg_vals in
+          Some (branch_body, e')
+
+      (* (lit) ⟨let v = n; s ∥ E⟩ → ⟨s ∥ E, v → n⟩ *)
+      | Lit (n, v, body) ->
+          let e' = extend e v (IntVal n) in
+          Some (body, e')
+
+      (* (add) ⟨let v = v1 + v2; s ∥ E⟩ → ⟨s ∥ E, v → E(v1) + E(v2)⟩ *)
+      | Add (v1, v2, v, body) ->
+          (match (lookup_opt e v1, lookup_opt e v2) with
+           | (Some (IntVal n1), Some (IntVal n2)) ->
+               let e' = extend e v (IntVal (n1 + n2)) in
+               Some (body, e')
+           | (Some val1, Some val2) ->
+               failwith (Printf.sprintf "add: expected ints, got %s=%s, %s=%s"
+                 (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
+           | (None, _) -> failwith ("add: unbound " ^ Ident.name v1)
+           | (_, None) -> failwith ("add: unbound " ^ Ident.name v2))
+
+      (* (ifz) ⟨ifz v {s1} {s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩ *)
+      | Ifz (v, then_cmd, else_cmd) ->
+          let n = lookup_int e v in
+          if n = 0 then Some (then_cmd, e)
+          else Some (else_cmd, e)
+
+      (* (axiom) ⟨axiom v₁ v₂ ∥ E⟩ - interaction between producer and consumer *)
+      | Axiom (v1, v2) ->
+          (match lookup_opt e v2 with
+            None ->
+              (* v2 is unbound (open term) - stuck, but record the value *)
+              None
+          | Some (Consumer (e0, (params, branch_body))) ->
+              (match lookup e v1 with
+               | IntVal n ->
+                   (* Int value passed to continuation - bind the int to the param *)
+                   let e' = extend e0 (List.hd params) (IntVal n) in
+                   Some (branch_body, e')
+               | Producer (_m, e1) ->
+                   (* Producer passed to consumer - bind producer's values to params *)
+                   let e1_list = Ident.to_list e1 in
+                   let e' = List.fold_left2 (fun acc p (_, v) -> extend acc p v) e0 params e1_list in
+                   Some (branch_body, e')
+               | Consumer _ ->
+                   failwith "axiom: expected producer or int, got consumer")
+          | Some _ ->
+              failwith "axiom: v2 should be a consumer")
+
+      | End -> None
+
+      (* (ret) ⟨ret v ∥ E⟩ → terminal, returns E(v) *)
+      | Ret _ -> None
+
+    (** Check if machine terminated with a result *)
+    let get_result ((cmd, e): config) : value option =
+      match cmd with
+      | Ret v -> Some (lookup e v)
+      | Axiom (v1, v2) when lookup_opt e v2 = None ->
+          Some (lookup e v1)
+      | _ -> None
+
+    (** Check if machine is stuck on an open term (axiom with unbound continuation) *)
+    let is_open_result ((cmd, e): config) : (var * value) option =
+      match cmd with
+      | Axiom (v1, v2) when lookup_opt e v2 = None ->
+          Some (v2, lookup e v1)
+      | _ -> None
+
+    (** Short name for a command (for tracing) *)
+    let cmd_name = function
+      | Let (v, _, _, _) -> "let " ^ Ident.name v
+      | New (_, v, _, _) -> "new " ^ Ident.name v
+      | Switch (_, v, _) -> "switch " ^ Ident.name v
+      | Invoke (v, xtor, _) -> Ident.name v ^ "." ^ pp_xtor xtor
+      | Axiom (v, k) -> "axiom(" ^ Ident.name v ^ ", " ^ Ident.name k ^ ")"
+      | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
+      | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
+      | Ifz (v, _, _) -> "ifz " ^ Ident.name v
+      | End -> "end"
+      | Ret v -> "ret " ^ Ident.name v
+
+    (** Run the machine until it stops *)
+    let rec run ?(trace=false) (cfg: config) : config =
+      let (cmd, e) = cfg in
+      if trace then 
+        Printf.printf "    %s | env has %d bindings\n" (cmd_name cmd) (List.length (Ident.to_list e));
+      match step cfg with
+      | None -> cfg
+      | Some cfg' -> run ~trace cfg'
+
+    (** Run with tracing *)
+    let rec run_trace (cfg: config) : config list =
+      cfg :: (match step cfg with
+              | None -> []
+              | Some cfg' -> run_trace cfg')
+
+    (** Initialize and run a command *)
+    let eval ?(trace=false) (cmd: command) : config =
+      run ~trace (cmd, empty_env)
+
+    (** Initialize and run with trace *)
+    let eval_trace (cmd: command) : config list =
+      run_trace (cmd, empty_env)
+  end
 
 end
 
@@ -742,6 +967,7 @@ module Focus = struct
         Cut.Ifz (x, replace_int_jump target then_cmd k,
                     replace_int_jump target else_cmd k)
     | Cut.End -> Cut.End
+    | Cut.Ret v -> Cut.Ret v
 
   (** Main transformation: Seq.command -> Cut.command *)
   and transform_command : command -> Cut.command = function
@@ -822,6 +1048,7 @@ module Focus = struct
     | Cut.Ifz (y, then_cmd, else_cmd) ->
         Cut.Ifz (sv y, subst_var_cmd x v then_cmd, subst_var_cmd x v else_cmd)
     | Cut.End -> Cut.End
+    | Cut.Ret y -> Cut.Ret (sv y)
 
   (** Transform cuts at Sig types *)
   and transform_cut_sig ty lhs rhs =

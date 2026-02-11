@@ -58,7 +58,40 @@ let run_test ~name ~manual_repr (term: Pcf.term) =
         let test_cmd = Seq.Cut (seq_ty, seq_term, Seq.Variable ret) in
         (try
           let focused = Focus.focus test_cmd in
-          Printf.printf "  %s\n" (Cut.pp_command focused)
+          (* Replace axiom(v, ret) with Ret(v) for closed execution *)
+          let rec close_ret cmd =
+            match cmd with
+            | Cut.Axiom (v, k) when Ident.name k = "ret" -> Cut.Ret v
+            | Cut.Let (x, m, args, body) -> Cut.Let (x, m, args, close_ret body)
+            | Cut.New (sig_, x, (params, branch), body) -> 
+                Cut.New (sig_, x, (params, close_ret branch), close_ret body)
+            | Cut.Switch (sig_, x, (params, branch)) ->
+                Cut.Switch (sig_, x, (params, close_ret branch))
+            | Cut.Lit (n, v, body) -> Cut.Lit (n, v, close_ret body)
+            | Cut.Add (a, b, r, body) -> Cut.Add (a, b, r, close_ret body)
+            | Cut.Ifz (v, t, e) -> Cut.Ifz (v, close_ret t, close_ret e)
+            | _ -> cmd
+          in
+          let closed = close_ret focused in
+          Printf.printf "%s\n" (Cut.pp_command closed);
+          
+          (* 6. Machine evaluation *)
+          print_newline ();
+          print_endline "Machine Evaluation:";
+          (try
+            let trace = false in  (* Set to true to trace specific test *)
+            let (final_cmd, final_env) = Cut.Machine.eval ~trace closed in
+            Printf.printf "  Final: %s\n" (Cut.pp_command final_cmd);
+            Printf.printf "  Env: %s\n" (Cut.Machine.pp_env final_env);
+            (* Check if we got a result *)
+            (match Cut.Machine.get_result (final_cmd, final_env) with
+             | Some (Cut.Machine.IntVal n) ->
+                 Printf.printf "  Result: %d\n" n
+             | Some v ->
+                 Printf.printf "  Result: %s\n" (Cut.Machine.pp_value v)
+             | None -> ())
+          with e ->
+            Printf.printf "  Exception: %s\n" (Printexc.to_string e))
         with e ->
           Printf.printf "  Exception: %s\n" (Printexc.to_string e));
         
