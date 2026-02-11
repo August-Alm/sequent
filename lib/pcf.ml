@@ -79,15 +79,19 @@ module Seq = struct
   type typ =
       Pos of pos_typ
     | Neg of neg_typ
-
+  
   and pos_typ =
       Int 
-    | Raise of neg_typ
+    | Data of xtor
 
   and neg_typ =
-      Fun of pos_typ * neg_typ
-    | Lower of pos_typ 
+      Code of xtor
   
+  and xtor =
+      Apply of pos_typ * neg_typ (** Xtor of Fun(A, B) *)
+    | Return of pos_typ (** Xtor of Lower(A) *)
+    | Thunk of neg_typ (** Xtor of Raise(A) *)
+
   type chiral_typ = Lhs of typ | Rhs of typ
 
   type parity = Even | Odd
@@ -102,16 +106,92 @@ module Seq = struct
   and term =
       Variable of var
     | Lit of int
-    | Eval of neg_typ * term (** Ctor of Raise(A) *)
-    | MatchRaise of neg_typ * var * command (** Match of Raise(A) *)
-    | Return of pos_typ * term (** Dtor of Lower(A) *)
-    | Apply of pos_typ * neg_typ * term * term (** Dtor of Fun(A, B) *)
-    | NewLower of pos_typ * var * command (** Cocase of Lower(A) *)
-    | NewFun of pos_typ * neg_typ * var * var * command (** Cocase of Fun(A, B) *)
+    | CtorApply of pos_typ * neg_typ * term * term
+    | CtorReturn of pos_typ * term
+    | CtorThunk of neg_typ * term
+    | DtorApply of pos_typ * neg_typ * term * term
+    | DtorReturn of pos_typ * term
+    | DtorThunk of neg_typ * term
+    | MatchApply of pos_typ * neg_typ * var * var * command
+    | MatchReturn of pos_typ * var * command
+    | MatchEval of neg_typ * var * command
+    | ComatchApply of pos_typ * neg_typ * var * var * command
+    | ComatchReturn of pos_typ * var * command
+    | ComatchEval of neg_typ * var * command
     | MuLhsPos of pos_typ * var * command
     | MuRhsPos of pos_typ * var * command
     | MuLhsNeg of neg_typ * var * command
     | MuRhsNeg of neg_typ * var * command
+
+  let rec rename ((x, y): var * var) =
+    function
+      Variable z when Ident.equal z x -> Variable y
+    | Variable z -> Variable z
+    | Lit n -> Lit n
+    | CtorApply (a, b, arg, cont) ->
+        CtorApply (a, b, rename (x, y) arg, rename (x, y) cont)
+    | CtorReturn (a, arg) ->
+        CtorReturn (a, rename (x, y) arg)
+    | CtorThunk (b, arg) ->
+        CtorThunk (b, rename (x, y) arg)
+    | DtorApply (a, b, arg, cont) ->
+        DtorApply (a, b, rename (x, y) arg, rename (x, y) cont)
+    | DtorReturn (a, arg) ->
+        DtorReturn (a, rename (x, y) arg)
+    | DtorThunk (b, arg) ->
+        DtorThunk (b, rename (x, y) arg)
+    | MatchApply (a, b, z, k, cmd) when Ident.equal z x || Ident.equal k x ->
+        MatchApply (a, b, z, k, cmd)  (* Shadowing: do not rename inside *)
+    | MatchApply (a, b, z, k, cmd) ->
+        MatchApply (a, b, z, k, rename_cmd (x, y) cmd)
+    | MatchReturn (a, z, cmd) when Ident.equal z x ->
+        MatchReturn (a, z, cmd)  (* Shadowing *)
+    | MatchReturn (a, z, cmd) ->
+        MatchReturn (a, z, rename_cmd (x, y) cmd)
+    | MatchEval (b, z, cmd) when Ident.equal z x ->
+        MatchEval (b, z, cmd)  (* Shadowing *)
+    | MatchEval (b, z, cmd) ->
+        MatchEval (b, z, rename_cmd (x, y) cmd)
+    | ComatchApply (a, b, z, k, cmd) when Ident.equal z x || Ident.equal k x ->
+        ComatchApply (a, b, z, k, cmd)  (* Shadowing *)
+    | ComatchApply (a, b, z, k, cmd) ->
+        ComatchApply (a, b, z, k, rename_cmd (x, y) cmd)
+    | ComatchReturn (a, z, cmd) when Ident.equal z x ->
+        ComatchReturn (a, z, cmd)  (* Shadowing *)
+    | ComatchReturn (a, z, cmd) ->
+        ComatchReturn (a, z, rename_cmd (x, y) cmd)
+    | ComatchEval (b, z, cmd) when Ident.equal z x ->
+        ComatchEval (b, z, cmd)  (* Shadowing *)
+    | ComatchEval (b, z, cmd) ->
+        ComatchEval (b, z, rename_cmd (x, y) cmd)
+    | MuLhsPos (a, z, cmd) when Ident.equal z x ->
+        MuLhsPos (a, z, cmd)  (* Shadowing *)
+    | MuLhsPos (a, z, cmd) ->
+        MuLhsPos (a, z, rename_cmd (x, y) cmd)
+    | MuRhsPos (a, z, cmd) when Ident.equal z x ->
+        MuRhsPos (a, z, cmd)  (* Shadowing *)
+    | MuRhsPos (a, z, cmd) ->
+        MuRhsPos (a, z, rename_cmd (x, y) cmd)
+    | MuLhsNeg (b, z, cmd) when Ident.equal z x ->
+        MuLhsNeg (b, z, cmd)  (* Shadowing *)
+    | MuLhsNeg (b, z, cmd) ->
+        MuLhsNeg (b, z, rename_cmd (x, y) cmd)
+    | MuRhsNeg (b, z, cmd) when Ident.equal z x ->
+        MuRhsNeg (b, z, cmd)  (* Shadowing *)
+    | MuRhsNeg (b, z, cmd) ->
+        MuRhsNeg (b, z, rename_cmd (x, y) cmd)
+  
+  and rename_cmd (x, y) =
+    function
+      CutPos (a, t1, t2) ->
+        CutPos (a, rename (x, y) t1, rename (x, y) t2)
+    | CutNeg (a, t1, t2) ->
+        CutNeg (a, rename (x, y) t1, rename (x, y) t2)
+    | Add (t1, t2, t3) ->
+        Add (rename (x, y) t1, rename (x, y) t2, rename (x, y) t3)
+    | Ifz (t, cmd1, cmd2) ->
+        Ifz (rename (x, y) t, rename_cmd (x, y) cmd1, rename_cmd (x, y) cmd2)
+    | End -> End
 
   let rec pp_command =
     function
@@ -120,25 +200,43 @@ module Seq = struct
     | Add (t1, t2, t3) -> "add(" ^ pp_term t1 ^ ", " ^ pp_term t2 ^ ", " ^ pp_term t3 ^ ")"
     | Ifz (t, cmd1, cmd2) -> "ifz(" ^ pp_term t ^ ") then " ^ pp_command cmd1 ^ " else " ^ pp_command cmd2
     | End -> "end"
-
+  
   and pp_term =
     function
       Variable x -> Ident.name x
     | Lit n -> string_of_int n
-    | Eval (ty, t) -> "eval(" ^ pp_neg ty ^ ", " ^ pp_term t ^ ")"
-    | MatchRaise (ty, x, cmd) ->
-      "case { eval[" ^ pp_neg ty ^ "]("
-        ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ " }"
-    | Return (ty, t) -> "return[" ^ pp_pos ty ^ "](" ^ pp_term t ^ ")"
-    | Apply (fun_ty, arg_ty, f, arg) ->
-      "apply[" ^ pp_pos fun_ty ^ ", " ^ pp_neg arg_ty ^ "]("
-        ^ pp_term f ^ ", " ^ pp_term arg ^ ")"
-    | NewLower (arg_ty, x, cmd) ->
-      "cocase { return[" ^ pp_pos arg_ty ^ "]("^
-        Ident.name x ^") ⇒ " ^ pp_command cmd ^ " }"
-    | NewFun (fun_ty, arg_ty, f, x, cmd) ->
-      "cocase { apply[" ^ pp_pos fun_ty ^ ", " ^ pp_neg arg_ty ^ "](" ^
-        Ident.name f ^ ", " ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ " }"
+    | CtorApply (a, b, arg, cont) ->
+        "ctor_apply[" ^ pp_pos a ^ ", " ^ pp_neg b ^ "]("
+          ^ pp_term arg ^ ", " ^ pp_term cont ^ ")"
+    | CtorReturn (a, arg) ->
+        "ctor_return[" ^ pp_pos a ^ "](" ^ pp_term arg ^ ")"
+    | CtorThunk (b, arg) ->
+        "ctor_thunk[" ^ pp_neg b ^ "](" ^ pp_term arg ^ ")"
+    | DtorApply (a, b, arg, cont) ->
+        "dtor_apply[" ^ pp_pos a ^ ", " ^ pp_neg b ^ "]("
+          ^ pp_term arg ^ ", " ^ pp_term cont ^ ")"
+    | DtorReturn (a, arg) ->
+        "dtor_return[" ^ pp_pos a ^ "](" ^ pp_term arg ^ ")"
+    | DtorThunk (b, arg) ->
+        "dtor_thunk[" ^ pp_neg b ^ "](" ^ pp_term arg ^ ")"
+    | MatchApply (a, b, x, k, cmd) ->
+        "case { ctor_apply[" ^ pp_pos a ^ ", " ^ pp_neg b ^ "]("
+          ^ Ident.name x ^ ", " ^ Ident.name k ^ ") ⇒ " ^ pp_command cmd ^ "}"
+    | MatchReturn (a, x, cmd) ->
+        "case { ctor_return[" ^ pp_pos a ^ "]("
+          ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
+    | MatchEval (b, x, cmd) ->
+        "case { ctor_eval[" ^ pp_neg b ^ "]("
+          ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
+    | ComatchApply (a, b, x, k, cmd) ->
+        "cocase { dtor_apply[" ^ pp_pos a ^ ", " ^ pp_neg b ^ "]("
+          ^ Ident.name x ^ ", " ^ Ident.name k ^ ") ⇒ " ^ pp_command cmd ^ "}"
+    | ComatchReturn (a, x, cmd) ->
+        "cocase { dtor_return[" ^ pp_pos a ^ "]("
+          ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
+    | ComatchEval (b, x, cmd) ->
+        "cocase { dtor_eval[" ^ pp_neg b ^ "]("
+          ^ Ident.name x ^ ") ⇒ " ^ pp_command cmd ^ "}"
     | MuLhsPos (_, k, cmd) -> "μ+L " ^ Ident.name k ^ ". " ^ pp_command cmd
     | MuRhsPos (_, k, cmd) -> "μ+R " ^ Ident.name k ^ ". " ^ pp_command cmd
     | MuLhsNeg (_, k, cmd) -> "μ-L " ^ Ident.name k ^ ". " ^ pp_command cmd
@@ -147,12 +245,15 @@ module Seq = struct
   and pp_pos =
     function
       Int -> "Int"
-    | Raise ty -> "↑(" ^ pp_neg ty ^ ")"
+    | Data (Apply (a, b)) -> "Fun_+(" ^ pp_pos a ^ ", " ^ pp_neg b ^ ")"
+    | Data (Return a) -> "Lower_+(" ^ pp_pos a ^ ")"
+    | Data (Thunk b) -> "Raise_+(" ^ pp_neg b ^ ")"
   
   and pp_neg =
     function
-      Fun (arg_ty, ret_ty) -> "Fun(" ^ pp_pos arg_ty ^ ", " ^ pp_neg ret_ty ^ ")"
-    | Lower ty -> "↓(" ^ pp_pos ty ^ ")"
+      Code (Apply (a, b)) -> "Fun_-(" ^ pp_pos a ^ ", " ^ pp_neg b ^ ")"
+    | Code (Return a) -> "Lower_-(" ^ pp_pos a ^ ")"
+    | Code (Thunk b) -> "Raise_-(" ^ pp_neg b ^ ")"
 
   let infer_kind =
     function
@@ -201,34 +302,72 @@ module Seq = struct
     function
       Variable x -> Ident.find x ctx
     | Lit _ -> Lhs (Pos Int)
-    | Eval (a, t) ->
-        (match infer_typ ctx t with
-          Lhs (Neg t_ty) when t_ty = a -> Lhs (Pos (Raise a))
-        | _ -> failwith "Type error in Eval")
-    | MatchRaise (ty, x, cmd) ->
-        let ctx' = Ident.add x (Lhs (Neg ty)) ctx in
-        infer_command_typ ctx' cmd |> ignore; (* Just check *)
-        Rhs (Pos (Raise ty))
-    | Return (ty, t) ->
-        (match infer_typ ctx t with
-          Lhs (Pos t_ty) when t_ty = ty -> Lhs (Neg (Lower ty))
-        | _ -> failwith "Type error in Return")
-    | Apply (a, b, arg, k) ->
+    | CtorApply (a, b, arg, cont) ->
         let arg_ty = infer_typ ctx arg in
-        let k_ty = infer_typ ctx k in
-        (match arg_ty, k_ty with
-          Lhs a', Rhs b' when a' = Pos a && b' = Neg b -> Rhs (Neg (Fun (a, b)))
-        | _ -> failwith "Type error in Apply")
-    | NewLower (a, x, cmd) ->
-        let ctx' = Ident.add x (Lhs (Pos a)) ctx in
-        infer_command_typ ctx' cmd |> ignore; (* Just check *)
-        Lhs (Neg (Lower a))
-    | NewFun (a, b, x, k, cmd) ->
+        let cont_ty = infer_typ ctx cont in
+        (match arg_ty, cont_ty with
+          Lhs a', Rhs b' when a' = Pos a && b' = Neg b ->
+            Lhs (Pos (Data (Apply (a, b))))
+        | _ -> failwith "Type error in CtorApply")
+    | CtorReturn (a, arg) ->
+        let arg_ty = infer_typ ctx arg in
+        (match arg_ty with
+          Lhs a' when a' = Pos a ->
+            Lhs (Pos (Data (Return a)))
+        | _ -> failwith "Type error in CtorReturn")
+    | CtorThunk (b, arg) ->
+        let arg_ty = infer_typ ctx arg in
+        (match arg_ty with
+          Rhs b' when b' = Neg b ->
+            Lhs (Pos (Data (Thunk b)))
+        | _ -> failwith "Type error in CtorThunk")
+    | DtorApply (a, b, arg, cont) ->
+        let arg_ty = infer_typ ctx arg in
+        let cont_ty = infer_typ ctx cont in
+        (match arg_ty, cont_ty with
+          Lhs a', Rhs b' when a' = Pos a && b' = Neg b ->
+            Rhs (Neg (Code (Apply (a, b))))
+        | _ -> failwith "Type error in DtorApply")
+    | DtorReturn (a, arg) ->
+        let arg_ty = infer_typ ctx arg in
+        (match arg_ty with
+          Lhs a' when a' = Pos a ->
+            Rhs (Neg (Code (Return a)))
+        | _ -> failwith "Type error in DtorReturn")
+    | DtorThunk (b, arg) ->
+        let arg_ty = infer_typ ctx arg in
+        (match arg_ty with
+          Rhs b' when b' = Neg b ->
+            Rhs (Neg (Code (Thunk b)))
+        | _ -> failwith "Type error in DtorThunk")
+    | MatchApply (a, b, x, k, cmd) ->
         let ctx' =
           Ident.add x (Lhs (Pos a)) (Ident.add k (Rhs (Neg b)) ctx)
         in
         infer_command_typ ctx' cmd |> ignore; (* Just check *)
-        Lhs (Neg (Fun (a, b)))
+        Rhs (Pos (Data (Apply (a, b))))
+    | MatchReturn (a, x, cmd) ->
+        let ctx' = Ident.add x (Lhs (Pos a)) ctx in
+        infer_command_typ ctx' cmd |> ignore; (* Just check *)
+        Rhs (Pos (Data (Return a)))
+    | MatchEval (b, x, cmd) ->
+        let ctx' = Ident.add x (Rhs (Neg b)) ctx in
+        infer_command_typ ctx' cmd |> ignore; (* Just check *)
+        Rhs (Pos (Data (Thunk b)))
+    | ComatchApply (a, b, x, k, cmd) ->
+        let ctx' =
+          Ident.add x (Lhs (Pos a)) (Ident.add k (Rhs (Neg b)) ctx)
+        in
+        infer_command_typ ctx' cmd |> ignore; (* Just check *)
+        Lhs (Neg (Code (Apply (a, b))))
+    | ComatchReturn (a, x, cmd) ->
+        let ctx' = Ident.add x (Lhs (Pos a)) ctx in
+        infer_command_typ ctx' cmd |> ignore; (* Just check *)
+        Lhs (Neg (Code (Return a)))
+    | ComatchEval (b, x, cmd) ->
+        let ctx' = Ident.add x (Rhs (Neg b)) ctx in
+        infer_command_typ ctx' cmd |> ignore; (* Just check *)
+        Lhs (Neg (Code (Thunk b)))
     | MuLhsPos (ty, x, cmd) ->
         let ctx' = Ident.add x (Rhs (Pos ty)) ctx in
         infer_command_typ ctx' cmd |> ignore; (* Just check *)
@@ -255,89 +394,56 @@ module Encode = struct
 
   open Seq
   
+  let lower ty = Code (Return ty)
+  let raise ty = Data (Thunk ty)
+
   let rec map_typ =
     function
       Pcf.Int -> Pos Int
     | Pcf.Arrow (a, b) ->
         match map_typ a, map_typ b with
-          Pos a, Pos b -> Neg (Fun (a, Lower b))
-        | Pos a, Neg b -> Neg (Fun (a, b))
-        | Neg a, Pos b -> Neg (Fun (Raise a, Lower b))
-        | Neg a, Neg b -> Neg (Fun (Raise a, b))
+          Pos a, Pos b -> Neg (Code (Apply (a, lower b)))
+        | Pos a, Neg b -> Neg (Code (Apply (a, b)))
+        | Neg a, Pos b -> Neg (Code (Apply (raise a, lower b)))
+        | Neg a, Neg b -> Neg (Code (Apply (raise a, b)))
     
   let rec map_term (ctx: Pcf.typ Ident.tbl) =
     function
       Pcf.Var x -> Variable x
     | Pcf.Lam (x, a, body) ->
-        (* λx:A. body  where body: B
-          Translates to: cocase { apply[A', B'](x, k) ⇒ ⟨[body] | k⟩ }
-          The body is cut with the continuation k *)
+        (* λx:A. body  where body: B *)
         let ctx' = Ident.add x a ctx in
         let b = Pcf.infer_typ ctx' body in
         let body' = map_term ctx' body in
         let k = Ident.fresh () in
         (match map_typ a, map_typ b with
           Pos a', Pos b' ->
-            (* A → B where both positive: Fun(A', ↓B')
-              Body produces positive, so wrap in return and cut negatively *)
-            NewFun (a', Lower b', x, k, 
-              CutNeg (Lower b', Return (b', body'), Variable k))
+            (* case { apply[a', ↓b'](x, k) => ⟨return[b'](body') | k⟩ } *)
+            MatchApply (a', lower b', x, k,
+              CutNeg (lower b', CtorReturn (b', body'), Variable k))
         | Pos a', Neg b' ->
-            (* A → B where A positive, B negative: Fun(A', B')
-              Body is negative, cut negatively with k *)
-            NewFun (a', b', x, k,
+            (* case { apply[a', b'](x, k) => ⟨body' | k⟩ } *)
+            MatchApply (a', b', x, k,
               CutNeg (b', body', Variable k))
         | Neg a', Pos b' ->
-            (* A → B where A negative, B positive: Fun(↑A', ↓B')
-              Parameter is negative wrapped in Raise, body positive wrapped in Lower *)
-            let x' = Ident.fresh () in
-            NewFun (Raise a', Lower b', x', k,
-              CutPos (Raise a', Variable x', 
-                MatchRaise (a', x,
-                  CutNeg (Lower b', Return (b', body'), Variable k))))
+            (* TODO: This is probably wrong! *)
+            (* case { apply[↑a', ↓b'](x, k) => ⟨μ-L α.⟨return[b'](body'') | k⟩ | thunk[a'](x)⟩ } *)
+            let alpha = Ident.fresh () in
+            let body'' = rename (x, alpha) body' in
+            MatchApply (raise a', lower b', x, k,
+              CutNeg (lower b',
+                MuLhsNeg (a', alpha, CutNeg (lower b', CtorReturn (b', body''), Variable k)),
+                CtorThunk (a', Variable x)))
         | Neg a', Neg b' ->
-            (* A → B where A negative, B negative: Fun(↑A', B')
-              Parameter is negative wrapped in Raise *)
-            let x' = Ident.fresh () in
-            NewFun (Raise a', b', x', k,
-              CutPos (Raise a', Variable x',
-                MatchRaise (a', x,
-                  CutNeg (b', body', Variable k)))))
+            (* case { apply[↑a', b'](x, k) => ⟨μ-L α.⟨body'' | k⟩ | thunk[a'](x)⟩ } *)
+            let alpha = Ident.fresh () in
+            let body'' = rename (x, alpha) body' in
+            MatchApply (raise a', b', x, k,
+              CutNeg (b',
+                MuLhsNeg (a', alpha, CutNeg (b', body'', Variable k)),
+                CtorThunk (a', Variable x))))
     | Pcf.App (t1, t2) ->
-        (* t1 t2  where t1 : A → B, t2 : A
-          Translates to: μk. ⟨[t1] | apply([t2], k)⟩
-          We create a μ-abstraction to capture the result *)
-        let t1_ty = Pcf.infer_typ ctx t1 in
-        let t2_ty = Pcf.infer_typ ctx t2 in
-        let (a, b) = match t1_ty with
-          | Pcf.Arrow (a, b) -> (a, b)
-          | _ -> failwith "Application of non-function"
-        in
-        let _ = t2_ty in (* t2_ty should equal a *)
-        let t1' = map_term ctx t1 in
-        let t2' = map_term ctx t2 in
-        let k = Ident.fresh () in
-        (match map_typ a, map_typ b with
-          Pos a', Pos b' ->
-            (* Result is positive, use MuLhsPos *)
-            MuLhsPos (b', k,
-              CutNeg (Fun (a', Lower b'), t1',
-                Apply (a', Lower b', t2', Variable k)))
-        | Pos a', Neg b' ->
-            (* Result is negative, use MuLhsNeg *)
-            MuLhsNeg (b', k,
-              CutNeg (Fun (a', b'), t1',
-                Apply (a', b', t2', Variable k)))
-        | Neg a', Pos b' ->
-            (* Arg is negative, result positive *)
-            MuLhsPos (b', k,
-              CutNeg (Fun (Raise a', Lower b'), t1',
-                Apply (Raise a', Lower b', Eval (a', t2'), Variable k)))
-        | Neg a', Neg b' ->
-            (* Arg is negative, result negative *)
-            MuLhsNeg (b', k,
-              CutNeg (Fun (Raise a', b'), t1',
-                Apply (Raise a', b', Eval (a', t2'), Variable k))))
+        failwith "TODO"
     | Pcf.Lit n -> Lit n
     | Pcf.Add (t1, t2) ->
         (* t1 + t2  where t1, t2 : Int
