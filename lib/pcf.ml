@@ -222,8 +222,8 @@ module Seq = struct
     function
       Int -> "Int"
     | Sig (Apply (a, b)) -> "Fun(" ^ pp_typ a ^ ", " ^ pp_typ b ^ ")"
-    | Sig (Return a) -> "Lower(" ^ pp_typ a ^ ")"
-    | Sig (Thunk a) -> "Raise(" ^ pp_typ a ^ ")"
+    | Sig (Return a) -> "↓" ^ pp_typ a
+    | Sig (Thunk a) -> "↑" ^ pp_typ a
 
   (* Determine the "natural chirality" of a type:
     - Int is positive (data-like), so values are Lhs
@@ -504,5 +504,413 @@ module Encode = struct
           (Ifz (t1', 
             make_branch_cut b' t2' k,
             make_branch_cut b' t3' k))
+
+end
+
+module Cut = struct
+
+  type typ = Seq.typ
+  type chiral_typ = Seq.chiral_typ
+  type signature = Seq.xtor
+  type xtor = Seq.xtor
+
+  type command =
+      (* ⟨Cₙ(Γ) | μ̃x.s⟩ or ⟨μα.s | Dₙ(Γ)⟩ *)
+      Let of var * xtor * var list * command
+      (* ⟨x | case {C(Γ) ⇒ s}⟩ or ⟨cocase {D(Γ) ⇒ s} | α⟩ *)
+    | Switch of signature * var * branch
+      (* [⟨cocase {D(Γ) ⇒ s₁} | μ̃x.s⟩ or ⟨μα.s | case {C(Γ) ⇒ s₁}⟩ *)
+    | New of signature * var * branch * command
+      (* ⟨C(Γ) | α⟩ or ⟨x | D(Γ)⟩ *)
+    | Invoke of var * xtor * var list
+      (* ⟨v | k⟩ at Int - pass value to continuation *)
+    | Axiom of var * var
+      (* lit n {(v) ⇒ s} *)
+    | Lit of int * var * command
+      (* add(x, y) {(v) ⇒ s} *)
+    | Add of var * var * var * command
+      (* ifz(v) {() ⇒ sThen; () ⇒ sElse} *)
+    | Ifz of var * command * command
+    | End
+  
+  and branch = var list * command
+
+  let pp_xtor = function
+    | Seq.Apply (a, b) -> "apply[" ^ Seq.pp_typ a ^ ", " ^ Seq.pp_typ b ^ "]"
+    | Seq.Return a -> "return[" ^ Seq.pp_typ a ^ "]"
+    | Seq.Thunk a -> "thunk[" ^ Seq.pp_typ a ^ "]"
+
+  let pp_vars vs = String.concat ", " (List.map Ident.name vs)
+
+  let indent n = String.make (n * 2) ' '
+
+  let rec pp_cmd n = function
+    | Let (x, xtor, args, body) ->
+        indent n ^ "let " ^ Ident.name x ^ " = " ^ pp_xtor xtor ^ "(" ^ pp_vars args ^ ");\n" ^
+        pp_cmd n body
+    | Switch (sig_, x, (params, body)) ->
+        indent n ^ "switch " ^ Ident.name x ^ " {\n" ^
+        indent (n+1) ^ pp_xtor sig_ ^ "(" ^ pp_vars params ^ ") ⇒\n" ^
+        pp_cmd (n+1) body ^ "\n" ^
+        indent n ^ "}"
+    | New (sig_, x, (params, branch), body) ->
+        indent n ^ "new " ^ Ident.name x ^ " = {\n" ^
+        indent (n+1) ^ pp_xtor sig_ ^ "(" ^ pp_vars params ^ ") ⇒\n" ^
+        pp_cmd (n+1) branch ^ "\n" ^
+        indent n ^ "};\n" ^
+        pp_cmd n body
+    | Invoke (x, xtor, args) ->
+        indent n ^ Ident.name x ^ "." ^ pp_xtor xtor ^ "(" ^ pp_vars args ^ ")"
+    | Axiom (v, k) ->
+        indent n ^ "axiom(" ^ Ident.name v ^ ", " ^ Ident.name k ^ ")"
+    | Lit (n_, v, body) ->
+        indent n ^ "let " ^ Ident.name v ^ " = " ^ string_of_int n_ ^ ";\n" ^
+        pp_cmd n body
+    | Add (a, b, r, body) ->
+        indent n ^ "let " ^ Ident.name r ^ " = " ^ Ident.name a ^ " + " ^ Ident.name b ^ ";\n" ^
+        pp_cmd n body
+    | Ifz (v, then_cmd, else_cmd) ->
+        indent n ^ "ifz " ^ Ident.name v ^ " {\n" ^
+        pp_cmd (n+1) then_cmd ^ "\n" ^
+        indent n ^ "} else {\n" ^
+        pp_cmd (n+1) else_cmd ^ "\n" ^
+        indent n ^ "}"
+    | End -> indent n ^ "end"
+
+  let pp_command cmd = pp_cmd 0 cmd
+
+end
+
+module Focus = struct
+  open Seq
+
+  (** Get the xtor from a Sig type *)
+  let xtor_of_typ : typ -> xtor = function
+    | Int -> failwith "Int has no xtor"
+    | Sig x -> x
+
+  (** Generate fresh parameter names for an xtor *)
+  let fresh_params (x: xtor) : var list =
+    match x with
+    | Apply (_, _) -> [Ident.fresh (); Ident.fresh ()]
+    | Return _ -> [Ident.fresh ()]
+    | Thunk _ -> [Ident.fresh ()]
+
+  (** Extract xtor and arguments from a constructor/destructor term *)
+  let ctor_info : term -> xtor * term list = function
+    | CtorApply (a, b, arg, cont) -> (Apply (a, b), [arg; cont])
+    | CtorReturn (a, arg) -> (Return a, [arg])
+    | CtorThunk (a, arg) -> (Thunk a, [arg])
+    | DtorApply (a, b, arg, cont) -> (Apply (a, b), [arg; cont])
+    | DtorReturn (a, arg) -> (Return a, [arg])
+    | DtorThunk (a, arg) -> (Thunk a, [arg])
+    | _ -> failwith "Not a constructor/destructor"
+
+  (** Extract xtor, params, and body from a match/comatch term *)
+  let match_info : term -> xtor * var list * command = function
+    | MatchApply (a, b, x, k, cmd) -> (Apply (a, b), [x; k], cmd)
+    | MatchReturn (a, x, cmd) -> (Return a, [x], cmd)
+    | MatchThunk (a, x, cmd) -> (Thunk a, [x], cmd)
+    | ComatchApply (a, b, x, k, cmd) -> (Apply (a, b), [x; k], cmd)
+    | ComatchReturn (a, x, cmd) -> (Return a, [x], cmd)
+    | ComatchThunk (a, x, cmd) -> (Thunk a, [x], cmd)
+    | _ -> failwith "Not a match/comatch"
+
+  (** Substitute variables: replace params with args in cmd *)
+  let subst_params (params: var list) (args: var list) (cmd: command) : command =
+    List.fold_left2 (fun c p a -> rename_cmd (p, a) c) cmd params args
+
+  (** Bind multiple terms to variables *)
+  let rec bind_terms (terms: term list) (k: var list -> Cut.command) : Cut.command =
+    match terms with
+    | [] -> k []
+    | t :: rest ->
+        bind_term t (fun v ->
+          bind_terms rest (fun vs -> k (v :: vs)))
+
+  (** Bind a single term to a variable, calling continuation with the variable *)
+  and bind_term (t: term) (k: var -> Cut.command) : Cut.command =
+    match t with
+    | Variable x -> k x
+    | Lit n ->
+        let v = Ident.fresh () in
+        Cut.Lit (n, v, k v)
+    (* Constructors become Let bindings *)
+    | CtorApply (a, b, arg, cont) ->
+        bind_terms [arg; cont] (fun vs ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Apply (a, b), vs, k x))
+    | CtorReturn (a, arg) ->
+        bind_term arg (fun v ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Return a, [v], k x))
+    | CtorThunk (a, arg) ->
+        bind_term arg (fun v ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Thunk a, [v], k x))
+    (* Destructors also become Let bindings (same as Ctor in collapsed view) *)
+    | DtorApply (a, b, arg, cont) ->
+        bind_terms [arg; cont] (fun vs ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Apply (a, b), vs, k x))
+    | DtorReturn (a, arg) ->
+        bind_term arg (fun v ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Return a, [v], k x))
+    | DtorThunk (a, arg) ->
+        bind_term arg (fun v ->
+          let x = Ident.fresh () in
+          Cut.Let (x, Thunk a, [v], k x))
+    (* Matches become New bindings *)
+    | MatchApply (a, b, x, kv, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Apply (a, b), bound, ([x; kv], transform_command cmd), k bound)
+    | MatchReturn (a, x, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Return a, bound, ([x], transform_command cmd), k bound)
+    | MatchThunk (a, x, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Thunk a, bound, ([x], transform_command cmd), k bound)
+    (* Comatches also become New bindings *)
+    | ComatchApply (a, b, x, kv, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Apply (a, b), bound, ([x; kv], transform_command cmd), k bound)
+    | ComatchReturn (a, x, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Return a, bound, ([x], transform_command cmd), k bound)
+    | ComatchThunk (a, x, cmd) ->
+        let bound = Ident.fresh () in
+        Cut.New (Thunk a, bound, ([x], transform_command cmd), k bound)
+    (* MuLhs: bind continuation, transform body *)
+    | MuLhs (ty, x, cmd) ->
+        (match ty with
+        | Int ->
+            (* For Int: the body will produce a value that jumps to x.
+               We create a New that captures this pattern. *)
+            let bound = Ident.fresh () in
+            (* Transform body, replacing x with bound *)
+            let body' = transform_command (rename_cmd (x, bound) cmd) in
+            (* Wrap: when body produces result via Jump(v, bound), 
+               we want to continue with k bound. But this requires CPS... 
+               For now, use a simpler approach: just transform and let caller handle *)
+            bind_mu_int bound body' k
+        | Sig xtor ->
+            let bound = Ident.fresh () in
+            let params = fresh_params xtor in
+            Cut.New (xtor, x, 
+              (params, Cut.Let (bound, xtor, params, k bound)),
+              transform_command cmd))
+    (* MuRhs: similar but for consumers *)
+    | MuRhs (ty, x, cmd) ->
+        (match ty with
+        | Int ->
+            let bound = Ident.fresh () in
+            bind_mu_int bound (transform_command (rename_cmd (x, bound) cmd)) k
+        | Sig xtor ->
+            let bound = Ident.fresh () in
+            let params = fresh_params xtor in
+            Cut.New (xtor, x,
+              (params, Cut.Let (bound, xtor, params, k bound)),
+              transform_command cmd))
+
+  (** Handle MuLhs/MuRhs at Int type - we need to thread the continuation *)
+  and bind_mu_int (bound: var) (body: Cut.command) (k: var -> Cut.command) : Cut.command =
+    (* The body should end with Jump(v, bound) for some v.
+       We want to replace that with: let result = v in k result
+       For now, just return body - proper handling would need CPS transform *)
+    replace_int_jump bound body k
+
+  (** Replace Jump(v, target) with continuation applied to v *)
+  and replace_int_jump (target: var) (cmd: Cut.command) (k: var -> Cut.command) : Cut.command =
+    match cmd with
+    | Cut.Axiom (v, dest) when Ident.equal dest target ->
+        k v
+    | Cut.Axiom (v, dest) -> Cut.Axiom (v, dest)
+    | Cut.Let (x, xtor, args, body) ->
+        Cut.Let (x, xtor, args, replace_int_jump target body k)
+    | Cut.Switch (sig_, x, (params, body)) ->
+        Cut.Switch (sig_, x, (params, replace_int_jump target body k))
+    | Cut.New (sig_, x, (params, branch), body) ->
+        Cut.New (sig_, x, (params, replace_int_jump target branch k),
+                 replace_int_jump target body k)
+    | Cut.Invoke (x, xtor, args) -> Cut.Invoke (x, xtor, args)
+    | Cut.Lit (n, x, body) ->
+        Cut.Lit (n, x, replace_int_jump target body k)
+    | Cut.Add (a, b, r, body) ->
+        Cut.Add (a, b, r, replace_int_jump target body k)
+    | Cut.Ifz (x, then_cmd, else_cmd) ->
+        Cut.Ifz (x, replace_int_jump target then_cmd k,
+                    replace_int_jump target else_cmd k)
+    | Cut.End -> Cut.End
+
+  (** Main transformation: Seq.command -> Cut.command *)
+  and transform_command : command -> Cut.command = function
+    | End -> Cut.End
+    | Add (t1, t2, t3) ->
+        bind_term t1 (fun v1 ->
+          bind_term t2 (fun v2 ->
+            match t3 with
+            | Variable k ->
+                let r = Ident.fresh () in
+                Cut.Add (v1, v2, r, Cut.Axiom (r, k))
+            | MuRhs (Int, a, cmd) ->
+                Cut.Add (v1, v2, a, transform_command cmd)
+            | _ -> failwith "Add continuation must be Variable or MuRhs"))
+    | Ifz (t, cmd1, cmd2) ->
+        bind_term t (fun v ->
+          Cut.Ifz (v, transform_command cmd1, transform_command cmd2))
+    | Cut (ty, lhs, rhs) ->
+        transform_cut ty lhs rhs
+
+  (** Transform a Cut based on the shapes of lhs and rhs *)
+  and transform_cut ty lhs rhs =
+    match ty with
+    | Int -> transform_cut_int lhs rhs
+    | Sig _ -> transform_cut_sig ty lhs rhs
+
+  (** Transform cuts at Int type *)
+  and transform_cut_int lhs rhs =
+    match lhs, rhs with
+    | Variable x, Variable y ->
+        Cut.Axiom (x, y)
+    | Variable x, MuRhs (_, a, cmd) ->
+        transform_command (rename_cmd (a, x) cmd)
+    | Lit n, Variable y ->
+        let v = Ident.fresh () in
+        Cut.Lit (n, v, Cut.Axiom (v, y))
+    | Lit n, MuRhs (_, a, cmd) ->
+        Cut.Lit (n, a, transform_command cmd)
+    | MuLhs (_, x, cmd), Variable y ->
+        transform_command (rename_cmd (x, y) cmd)
+    | MuLhs (_, x, mu_cmd), MuRhs (_, a, rhs_cmd) ->
+        (* Connect: result of mu_cmd goes to a in rhs_cmd *)
+        let transformed_mu = transform_command (rename_cmd (x, a) mu_cmd) in
+        let transformed_rhs = transform_command rhs_cmd in
+        replace_int_jump a transformed_mu (fun v ->
+          subst_var_cmd a v transformed_rhs)
+    | _ -> failwith "ill-typed cut at Int"
+
+  (** Substitute a variable in a command *)
+  and subst_var_cmd (x: var) (v: var) (cmd: Cut.command) : Cut.command =
+    let sv y = if Ident.equal y x then v else y in
+    let sv_list = List.map sv in
+    match cmd with
+    | Cut.Let (y, xtor, args, body) ->
+        if Ident.equal y x then Cut.Let (y, xtor, sv_list args, body)
+        else Cut.Let (y, xtor, sv_list args, subst_var_cmd x v body)
+    | Cut.Switch (sig_, y, (params, body)) ->
+        if List.exists (Ident.equal x) params then
+          Cut.Switch (sig_, sv y, (params, body))
+        else
+          Cut.Switch (sig_, sv y, (params, subst_var_cmd x v body))
+    | Cut.New (sig_, y, (params, branch), body) ->
+        let branch' = if List.exists (Ident.equal x) params then branch
+                      else subst_var_cmd x v branch in
+        let body' = if Ident.equal y x then body
+                    else subst_var_cmd x v body in
+        Cut.New (sig_, y, (params, branch'), body')
+    | Cut.Invoke (y, xtor, args) ->
+        Cut.Invoke (sv y, xtor, sv_list args)
+    | Cut.Axiom (y, k) ->
+        Cut.Axiom (sv y, sv k)
+    | Cut.Lit (n, y, body) ->
+        if Ident.equal y x then Cut.Lit (n, y, body)
+        else Cut.Lit (n, y, subst_var_cmd x v body)
+    | Cut.Add (a, b, r, body) ->
+        if Ident.equal r x then Cut.Add (sv a, sv b, r, body)
+        else Cut.Add (sv a, sv b, r, subst_var_cmd x v body)
+    | Cut.Ifz (y, then_cmd, else_cmd) ->
+        Cut.Ifz (sv y, subst_var_cmd x v then_cmd, subst_var_cmd x v else_cmd)
+    | Cut.End -> Cut.End
+
+  (** Transform cuts at Sig types *)
+  and transform_cut_sig ty lhs rhs =
+    let xtor = xtor_of_typ ty in
+    match lhs, rhs with
+    (* Variable | Variable: eta-expand *)
+    | Variable x, Variable y ->
+        let params = fresh_params xtor in
+        Cut.Switch (xtor, x, (params, Cut.Invoke (y, xtor, params)))
+
+    (* Variable | Match/Comatch: Switch *)
+    | Variable x, (MatchApply _ | MatchReturn _ | MatchThunk _ |
+                   ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+        let (_, params, cmd) = match_info m in
+        Cut.Switch (xtor, x, (params, transform_command cmd))
+
+    (* Variable | MuRhs: substitute *)
+    | Variable x, MuRhs (_, a, cmd) ->
+        transform_command (rename_cmd (a, x) cmd)
+
+    (* Ctor/Dtor | Variable: Invoke *)
+    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
+       DtorApply _ | DtorReturn _ | DtorThunk _ as c), Variable y ->
+        let (xtor, args) = ctor_info c in
+        bind_terms args (fun arg_vars ->
+          Cut.Invoke (y, xtor, arg_vars))
+
+    (* Ctor/Dtor | Match/Comatch: inline the branch *)
+    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
+       DtorApply _ | DtorReturn _ | DtorThunk _ as c),
+      (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+        let (_, args) = ctor_info c in
+        let (_, params, cmd) = match_info m in
+        bind_terms args (fun arg_vars ->
+          transform_command (subst_params params arg_vars cmd))
+
+    (* Ctor/Dtor | MuRhs: Let binding *)
+    | (CtorApply _ | CtorReturn _ | CtorThunk _ |
+       DtorApply _ | DtorReturn _ | DtorThunk _ as c), MuRhs (_, a, cmd) ->
+        let (xtor, args) = ctor_info c in
+        bind_terms args (fun arg_vars ->
+          Cut.Let (a, xtor, arg_vars, transform_command cmd))
+
+    (* Match/Comatch | Variable: bind the match and invoke on k *)
+    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m), Variable y ->
+        bind_term m (fun x ->
+          let params = fresh_params xtor in
+          Cut.Switch (xtor, x, (params, Cut.Invoke (y, xtor, params))))
+
+    (* Match/Comatch | Match/Comatch: eta-expand *)
+    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m1),
+      (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m2) ->
+        bind_term m1 (fun x ->
+          let (_, params, cmd) = match_info m2 in
+          Cut.Switch (xtor, x, (params, transform_command cmd)))
+
+    (* Match/Comatch | MuRhs: bind the match *)
+    | (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m), MuRhs (_, a, cmd) ->
+        bind_term m (fun x ->
+          transform_command (rename_cmd (a, x) cmd))
+
+    (* MuLhs | Variable: substitute *)
+    | MuLhs (_, x, cmd), Variable y ->
+        transform_command (rename_cmd (x, y) cmd)
+
+    (* MuLhs | Match/Comatch: New *)
+    | MuLhs (_, x, mu_cmd),
+      (MatchApply _ | MatchReturn _ | MatchThunk _ |
+       ComatchApply _ | ComatchReturn _ | ComatchThunk _ as m) ->
+        let (xtor, params, match_cmd) = match_info m in
+        Cut.New (xtor, x, (params, transform_command match_cmd), 
+                 transform_command mu_cmd)
+
+    (* MuLhs | MuRhs: New with Let *)
+    | MuLhs (_, x, mu_cmd), MuRhs (_, a, rhs_cmd) ->
+        let params = fresh_params xtor in
+        Cut.New (xtor, x,
+          (params, Cut.Let (a, xtor, params, transform_command rhs_cmd)),
+          transform_command mu_cmd)
+
+    | _ -> failwith "ill-typed cut at Sig type"
+
+  (** Entry point: transform a Seq command to Cut command *)
+  let focus (cmd: command) : Cut.command =
+    transform_command cmd
 
 end

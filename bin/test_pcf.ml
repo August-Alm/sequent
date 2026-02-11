@@ -50,6 +50,18 @@ let run_test ~name ~manual_repr (term: Pcf.term) =
           (match chiral_ty with
            | Seq.Lhs ty -> "Lhs " ^ Seq.pp_typ ty
            | Seq.Rhs ty -> "Rhs " ^ Seq.pp_typ ty);
+        
+        (* 5. Focus transformation: cut term with ret variable and focus *)
+        print_newline ();
+        print_endline "Focus (Cut-free):";
+        let ret = Ident.mk "ret" in
+        let test_cmd = Seq.Cut (seq_ty, seq_term, Seq.Variable ret) in
+        (try
+          let focused = Focus.focus test_cmd in
+          Printf.printf "  %s\n" (Cut.pp_command focused)
+        with e ->
+          Printf.printf "  Exception: %s\n" (Printexc.to_string e));
+        
         print_endline "PASS ✓";
         incr pass_count
       with e ->
@@ -68,7 +80,7 @@ let () =
      ══════════════════════════════════════════════════════════════════ *)
   let x = Ident.mk "x" in
   let id_int = Pcf.Lam (x, Pcf.Int, Pcf.Var x) in
-  run_test 
+  run_test
     ~name:"Pos -> Pos: λx:Int. x"
     ~manual_repr:"λx:Int. x"
     id_int;
