@@ -58,10 +58,14 @@ let run_test ~name ~manual_repr (term: Pcf.term) =
         let test_cmd = Seq.Cut (seq_ty, seq_term, Seq.Variable ret) in
         (try
           let focused = Focus.focus test_cmd in
-          (* Replace axiom(v, ret) with Ret(v) for closed execution *)
+          (* Replace axiom(v, ret) or ret.xtor(args) with Ret(ty, v) for closed execution *)
           let rec close_ret cmd =
             match cmd with
-            | Cut.Axiom (v, k) when Ident.name k = "ret" -> Cut.Ret v
+            | Cut.Axiom (v, k) when Ident.name k = "ret" -> Cut.Ret (seq_ty, v)
+            | Cut.Invoke (k, xtor, args) when Ident.name k = "ret" ->
+                (* ret.xtor(args) - create a producer and return it *)
+                let v = Ident.fresh () in
+                Cut.Let (v, xtor, args, Cut.Ret (seq_ty, v))
             | Cut.Let (x, m, args, body) -> Cut.Let (x, m, args, close_ret body)
             | Cut.New (sig_, x, (params, branch), body) -> 
                 Cut.New (sig_, x, (params, close_ret branch), close_ret body)

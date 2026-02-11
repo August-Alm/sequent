@@ -532,8 +532,8 @@ module Cut = struct
       (* ifz(v) {() ⇒ sThen; () ⇒ sElse} *)
     | Ifz of var * command * command
     | End
-      (* ret v - return the Int value of v (terminal) *)
-    | Ret of var
+      (* ret ty v - return the value of v at type ty (terminal) *)
+    | Ret of Seq.typ * var
   
   and branch = var list * command
 
@@ -578,7 +578,7 @@ module Cut = struct
         pp_cmd (n+1) else_cmd ^ "\n" ^
         indent n ^ "}"
     | End -> indent n ^ "end"
-    | Ret v -> indent n ^ "ret " ^ Ident.name v
+    | Ret (ty, v) -> indent n ^ "ret[" ^ Seq.pp_typ ty ^ "] " ^ Ident.name v
 
   let pp_command cmd = pp_cmd 0 cmd
 
@@ -749,13 +749,13 @@ module Cut = struct
 
       | End -> None
 
-      (* (ret) ⟨ret v ∥ E⟩ → terminal, returns E(v) *)
+      (* (ret) ⟨ret[ty] v ∥ E⟩ → terminal, returns E(v) *)
       | Ret _ -> None
 
     (** Check if machine terminated with a result *)
     let get_result ((cmd, e): config) : value option =
       match cmd with
-      | Ret v -> Some (lookup e v)
+      | Ret (_, v) -> Some (lookup e v)
       | Axiom (v1, v2) when lookup_opt e v2 = None ->
           Some (lookup e v1)
       | _ -> None
@@ -778,7 +778,7 @@ module Cut = struct
       | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
       | Ifz (v, _, _) -> "ifz " ^ Ident.name v
       | End -> "end"
-      | Ret v -> "ret " ^ Ident.name v
+      | Ret (_, v) -> "ret " ^ Ident.name v
 
     (** Run the machine until it stops *)
     let rec run ?(trace=false) (cfg: config) : config =
@@ -967,7 +967,7 @@ module Focus = struct
         Cut.Ifz (x, replace_int_jump target then_cmd k,
                     replace_int_jump target else_cmd k)
     | Cut.End -> Cut.End
-    | Cut.Ret v -> Cut.Ret v
+    | Cut.Ret (ty, v) -> Cut.Ret (ty, v)
 
   (** Main transformation: Seq.command -> Cut.command *)
   and transform_command : command -> Cut.command = function
@@ -1048,7 +1048,7 @@ module Focus = struct
     | Cut.Ifz (y, then_cmd, else_cmd) ->
         Cut.Ifz (sv y, subst_var_cmd x v then_cmd, subst_var_cmd x v else_cmd)
     | Cut.End -> Cut.End
-    | Cut.Ret y -> Cut.Ret (sv y)
+    | Cut.Ret (ty, y) -> Cut.Ret (ty, sv y)
 
   (** Transform cuts at Sig types *)
   and transform_cut_sig ty lhs rhs =
