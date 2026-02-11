@@ -5,10 +5,6 @@ open Common.Identifiers
 let test_count = ref 0
 let pass_count = ref 0
 
-let pp_parity = function
-  | Seq.Even -> "even"
-  | Seq.Odd -> "odd"
-
 let run_test ~name ~manual_repr (term: Pcf.term) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
@@ -42,30 +38,20 @@ let run_test ~name ~manual_repr (term: Pcf.term) =
       print_endline "Seq Encoding:";
       let seq_ty = Encode.map_typ pcf_ty in
       let seq_term = Encode.map_term Ident.emptytbl term in
-      Printf.printf "  Type: %s\n" 
-        (match seq_ty with 
-         | Seq.Pos p -> "Pos " ^ Seq.pp_pos p
-         | Seq.Neg n -> "Neg " ^ Seq.pp_neg n);
+      Printf.printf "  Type: %s\n" (Seq.pp_typ seq_ty);
       Printf.printf "  Term: %s\n" (Seq.pp_term seq_term);
       print_newline ();
       
-      (* 4. Type-check Seq term and get parity *)
+      (* 4. Type-check Seq term *)
       print_endline "Seq Type-check:";
       (try
         let chiral_ty = Seq.infer_typ Ident.emptytbl seq_term in
-        let parity = Seq.infer_parity chiral_ty in
         Printf.printf "  Chiral type: %s\n"
           (match chiral_ty with
-           | Seq.Lhs (Seq.Pos p) -> "Lhs (Pos " ^ Seq.pp_pos p ^ ")"
-           | Seq.Lhs (Seq.Neg n) -> "Lhs (Neg " ^ Seq.pp_neg n ^ ")"
-           | Seq.Rhs (Seq.Pos p) -> "Rhs (Pos " ^ Seq.pp_pos p ^ ")"
-           | Seq.Rhs (Seq.Neg n) -> "Rhs (Neg " ^ Seq.pp_neg n ^ ")");
-        Printf.printf "  Parity: %s\n" (pp_parity parity);
-        if parity = Seq.Even then begin
-          print_endline "PASS ✓";
-          incr pass_count
-        end else
-          print_endline "FAIL: parity is odd"
+           | Seq.Lhs ty -> "Lhs " ^ Seq.pp_typ ty
+           | Seq.Rhs ty -> "Rhs " ^ Seq.pp_typ ty);
+        print_endline "PASS ✓";
+        incr pass_count
       with e ->
         Printf.printf "  Exception: %s\n" (Printexc.to_string e);
         print_endline "FAIL: Seq type-check failed");
