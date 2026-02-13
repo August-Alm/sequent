@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules polarize focus playground simple pcf essence)
+ (modules polarize focus simple pcf)
  (libraries utility common lang canon cut kore))

@@ -2,4 +2,4 @@
  (name common)
  (public_name sequent.common)
  (libraries utility)
- (flags (:standard -warn-error -27-26-32-33)))
+ (flags (:standard -warn-error -27-26-32-33-37)))

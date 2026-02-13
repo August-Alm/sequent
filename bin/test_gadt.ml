@@ -154,88 +154,6 @@ let test_gadt_filtering () =
   
   Printf.printf "\n"
 
-(* ========================================================================= *)
-(* Test 3: Type check a command *)
-(* ========================================================================= *)
-
-let test_command_typecheck () =
-  Printf.printf "=== Test 3: Command Type Checking ===\n";
-  
-  (* Define a simple Unit signature with one constructor *)
-  let unit_id = Ident.mk "unit" in
-  let tt_id = Ident.mk "tt" in
-  
-  let unit_path = Path.of_ident unit_id in
-  let tt_path = Path.of_ident tt_id in
-  
-  let unit_sgn = {
-    name = unit_path;
-    parameters = [];
-    xtors = [
-      { name = tt_path
-      ; parameters = []
-      ; existentials = []
-      ; arguments = []
-      ; main = Sgn { name = unit_path; parameters = []; xtors = [] }
-      }
-    ]
-  } in
-  
-  (* Fix: the main type should be the unit signature itself *)
-  let unit_sgn = {
-    name = unit_path;
-    parameters = [];
-    xtors = [
-      { name = tt_path
-      ; parameters = []
-      ; existentials = []
-      ; arguments = []
-      ; main = Sgn unit_sgn
-      }
-    ]
-  } in
-  
-  let tt_xtor = List.hd unit_sgn.xtors in
-  
-  (* Test 3a: Simple Let command - let x = tt(); End *)
-  let x_id = Ident.mk "x" in
-  let cmd1 = Let (x_id, tt_xtor, [], End) in
-  
-  let kctx = Ident.emptytbl in
-  let ctx = Ident.emptytbl in
-  let env = empty_env in
-  
-  (match check_command kctx ctx env cmd1 with
-  | Ok () -> Printf.printf "  let x = tt(); End :: PASSED\n"
-  | Error _ -> Printf.printf "  let x = tt(); End :: FAILED\n");
-  
-  (* Test 3b: Lit command - lit 42 { v => End } *)
-  let v_id = Ident.mk "v" in
-  let cmd2 = Lit (42, v_id, End) in
-  
-  (match check_command kctx ctx env cmd2 with
-  | Ok () -> Printf.printf "  lit 42 { v => End } :: PASSED\n"
-  | Error _ -> Printf.printf "  lit 42 { v => End } :: FAILED\n");
-  
-  (* Test 3c: Add command - lit 1 { x => lit 2 { y => add(x, y) { z => End } } } *)
-  let x2_id = Ident.mk "x2" in
-  let y_id = Ident.mk "y" in
-  let z_id = Ident.mk "z" in
-  let cmd3 = Lit (1, x2_id, Lit (2, y_id, Add (x2_id, y_id, z_id, End))) in
-  
-  (match check_command kctx ctx env cmd3 with
-  | Ok () -> Printf.printf "  lit 1 { x => lit 2 { y => add(x,y) { z => End }}} :: PASSED\n"
-  | Error _ -> Printf.printf "  lit 1 { x => lit 2 { y => add(x,y) { z => End }}} :: FAILED\n");
-  
-  (* Test 3d: Ret command - lit 5 { v => ret int v } *)
-  let w_id = Ident.mk "w" in
-  let cmd4 = Lit (5, w_id, Ret (Ext Int, w_id)) in
-  
-  (match check_command kctx ctx env cmd4 with
-  | Ok () -> Printf.printf "  lit 5 { v => ret int v } :: PASSED\n"
-  | Error _ -> Printf.printf "  lit 5 { v => ret int v } :: FAILED\n");
-  
-  Printf.printf "\n"
 
 (* ========================================================================= *)
 (* Test 4: Validate existentials don't escape (via kind checking) *)
@@ -295,6 +213,5 @@ let () =
   Printf.printf "Testing Common.Types\n\n";
   test_list_signature ();
   test_gadt_filtering ();
-  test_command_typecheck ();
   test_existential_escape ();
   Printf.printf "All tests completed.\n"

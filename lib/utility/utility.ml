@@ -27,3 +27,8 @@ let split_at_last lst =
     [] -> failwith "split_at_last: empty list"
   | last :: rev_init -> (List.rev rev_init, last)
 
+
+let ( let* ) o f =
+  match o with
+  | Error e -> Error e
+  | Ok x -> f x

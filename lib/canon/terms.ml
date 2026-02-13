@@ -3,9 +3,18 @@
   description: Canonicalized commands for the sequent calculus.
 *)
 
+open Common.Identifiers
+open Common.Types
+
+let ( let* ) o f = Utility.( let* ) o f
+
+type var = Ident.t
+
 (* ========================================================================= *)
-(* Commands
+(* Commands                                                                  *)
+(* ========================================================================= *)
    
+(*
    Typing judgment: Γ ⊢ cmd  where Γ : var → chiral_typ
    
    Types are ambidextrous: the same signature can be read as data or codata.
@@ -15,10 +24,6 @@
    Context is non-linear: variables are never consumed, freely duplicated.
    Type instantiation is already reflected in sgn_typ/xtor.
 *)
-
-open Common.Identifiers
-open Common.Types
-type var = Ident.t
 
 type command =
     (* let v = m(x1, ...); s
@@ -78,7 +83,7 @@ type command =
 and branch = xtor * var list * command
 
 (* ========================================================================= *)
-(* Type Checking for Commands *)
+(* Type Checking for Commands                                                *)
 (* ========================================================================= *)
 
 module VarMap = Ident
@@ -230,8 +235,8 @@ let rec check_command
       ) then
         Error (XtorNotInSignature (x, sg))
       else
-        check_xtor_args kctx ctx env x args
-        |> Result.map (fun _ -> ())
+        let* _ = check_xtor_args kctx ctx env x args in
+        Ok ()
 
   | Axiom (ty, v, k) ->
       (* v must be Lhs ty, k must be Rhs ty *)
