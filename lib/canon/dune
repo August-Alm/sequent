@@ -1,0 +1,4 @@
+(library
+ (name canon)
+ (public_name sequent.canon)
+ (libraries utility common))

@@ -12,18 +12,18 @@ module StringMap = Map.Make(String)
 let rec take n lst =
   if n <= 0 then []
   else match lst with
-  | [] -> []
+    [] -> []
   | x :: xs -> x :: take (n - 1) xs
 
 (* Drop first n elements from a list *)
 let rec drop n lst =
   if n <= 0 then lst
   else match lst with
-  | [] -> []
+    [] -> []
   | _ :: xs -> drop (n - 1) xs
 
 let split_at_last lst =
   match List.rev lst with
-  | [] -> failwith "split_at_last: empty list"
+    [] -> failwith "split_at_last: empty list"
   | last :: rev_init -> (List.rev rev_init, last)
 
