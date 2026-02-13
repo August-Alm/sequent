@@ -570,3 +570,6 @@ module TypeCheck = struct
       | Ok () -> check_method sig_def m sigs
     ) (Ok ()) sig_def.methods
 end
+
+type any_list =
+  | AnyList: 'a list -> any_list
