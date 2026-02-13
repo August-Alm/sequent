@@ -28,12 +28,10 @@ let test_list_signature () =
   
   let rec list_sgn_lazy = lazy {
     name = list_path;
-    polarity = Pos;
     parameters = [(a_id, Star)];  (* Arity: list takes one type arg *)
     xtors = [
       (* Cons : 'a * 'a list -> 'a list *)
       { name = cons_path
-      ; parent_polarity = Pos
       ; parameters = [(cons_a, Star)]  (* Cons binds its own 'a *)
       ; existentials = []
       ; arguments = [Lhs (Rigid cons_a); Lhs (App (Sym (list_path, list_sgn_lazy), [Rigid cons_a]))]
@@ -41,7 +39,6 @@ let test_list_signature () =
       };
       (* Nil : 'a list *)
       { name = nil_path
-      ; parent_polarity = Pos
       ; parameters = [(nil_a, Star)]  (* Nil binds its own 'a *)
       ; existentials = []
       ; arguments = []
@@ -93,7 +90,6 @@ let test_gadt_filtering () =
   (* Fake string signature (empty, just for testing) *)
   let string_sgn_lazy = lazy {
     name = string_path;
-    polarity = Pos;
     parameters = [];
     xtors = []
   } in
@@ -104,12 +100,10 @@ let test_gadt_filtering () =
   
   let rec expr_sgn_lazy = lazy {
     name = expr_path;
-    polarity = Pos;
     parameters = [(t_id, Star)];  (* Arity: expr takes one type arg *)
     xtors = [
       (* Lit : int -> int expr  (no type params, concrete return) *)
       { name = lit_path
-      ; parent_polarity = Pos
       ; parameters = []  (* Lit has no type params *)
       ; existentials = []
       ; arguments = [Lhs (Ext Int)]
@@ -117,7 +111,6 @@ let test_gadt_filtering () =
       };
       (* Var : string -> 'a expr  (universally quantifies 'a) *)
       { name = var_path
-      ; parent_polarity = Pos
       ; parameters = [(var_a, Star)]  (* Var binds its own 'a *)
       ; existentials = []
       ; arguments = [Lhs (Sgn (Lazy.force string_sgn_lazy))]
@@ -177,15 +170,13 @@ let test_command_typecheck () =
   
   let unit_sgn = {
     name = unit_path;
-    polarity = Pos;
     parameters = [];
     xtors = [
       { name = tt_path
-      ; parent_polarity = Pos
       ; parameters = []
       ; existentials = []
       ; arguments = []
-      ; main = Sgn { name = unit_path; polarity = Pos;parameters = []; xtors = [] }
+      ; main = Sgn { name = unit_path; parameters = []; xtors = [] }
       }
     ]
   } in
@@ -193,11 +184,9 @@ let test_command_typecheck () =
   (* Fix: the main type should be the unit signature itself *)
   let unit_sgn = {
     name = unit_path;
-    polarity = Pos;
     parameters = [];
     xtors = [
       { name = tt_path
-      ; parent_polarity = Pos
       ; parameters = []
       ; existentials = []
       ; arguments = []
@@ -262,11 +251,9 @@ let test_existential_escape () =
   
   let good_sgn = Sgn {
     name = pack_path;
-    polarity = Neg;
     parameters = [];
     xtors = [{
       name = pack_path;
-      parent_polarity = Neg;
       parameters = [];
       existentials = [(ex_id, Star)];
       arguments = [Lhs (Rigid ex_id)];  (* ex appears in args (OK) *)
@@ -283,11 +270,9 @@ let test_existential_escape () =
   (* Bad: existential escapes into main *)
   let bad_sgn = Sgn {
     name = pack_path;
-    polarity = Neg;
     parameters = [];
     xtors = [{
       name = pack_path;
-      parent_polarity = Neg;
       parameters = [];
       existentials = [(ex_id, Star)];
       arguments = [Lhs (Rigid ex_id)];

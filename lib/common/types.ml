@@ -12,8 +12,6 @@ let ( let* ) o f =
   | Error e -> Error e
   | Ok x -> f x
 
-type polarity = Pos | Neg
-
 type kind = Star | Arrow of kind * kind
 
 type ext_typ =
@@ -35,7 +33,6 @@ and var_typ =
  function as both, depending on context *)
 and sgn_typ =
   { name: sym
-  ; polarity: polarity
   ; parameters: (Ident.t * kind) list
   ; xtors: xtor list
   }
@@ -43,7 +40,6 @@ and sgn_typ =
 (* Unifying, unpolarized notion constructors and destructors *)
 and xtor =
   { name: sym
-  ; parent_polarity: polarity
   ; parameters: (Ident.t * kind) list 
   ; existentials: (Ident.t * kind) list
   ; arguments: chiral_typ list

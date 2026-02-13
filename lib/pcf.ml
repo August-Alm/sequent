@@ -232,22 +232,12 @@ module Seq = struct
     | Sig (Return a) -> "↓" ^ pp_typ a
     | Sig (Pack a) -> "↑" ^ pp_typ a
 
-  (* Determine the "natural chirality" of a type:
-    - Int is positive (data-like), so values are Lhs
-    - Sig(Return A) is positive - it's data packaging a value/computation
-    - Sig(Pack A) is positive - it's data packaging a suspended computation
-    - Sig(Apply ...) is negative - functions are codata-like (demand-driven) *)
-  let is_positive_typ = function
-    | Int -> true
-    | Sig (Return _) -> true   (* Lower makes something data-like *)
-    | Sig (Pack _) -> true    (* Raise makes something data-like (pack is a value) *)
-    | Sig (Apply _) -> false   (* Functions are codata-like *)
-  
-  (* The chirality of a term of type A:
-    - If A is positive, terms are Lhs (producers/values)
-    - If A is negative, terms are Rhs (consumers/computations) *)
-  let natural_chirality ty =
-    if is_positive_typ ty then Lhs ty else Rhs ty
+  (* Xtor intrinsic argument chiralities:
+     - Apply(a, b): (x: Lhs a, k: Rhs b) - value and continuation
+     - Return(a):   (x: Lhs a)           - returning a value
+     - Pack(a):     (x: Rhs a)           - suspending a computation
+     
+     These are fixed per xtor, not dependent on the types a, b. *)
 
   let rec infer_command_typ (ctx: chiral_typ Ident.tbl) =
     function
@@ -286,81 +276,76 @@ module Seq = struct
     | CtorApply (a, b, arg, cont) ->
         let arg_ty = infer_typ ctx arg in
         let cont_ty = infer_typ ctx cont in
-        (* arg has natural chirality of a, cont is always Rhs b *)
-        let expected_arg = natural_chirality a in
-        let expected_cont = Rhs b in
-        if arg_ty = expected_arg && cont_ty = expected_cont then
+        (* Apply: arg is Lhs a (value), cont is Rhs b (continuation) *)
+        if arg_ty = Lhs a && cont_ty = Rhs b then
           Lhs (Sig (Apply (a, b)))
-        else failwith (Printf.sprintf "Type error in CtorApply: expected %s and %s, got %s and %s"
-          (match expected_arg with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t)
-          (match expected_cont with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t)
+        else failwith (Printf.sprintf "Type error in CtorApply: expected Lhs %s and Rhs %s, got %s and %s"
+          (pp_typ a) (pp_typ b)
           (match arg_ty with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t)
           (match cont_ty with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t))
     | CtorReturn (a, arg) ->
         let arg_ty = infer_typ ctx arg in
-        (* The argument's chirality depends on whether a is positive or negative *)
-        let expected = natural_chirality a in
-        if arg_ty = expected then
+        (* Return: arg is Lhs a (returning a value) *)
+        if arg_ty = Lhs a then
           Lhs (Sig (Return a))
-        else failwith "Type error in CtorReturn"
+        else failwith (Printf.sprintf "Type error in CtorReturn: expected Lhs %s, got %s"
+          (pp_typ a) (match arg_ty with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t))
     | CtorPack (a, arg) ->
         let arg_ty = infer_typ ctx arg in
-        (* Pack suspends a computation, so arg should match natural chirality of a *)
-        let expected = natural_chirality a in
-        if arg_ty = expected then
+        (* Pack: arg is Rhs a (suspending a computation) *)
+        if arg_ty = Rhs a then
           Lhs (Sig (Pack a))
-        else failwith "Type error in CtorPack"
+        else failwith (Printf.sprintf "Type error in CtorPack: expected Rhs %s, got %s"
+          (pp_typ a) (match arg_ty with Lhs t -> "Lhs " ^ pp_typ t | Rhs t -> "Rhs " ^ pp_typ t))
     | DtorApply (a, b, arg, cont) ->
         let arg_ty = infer_typ ctx arg in
         let cont_ty = infer_typ ctx cont in
-        (* arg is always Lhs (value), cont is always Rhs (continuation) *)
+        (* Apply: arg is Lhs a (value), cont is Rhs b (continuation) *)
         if arg_ty = Lhs a && cont_ty = Rhs b then
-          Lhs (Sig (Apply (a, b)))
+          Rhs (Sig (Apply (a, b)))
         else failwith "Type error in DtorApply"
     | DtorReturn (a, arg) ->
         let arg_ty = infer_typ ctx arg in
-        let expected = natural_chirality a in
-        if arg_ty = expected then
-          Lhs (Sig (Return a))  (* Producer - placed on left against MatchReturn *)
+        (* Return: arg is Lhs a (returning a value) *)
+        if arg_ty = Lhs a then
+          Rhs (Sig (Return a))
         else failwith "Type error in DtorReturn"
     | DtorPack (a, arg) ->
         let arg_ty = infer_typ ctx arg in
-        let expected = natural_chirality a in
-        if arg_ty = expected then
-          Lhs (Sig (Pack a))  (* Producer - placed on left against MatchPack *)
+        (* Pack: arg is Rhs a (suspending a computation) *)
+        if arg_ty = Rhs a then
+          Rhs (Sig (Pack a))
         else failwith "Type error in DtorPack"
     | MatchApply (a, b, x, k, cmd) ->
-        (* x receives the argument (always Lhs - values are passed)
-          k receives the continuation (always Rhs - continuations consume) *)
-        let ctx' =
-          Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx)
-        in
+        (* Apply: x is Lhs a, k is Rhs b *)
+        let ctx' = Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx) in
         infer_command_typ ctx' cmd |> ignore;
         Rhs (Sig (Apply (a, b)))
     | MatchReturn (a, x, cmd) ->
-        let ctx' = Ident.add x (natural_chirality a) ctx in
+        (* Return: x is Lhs a *)
+        let ctx' = Ident.add x (Lhs a) ctx in
         infer_command_typ ctx' cmd |> ignore;
         Rhs (Sig (Return a))
     | MatchPack (a, x, cmd) ->
-        let ctx' = Ident.add x (natural_chirality a) ctx in
+        (* Pack: x is Rhs a *)
+        let ctx' = Ident.add x (Rhs a) ctx in
         infer_command_typ ctx' cmd |> ignore;
         Rhs (Sig (Pack a))
     | ComatchApply (a, b, x, k, cmd) ->
-        (* x receives the argument (always Lhs - values are passed)
-          k receives the continuation (always Rhs - continuations consume) *)
-        let ctx' =
-          Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx)
-        in
+        (* Apply: x is Lhs a, k is Rhs b *)
+        let ctx' = Ident.add x (Lhs a) (Ident.add k (Rhs b) ctx) in
         infer_command_typ ctx' cmd |> ignore;
-        Rhs (Sig (Apply (a, b)))  (* Consumer - placed on right against CtorApply *)
+        Lhs (Sig (Apply (a, b)))
     | ComatchReturn (a, x, cmd) ->
-        let ctx' = Ident.add x (natural_chirality a) ctx in
+        (* Return: x is Lhs a *)
+        let ctx' = Ident.add x (Lhs a) ctx in
         infer_command_typ ctx' cmd |> ignore;
-        Rhs (Sig (Return a))  (* Consumer - placed on right against CtorReturn *)
+        Lhs (Sig (Return a))
     | ComatchPack (a, x, cmd) ->
-        let ctx' = Ident.add x (natural_chirality a) ctx in
+        (* Pack: x is Rhs a *)
+        let ctx' = Ident.add x (Rhs a) ctx in
         infer_command_typ ctx' cmd |> ignore;
-        Rhs (Sig (Pack a))  (* Consumer - placed on right against CtorPack *)
+        Lhs (Sig (Pack a))
     | MuLhs (ty, x, cmd) ->
         let ctx' = Ident.add x (Rhs ty) ctx in
         infer_command_typ ctx' cmd |> ignore;
@@ -391,44 +376,59 @@ module Encode = struct
     | Pcf.Arrow (a, b) ->
         let a' = map_typ a in
         let b' = map_typ b in
-        (* We always lower the codomain because the body of a lambda
-          must be in producer position (Lhs) to cut against the continuation.
-          For arguments:
+        (* For arguments:
           - Positive args (Int) stay as-is: they're values (Lhs)
           - Negative args (functions) are raised: they're computations 
-            that need to be suspended into values (Lhs) *)
-        match is_positive a with
-        | true -> Sig (Apply (a', lower b'))
-        | false -> Sig (Apply (raise a', lower b'))
+            that need to be suspended into values (Lhs)
+          For results:
+          - Positive results are lowered: ↓b' (values are returned directly)
+          - Negative results are raised then lowered: ↓↑b' (computations 
+            need to be packed into values before returning) *)
+        let a_part = if is_positive a then a' else raise a' in
+        let b_part = if is_positive b then lower b' else lower (raise b') in
+        Sig (Apply (a_part, b_part))
     
   let rec map_term (ctx: Pcf.typ Ident.tbl) = function
       Pcf.Var x -> Variable x
     | Pcf.Lam (x, a, body) ->
         (* λx:A. body  where body: B
-          Type is Fun(A', Lower(B')) where A' may be raised if A is negative.
-          The encoding wraps body' in CtorReturn since we always lower the result. *)
+          Type is Fun(A', B_ret) where:
+          - A' may be raised if A is negative
+          - B_ret is ↓b' if B positive, ↓↑b' if B negative
+          The encoding wraps body' appropriately based on whether B is positive. *)
         let ctx' = Ident.add x a ctx in
         let b = Pcf.infer_typ ctx' body in
         let body' = map_term ctx' body in
         let k = Ident.fresh () in
         let a' = map_typ a in
         let b' = map_typ b in
+        (* Return type: ↓b' for positive b, ↓↑b' for negative b *)
+        let b_ret = if is_positive b then lower b' else lower (raise b') in
+        (* Return term: CtorReturn(b', body') for positive b,
+                        CtorReturn(↑b', CtorPack(b', body')) for negative b
+          because negative body' is Rhs, needs to be packed into Lhs *)
+        let make_return body' = 
+          if is_positive b then
+            CtorReturn (b', body')
+          else
+            CtorReturn (raise b', CtorPack (b', body'))
+        in
         (match is_positive a with
           true ->
-            (* case { ctor_apply[a', lower b'](x, k) ⇒ ⟨ctor_return[b'](body') | k⟩ } *)
-            MatchApply (a', lower b', x, k,
-              Cut (lower b', CtorReturn (b', body'), Variable k))
+            (* case { ctor_apply[a', b_ret](x, k) ⇒ ⟨return(body') | k⟩ } *)
+            MatchApply (a', b_ret, x, k,
+              Cut (b_ret, make_return body', Variable k))
         | false ->
-            (* case { ctor_apply[raise a', lower b'](x', k) ⇒
-                 ⟨x' | case { ctor_pack[a'](x) ⇒ ⟨ctor_return[b'](body') | k⟩ }⟩ } *)
+            (* case { ctor_apply[raise a', b_ret](x', k) ⇒
+                 ⟨x' | case { ctor_pack[a'](x) ⇒ ⟨return(body') | k⟩ }⟩ } *)
             let x' = Ident.fresh () in
-            MatchApply (raise a', lower b', x', k,
+            MatchApply (raise a', b_ret, x', k,
               Cut (raise a',
                 Variable x',
-                MatchPack (a', x, Cut (lower b', CtorReturn (b', body'), Variable k)))))
+                MatchPack (a', x, Cut (b_ret, make_return body', Variable k)))))
     | Pcf.App (t1, t2) ->
         (* t1 t2  where t1 : A → B, t2 : A
-          A function call is: ⟨ctor_apply[A', Lower(B')](t2', k) | t1'⟩
+          A function call is: ⟨ctor_apply[A', B_ret](t2', k) | t1'⟩
           where k is a continuation that receives the result.
           We wrap in μL/μR based on whether B is positive/negative. *)
         let t1_ty = Pcf.infer_typ ctx t1 in
@@ -441,6 +441,8 @@ module Encode = struct
         let k = Ident.fresh () in
         let a' = map_typ a in
         let b' = map_typ b in
+        (* Return type: ↓b' for positive b, ↓↑b' for negative b *)
+        let b_ret = if is_positive b then lower b' else lower (raise b') in
         (* Choose Mu form based on whether result type is positive or negative *)
         let make_mu = if is_positive b then
           (fun ty k cmd -> MuLhs (ty, k, cmd))
@@ -448,32 +450,43 @@ module Encode = struct
           (fun ty k cmd -> MuRhs (ty, k, cmd))
         in
         (* Inner cut between return value x and continuation k.
-          For positive b': x is Lhs, k is Rhs (from MuLhs), so Cut(b', x, k)
-          For negative b': x is Rhs (natural chirality), k is Lhs (from MuRhs), so Cut(b', k, x) *)
-        let make_inner_cut b' x k =
-          if is_positive_typ b' then
+          For positive b: x is Lhs b', k is Rhs b' (from MuLhs), so Cut(b', x, k)
+          For negative b: x is Rhs b', k is Lhs b' (from MuRhs), so Cut(b', k, x) *)
+        let make_inner_cut x k =
+          if is_positive b then
             Cut (b', Variable x, Variable k)
           else
             Cut (b', Variable k, Variable x)
         in
+        (* Make continuation: 
+          For positive b: case { ctor_return[b'](x) => cut }
+          For negative b: case { ctor_return[↑b'](packed) => 
+                           <packed | case { ctor_pack[b'](x) => cut }> } *)
+        let make_continuation x inner_cmd =
+          if is_positive b then
+            MatchReturn (b', x, inner_cmd)
+          else
+            let packed = Ident.fresh () in
+            MatchReturn (raise b', packed, 
+              Cut (raise b', Variable packed, MatchPack (b', x, inner_cmd)))
+        in
         (match is_positive a with
           true ->
-            (* μ k. ⟨ctor_apply[a', lower b'](t2', cocase{dtor_return[b'](x) ⇒ ⟨x | k⟩}) | t1'⟩ *)
+            (* μ k. ⟨ctor_apply[a', b_ret](t2', continuation) | t1'⟩ *)
             let x = Ident.fresh () in
             make_mu b' k
-              (Cut (Sig (Apply (a', lower b')),
-                CtorApply (a', lower b', t2',
-                  ComatchReturn (b', x, make_inner_cut b' x k)),
+              (Cut (Sig (Apply (a', b_ret)),
+                CtorApply (a', b_ret, t2',
+                  make_continuation x (make_inner_cut x k)),
                 t1'))
         | false ->
-            (* μ k. ⟨ctor_apply[raise a', lower b'](ctor_pack[a'](t2'), 
-                      cocase{dtor_return[b'](x) ⇒ ⟨x | k⟩}) | t1'⟩ *)
+            (* μ k. ⟨ctor_apply[raise a', b_ret](ctor_pack[a'](t2'), continuation) | t1'⟩ *)
             let x = Ident.fresh () in
             make_mu b' k
-              (Cut (Sig (Apply (raise a', lower b')),
-                CtorApply (raise a', lower b',
+              (Cut (Sig (Apply (raise a', b_ret)),
+                CtorApply (raise a', b_ret,
                   CtorPack (a', t2'),
-                  ComatchReturn (b', x, make_inner_cut b' x k)),
+                  make_continuation x (make_inner_cut x k)),
                 t1')))
     | Pcf.Let (x, t1, t2) ->
         (* let x = t1 in t2  is equivalent to  (λx:A. t2) t1
@@ -503,10 +516,10 @@ module Encode = struct
         else
           (fun ty k cmd -> MuRhs (ty, k, cmd))
         in
-        (* For positive b': t2'/t3' are Lhs, k is Rhs, so Cut(b', t2'/t3', k)
-          For negative b': t2'/t3' are Rhs, k is Lhs, so Cut(b', k, t2'/t3') *)
+        (* For positive b: t2'/t3' are Lhs, k is Rhs, so Cut(b', t2'/t3', k)
+          For negative b: t2'/t3' are Rhs, k is Lhs, so Cut(b', k, t2'/t3') *)
         let make_branch_cut b' branch k =
-          if is_positive_typ b' then
+          if is_positive b then
             Cut (b', branch, Variable k)
           else
             Cut (b', Variable k, branch)

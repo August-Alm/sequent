@@ -237,12 +237,4 @@ This compiler is based on:
 
 [To be determined]
 
-## ET notes
-
-### As admin
-
-- When an NRA user is edited, the whole use list reloads and it seem uneccesarily slow. (No such problem when editing Admin users; is it simply because there are much fewer in that list?)
-
-- Adding an NRA ("Add NRA organisation"), the modal has some wierd aliasing for lines (that
-disappear on mouse hover).
 
