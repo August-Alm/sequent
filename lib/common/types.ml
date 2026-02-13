@@ -14,7 +14,7 @@ let ( let* ) o f =
 
 type polarity = Pos | Neg
 
-type kind = Type of polarity | Arrow of kind * kind
+type kind = Star | Arrow of kind * kind
 
 type ext_typ =
     Int
@@ -43,7 +43,7 @@ and sgn_typ =
 (* Unifying, unpolarized notion constructors and destructors *)
 and xtor =
   { name: sym
-  ; parent: sym
+  ; parent_polarity: polarity
   ; parameters: (Ident.t * kind) list 
   ; existentials: (Ident.t * kind) list
   ; arguments: chiral_typ list
@@ -114,7 +114,7 @@ and rigid_occurs_xtor (id: Ident.t) (x: xtor) : bool =
     The context maps identifiers (both Rigid and Var binders) to their kinds. *)
 let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
   match t with
-    Ext _ -> Ok (Type Pos)
+    Ext _ -> Ok Star
   | Var {contents = Unbound id} ->
       (match Ident.find_opt id ctx with
         Some k -> Ok k
@@ -130,7 +130,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
       let param_kinds = List.map snd sgn.parameters in
       Ok (List.fold_right (fun k acc ->
         Arrow (k, acc)
-      ) param_kinds (Type sgn.polarity))
+      ) param_kinds Star)
   | App (f, args) ->
       let* f_kind = infer_kind ctx f in
       (* Apply each argument, consuming one arrow at a time *)
@@ -165,7 +165,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
             let param_kinds = List.map snd s.parameters in
             Ok (List.fold_right (fun k acc ->
               Arrow (k, acc)
-            ) param_kinds (Type s.polarity))
+            ) param_kinds Star)
         | x :: rest -> 
             match check_xtor x with
             | Ok () -> check_all rest

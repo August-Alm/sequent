@@ -29,20 +29,20 @@ let test_list_signature () =
   let rec list_sgn_lazy = lazy {
     name = list_path;
     polarity = Pos;
-    parameters = [(a_id, Type Pos)];  (* Arity: list takes one type arg *)
+    parameters = [(a_id, Star)];  (* Arity: list takes one type arg *)
     xtors = [
       (* Cons : 'a * 'a list -> 'a list *)
       { name = cons_path
-      ; parent = list_path
-      ; parameters = [(cons_a, Type Pos)]  (* Cons binds its own 'a *)
+      ; parent_polarity = Pos
+      ; parameters = [(cons_a, Star)]  (* Cons binds its own 'a *)
       ; existentials = []
       ; arguments = [Lhs (Rigid cons_a); Lhs (App (Sym (list_path, list_sgn_lazy), [Rigid cons_a]))]
       ; main = App (Sym (list_path, list_sgn_lazy), [Rigid cons_a])
       };
       (* Nil : 'a list *)
       { name = nil_path
-      ; parent = list_path
-      ; parameters = [(nil_a, Type Pos)]  (* Nil binds its own 'a *)
+      ; parent_polarity = Pos
+      ; parameters = [(nil_a, Star)]  (* Nil binds its own 'a *)
       ; existentials = []
       ; arguments = []
       ; main = App (Sym (list_path, list_sgn_lazy), [Rigid nil_a])
@@ -51,7 +51,7 @@ let test_list_signature () =
   } in
   
   (* Kind context: a has kind Star *)
-  let kctx = Ident.add a_id (Type Pos) Ident.emptytbl in
+  let kctx = Ident.add a_id Star Ident.emptytbl in
   
   (* Normalize: App(list_sgn, Int) *)
   let list_int = App (Sym (list_path, list_sgn_lazy), [Ext Int]) in
@@ -105,11 +105,11 @@ let test_gadt_filtering () =
   let rec expr_sgn_lazy = lazy {
     name = expr_path;
     polarity = Pos;
-    parameters = [(t_id, Type Pos)];  (* Arity: expr takes one type arg *)
+    parameters = [(t_id, Star)];  (* Arity: expr takes one type arg *)
     xtors = [
       (* Lit : int -> int expr  (no type params, concrete return) *)
       { name = lit_path
-      ; parent = expr_path
+      ; parent_polarity = Pos
       ; parameters = []  (* Lit has no type params *)
       ; existentials = []
       ; arguments = [Lhs (Ext Int)]
@@ -117,8 +117,8 @@ let test_gadt_filtering () =
       };
       (* Var : string -> 'a expr  (universally quantifies 'a) *)
       { name = var_path
-      ; parent = expr_path
-      ; parameters = [(var_a, Type Pos)]  (* Var binds its own 'a *)
+      ; parent_polarity = Pos
+      ; parameters = [(var_a, Star)]  (* Var binds its own 'a *)
       ; existentials = []
       ; arguments = [Lhs (Sgn (Lazy.force string_sgn_lazy))]
       ; main = App (Sym (expr_path, expr_sgn_lazy), [Rigid var_a])
@@ -127,7 +127,7 @@ let test_gadt_filtering () =
   } in
   
   (* Kind context: t has kind Star *)
-  let kctx = Ident.add t_id (Type Pos) Ident.emptytbl in
+  let kctx = Ident.add t_id Star Ident.emptytbl in
   
   (* Test 2a: expr[int] should have both Lit and Var *)
   let expr_int = App (Sym (expr_path, expr_sgn_lazy), [Ext Int]) in
@@ -181,7 +181,7 @@ let test_command_typecheck () =
     parameters = [];
     xtors = [
       { name = tt_path
-      ; parent = unit_path
+      ; parent_polarity = Pos
       ; parameters = []
       ; existentials = []
       ; arguments = []
@@ -197,7 +197,7 @@ let test_command_typecheck () =
     parameters = [];
     xtors = [
       { name = tt_path
-      ; parent = unit_path
+      ; parent_polarity = Pos
       ; parameters = []
       ; existentials = []
       ; arguments = []
@@ -266,9 +266,9 @@ let test_existential_escape () =
     parameters = [];
     xtors = [{
       name = pack_path;
-      parent = pack_path;
+      parent_polarity = Neg;
       parameters = [];
-      existentials = [(ex_id, Type Pos)];
+      existentials = [(ex_id, Star)];
       arguments = [Lhs (Rigid ex_id)];  (* ex appears in args (OK) *)
       main = Ext Int  (* ex does NOT appear in main (OK) *)
     }]
@@ -276,7 +276,7 @@ let test_existential_escape () =
   
   let kctx = Ident.emptytbl in
   (match infer_kind kctx good_sgn with
-  | Ok (Type _) -> Printf.printf "  Good sgn (ex in args only): PASSED\n"
+  | Ok Star -> Printf.printf "  Good sgn (ex in args only): PASSED\n"
   | Ok _ -> Printf.printf "  Good sgn: FAILED - wrong kind\n"
   | Error _ -> Printf.printf "  Good sgn: FAILED - unexpected error\n");
   
@@ -287,9 +287,9 @@ let test_existential_escape () =
     parameters = [];
     xtors = [{
       name = pack_path;
-      parent = pack_path;
+      parent_polarity = Neg;
       parameters = [];
-      existentials = [(ex_id, Type Pos)];
+      existentials = [(ex_id, Star)];
       arguments = [Lhs (Rigid ex_id)];
       main = Rigid ex_id  (* ex DOES appear in main (BAD!) *)
     }]
