@@ -12,9 +12,9 @@ let ( let* ) o f =
   | Error e -> Error e
   | Ok x -> f x
 
-type kind =
-    Star
-  | Arrow of kind * kind
+type polarity = Pos | Neg
+
+type kind = Type of polarity | Arrow of kind * kind
 
 type ext_typ =
     Int
@@ -35,6 +35,7 @@ and var_typ =
  function as both, depending on context *)
 and sgn_typ =
   { name: sym
+  ; polarity: polarity
   ; parameters: (Ident.t * kind) list
   ; xtors: xtor list
   }
@@ -87,7 +88,8 @@ let rec rigid_occurs (id: Ident.t) (t: typ) : bool =
   | Rigid id' -> Ident.equal id id'
   | Var {contents = Link t'} -> rigid_occurs id t'
   | Var {contents = Unbound _} -> false
-  | App (f, args) -> rigid_occurs id f || List.exists (rigid_occurs id) args
+  | App (f, args) ->
+      rigid_occurs id f || List.exists (rigid_occurs id) args
   | Sgn s -> rigid_occurs_sgn id s
   | Sym _ | Ext _ -> false
 
@@ -101,7 +103,9 @@ and rigid_occurs_xtor (id: Ident.t) (x: xtor) : bool =
   let bound = List.map fst x.parameters @ List.map fst x.existentials in
   if contains_var id bound then false
   else
-    List.exists (fun ct -> match ct with Lhs t | Rhs t -> rigid_occurs id t) x.arguments 
+    List.exists (fun ct ->
+      match ct with Lhs t | Rhs t -> rigid_occurs id t
+    ) x.arguments 
     || rigid_occurs id x.main
 
 (** Bidirectional kind checking.
@@ -110,7 +114,7 @@ and rigid_occurs_xtor (id: Ident.t) (x: xtor) : bool =
     The context maps identifiers (both Rigid and Var binders) to their kinds. *)
 let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
   match t with
-    Ext _ -> Ok Star
+    Ext _ -> Ok (Type Pos)
   | Var {contents = Unbound id} ->
       (match Ident.find_opt id ctx with
         Some k -> Ok k
@@ -124,7 +128,9 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
       (* The kind of a symbol is determined by its parameters *)
       let sgn = Lazy.force lazy_sgn in
       let param_kinds = List.map snd sgn.parameters in
-      Ok (List.fold_right (fun k acc -> Arrow (k, acc)) param_kinds Star)
+      Ok (List.fold_right (fun k acc ->
+        Arrow (k, acc)
+      ) param_kinds (Type sgn.polarity))
   | App (f, args) ->
       let* f_kind = infer_kind ctx f in
       (* Apply each argument, consuming one arrow at a time *)
@@ -137,7 +143,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
               apply_args result_kind rest
             else
               Error (KindMismatch { expected = param_kind; actual = arg_kind })
-        | Star, _ :: _ -> Error (ExpectedHKT (f, Star))
+        | k, _ :: _ -> Error (ExpectedHKT (f, k))
       in
       apply_args f_kind args
   | Sgn s -> 
@@ -145,16 +151,21 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
          1. Check that existentials don't escape into main
          2. Compute kind from parameters *)
       let check_xtor (x: xtor) : (unit, kind_error) result =
-        let escaped = List.filter (fun (id, _) -> rigid_occurs id x.main) x.existentials in
+        let escaped = List.filter (fun (id, _) ->
+          rigid_occurs id x.main
+        ) x.existentials in
         match escaped with
         | [] -> Ok ()
-        | (id, _) :: _ -> Error (ExistentialEscape { xtor = x.name; existential = id })
+        | (id, _) :: _ ->
+          Error (ExistentialEscape { xtor = x.name; existential = id })
       in
       let rec check_all = function
         | [] -> 
             (* All xtors valid; compute kind from parameters *)
             let param_kinds = List.map snd s.parameters in
-            Ok (List.fold_right (fun k acc -> Arrow (k, acc)) param_kinds Star)
+            Ok (List.fold_right (fun k acc ->
+              Arrow (k, acc)
+            ) param_kinds (Type s.polarity))
         | x :: rest -> 
             match check_xtor x with
             | Ok () -> check_all rest
@@ -225,7 +236,9 @@ let rec occurs (r: var_typ ref) (t: typ) : bool =
 
 and occurs_sgn (r: var_typ ref) (s: sgn_typ) : bool =
   List.exists (fun (x: xtor) -> 
-    List.exists (fun ct -> match ct with Lhs t | Rhs t -> occurs r t) x.arguments || occurs r x.main
+    List.exists (fun ct ->
+      match ct with Lhs t | Rhs t -> occurs r t
+    ) x.arguments || occurs r x.main
   ) s.xtors
 
 (* ========================================================================= *)
@@ -309,7 +322,7 @@ and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ lis
     signatures contain recursive references. *)
 and can_unify_shallow (t: typ) (target_args: typ list) (target_name: Path.t) : bool =
   match t with
-  | Var {contents = Link t'} -> can_unify_shallow t' target_args target_name
+    Var {contents = Link t'} -> can_unify_shallow t' target_args target_name
   | Var {contents = Unbound _} -> true  (* Unbound can unify with anything *)
   | Sgn sg -> 
       Path.equal sg.name target_name && 
@@ -331,7 +344,7 @@ and can_unify_shallow (t: typ) (target_args: typ list) (target_name: Path.t) : b
 (** Check if two types can potentially unify (shallow) *)
 and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
   match t1, t2 with
-  | Var {contents = Link t1'}, _ -> can_unify_shallow_types t1' t2
+    Var {contents = Link t1'}, _ -> can_unify_shallow_types t1' t2
   | _, Var {contents = Link t2'} -> can_unify_shallow_types t1 t2'
   | Var {contents = Unbound _}, _ -> true
   | _, Var {contents = Unbound _} -> true
@@ -346,7 +359,8 @@ and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
   | _ -> false
 
 (** Unify two lists of types pairwise *)
-and unify_args (kctx: kind Ident.tbl) (args1: typ list) (args2: typ list) (env: solving_env) 
+and unify_args
+    (kctx: kind Ident.tbl) (args1: typ list) (args2: typ list) (env: solving_env) 
     : solving_env option =
   match args1, args2 with
     [], [] -> Some env
@@ -355,12 +369,13 @@ and unify_args (kctx: kind Ident.tbl) (args1: typ list) (args2: typ list) (env: 
   | _ -> None (* Length mismatch *)
 
 (** Unify two types. Reduces both to whnf first, then compares structurally. *)
-and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env) : solving_env option =
+and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
+    : solving_env option =
   let t1 = whnf kctx env.subst t1 in
   let t2 = whnf kctx env.subst t2 in
   match t1, t2 with
   (* Identical externals *)
-  | Ext e1, Ext e2 -> if e1 = e2 then Some env else None
+    Ext e1, Ext e2 -> if e1 = e2 then Some env else None
   (* Same variable (by physical equality) *)
   | Var r1, Var r2 when r1 == r2 -> Some env
   (* Unbound variable: occurs check, then link *)
@@ -388,7 +403,9 @@ and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env) : solvin
 
 (** Unify two signatures structurally.
     Both signatures should already have unreachable xtors filtered out. *)
-and unify_sgn (kctx: kind Ident.tbl) (sg1: sgn_typ) (sg2: sgn_typ) (env: solving_env) : solving_env option =
+and unify_sgn
+    (kctx: kind Ident.tbl) (sg1: sgn_typ) (sg2: sgn_typ) (env: solving_env)
+    : solving_env option =
   (* Must have same name *)
   if not (Path.equal sg1.name sg2.name) then None
   (* Must have same xtors (after GADT filtering) *)
@@ -400,7 +417,9 @@ and unify_sgn (kctx: kind Ident.tbl) (sg1: sgn_typ) (sg2: sgn_typ) (env: solving
     ) (Some env) sg1.xtors sg2.xtors
 
 (** Unify two xtors structurally *)
-and unify_xtor (kctx: kind Ident.tbl) (x1: xtor) (x2: xtor) (env: solving_env) : solving_env option =
+and unify_xtor
+    (kctx: kind Ident.tbl) (x1: xtor) (x2: xtor) (env: solving_env)
+    : solving_env option =
   if not (Path.equal x1.name x2.name) then None
   else if List.length x1.arguments <> List.length x2.arguments then None
   else
@@ -412,9 +431,11 @@ and unify_xtor (kctx: kind Ident.tbl) (x1: xtor) (x2: xtor) (env: solving_env) :
       ) (Some env) x1.arguments x2.arguments)
 
 (** Unify chiral types *)
-and unify_chiral (kctx: kind Ident.tbl) (ct1: chiral_typ) (ct2: chiral_typ) (env: solving_env) : solving_env option =
+and unify_chiral
+    (kctx: kind Ident.tbl) (ct1: chiral_typ) (ct2: chiral_typ) (env: solving_env)
+    : solving_env option =
   match ct1, ct2 with
-  | Lhs t1, Lhs t2 -> unify kctx t1 t2 env
+    Lhs t1, Lhs t2 -> unify kctx t1 t2 env
   | Rhs t1, Rhs t2 -> unify kctx t1 t2 env
   | _ -> None  (* Chirality mismatch *)
 
@@ -565,12 +586,14 @@ let expect_rhs (ct: chiral_typ) : typ check_result =
 
 (** Expect a type to be a signature (possibly after whnf).
     After reduction, only Sgn or stuck types are possible. *)
-let expect_sgn (kctx: kind Ident.tbl) (env: solving_env) (t: typ) : sgn_typ check_result =
+let expect_sgn (kctx: kind Ident.tbl) (env: solving_env) (t: typ)
+    : sgn_typ check_result =
   match whnf kctx env.subst t with
     Sgn sg -> Ok sg | t' -> Error (ExpectedSignature t')
 
 (** Check that xtor arguments match the context types *)
-let check_xtor_args (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (x: xtor) (args: var list) 
+let check_xtor_args
+    (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (x: xtor) (args: var list) 
     : solving_env check_result =
   if List.length x.arguments <> List.length args then
     Error (ArityMismatch
@@ -604,7 +627,8 @@ let bind_xtor_args (ctx: context) (x: xtor) (vars: var list) : context =
   extend_many ctx bindings
 
 (** Check a command under a context and solving environment *)
-let rec check_command (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (cmd: command) 
+let rec check_command
+    (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (cmd: command) 
     : unit check_result =
   match cmd with
     Let (v, x, args, body) ->
@@ -706,16 +730,25 @@ let rec check_command (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (
   | End -> Ok ()
 
 (** Check branches against xtors (simple version - same env for all branches) *)
-and check_branches_simple (kctx: kind Ident.tbl) (ctx: context) (env: solving_env) (xtors: xtor list)
-    (branches: branch list) : unit check_result =
+and check_branches_simple
+    (kctx: kind Ident.tbl) (ctx: context) (env: solving_env)
+    (xtors: xtor list) (branches: branch list)
+    : unit check_result =
   let check_one (x: xtor) =
-    match List.find_opt (fun ((x': xtor), _, _) -> Path.equal x'.name x.name) branches with
+    match List.find_opt (fun ((x': xtor), _, _) ->
+        Path.equal x'.name x.name
+      ) branches
+    with
       None -> 
         (* This should not happen if exhaustiveness check passed in Switch/New *)
-        Error (XtorNotInSignature (x, { name = x.parent; parameters = []; xtors = xtors }))
+        failwith "impossible: missing branch after exhaustiveness check!"
     | Some (_, vars, cmd) ->
         if List.length vars <> List.length x.arguments then
-          Error (ArityMismatch { xtor = x; expected = List.length x.arguments; actual = List.length vars })
+          Error (ArityMismatch
+            { xtor = x
+            ; expected = List.length x.arguments
+            ; actual = List.length vars
+            })
         else
           let ctx' = bind_xtor_args ctx x vars in
           check_command kctx ctx' env cmd
