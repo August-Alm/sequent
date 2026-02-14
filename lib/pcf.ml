@@ -84,8 +84,8 @@ module Seq = struct
 
   and xtor =
       Apply of typ * typ (** Xtor of Fun(A, B) **)
-    | Return of typ (** Xtor of Lower(A) - shifts to consumer **)
-    | Pack of typ (** Xtor of Raise(A) - shifts to producer **)
+    | Return of typ (** Xtor of Lower(A) **)
+    | Pack of typ (** Xtor of Raise(A) **)
 
   (** Chirality: Lhs = producer, Rhs = consumer **)
   type chiral_typ = Lhs of typ | Rhs of typ

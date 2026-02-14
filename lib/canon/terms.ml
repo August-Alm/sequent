@@ -28,47 +28,47 @@ type var = Ident.t
 type command =
     (* let v = m(x1, ...); s
        
-       m ∈ T    Γ(xi) = Ai (args of m)    Γ, v : lhs T ⊢ s
-       ---------------------------------------------------- [LET]
-       Γ ⊢ let v = m(x1, ...); s
-       
-       Constructs a producer of T using constructor m. *)
+      m ∈ T    Γ(xi) = Ai (args of m)    Γ, v : lhs T ⊢ s
+      ---------------------------------------------------- [LET]
+      Γ ⊢ let v = m(x1, ...); s
+      
+      Constructs a producer of T using constructor m. *)
     Let of var * xtor * var list * command
 
     (* switch v {m1(y1, ...) ⇒ s1, ...}
        
-       Γ(v) = lhs T    for each m ∈ T: Γ, yi : Ai ⊢ si
-       ------------------------------------------------ [SWITCH]
-       Γ ⊢ switch v {m1(y1, ...) ⇒ s1, ...}
-       
-       Pattern matches on producer v of signature T. *)
+      Γ(v) = lhs T    for each m ∈ T: Γ, yi : Ai ⊢ si
+      ------------------------------------------------ [SWITCH]
+      Γ ⊢ switch v {m1(y1, ...) ⇒ s1, ...}
+      
+      Pattern matches on producer v of signature T. *)
   | Switch of sgn_typ * var * branch list
 
     (* new v = {m1(y1, ...) ⇒ s1, ...}; s
        
-       for each m ∈ T: Γ, yi : Ai ⊢ si    Γ, v : rhs T ⊢ s
-       ---------------------------------------------------- [NEW]
-       Γ ⊢ new v = {m1(y1, ...) ⇒ s1, ...}; s
-       
-       Creates a consumer of T via copattern matching. *)
+      for each m ∈ T: Γ, yi : Ai ⊢ si    Γ, v : rhs T ⊢ s
+      ---------------------------------------------------- [NEW]
+      Γ ⊢ new v = {m1(y1, ...) ⇒ s1, ...}; s
+      
+      Creates a consumer of T via copattern matching. *)
   | New of sgn_typ * var * branch list * command
 
     (* invoke v m(x1, ...)
        
-       Γ(v) = rhs T    m ∈ T    Γ(xi) = Ai
-       ------------------------------------ [INVOKE]
-       Γ ⊢ invoke v m(x1, ...)
-       
-       Invokes destructor m on consumer v. *)
+      Γ(v) = rhs T    m ∈ T    Γ(xi) = Ai
+      ------------------------------------ [INVOKE]
+      Γ ⊢ invoke v m(x1, ...)
+      
+      Invokes destructor m on consumer v. *)
   | Invoke of var * xtor * var list
 
     (* ⟨v | k⟩
        
-       Γ(v) = lhs τ    Γ(k) = rhs τ
-       ----------------------------- [AXIOM]
-       Γ ⊢ ⟨v | k⟩
-       
-       Cut: pass producer v to consumer k at type τ. *)
+      Γ(v) = lhs τ    Γ(k) = rhs τ
+      ----------------------------- [AXIOM]
+      Γ ⊢ ⟨v | k⟩
+      
+      Cut: pass producer v to consumer k at type τ. *)
   | Axiom of typ * var * var
 
     (* Primitives for integers *)
@@ -101,9 +101,7 @@ type check_error =
   | ArityMismatch of { xtor: xtor; expected: int; actual: int }
   | UnificationFailed of typ * typ
 
-type 'a check_result = ('a, check_error) result
-
-let lookup (ctx: context) (v: var) : chiral_typ check_result =
+let lookup (ctx: context) (v: var) : (chiral_typ, check_error) result =
   match VarMap.find_opt v ctx with
   | Some ct -> Ok ct
   | None -> Error (UnboundVariable v)
@@ -119,14 +117,14 @@ let unchiral (ct: chiral_typ) : typ =
   match ct with Lhs t | Rhs t -> t
 
 (** Check that a chiral type is Lhs and extract the type *)
-let expect_lhs (ct: chiral_typ) : typ check_result =
+let expect_lhs (ct: chiral_typ) : (typ, check_error) result =
   match ct with
     Lhs t -> Ok t
   | Rhs _ -> Error (ChiralityMismatch {
       expected_chirality = `Lhs; actual = ct })
 
 (** Check that a chiral type is Rhs and extract the type *)
-let expect_rhs (ct: chiral_typ) : typ check_result =
+let expect_rhs (ct: chiral_typ) : (typ, check_error) result =
   match ct with
     Rhs t -> Ok t
   | Lhs _ -> Error (ChiralityMismatch {
@@ -135,7 +133,7 @@ let expect_rhs (ct: chiral_typ) : typ check_result =
 (** Expect a type to be a signature (possibly after whnf).
     After reduction, only Sgn or stuck types are possible. *)
 let expect_sgn (kctx: kind Ident.tbl) (env: solving_env) (t: typ)
-    : sgn_typ check_result =
+    : (sgn_typ, check_error) result =
   match whnf kctx env.subs t with
     Sgn sg -> Ok sg | t' -> Error (ExpectedSignature t')
 
@@ -143,7 +141,7 @@ let expect_sgn (kctx: kind Ident.tbl) (env: solving_env) (t: typ)
 let check_xtor_args
     (kctx: kind Ident.tbl) (ctx: context) (env: solving_env)
     (x: xtor) (args: var list) 
-    : solving_env check_result =
+    : (solving_env, check_error) result =
   if List.length x.arguments <> List.length args then
     Error (ArityMismatch
       { xtor = x
@@ -180,7 +178,7 @@ let bind_xtor_args (ctx: context) (x: xtor) (vars: var list) : context =
 let rec check_command
     (kctx: kind Ident.tbl) (ctx: context) (env: solving_env)
     (cmd: command) 
-    : unit check_result =
+    : (unit, check_error) result =
   match cmd with
     Let (v, x, args, body) ->
       (* Check xtor arguments against context *)
@@ -289,7 +287,7 @@ let rec check_command
 and check_branches_simple
     (kctx: kind Ident.tbl) (ctx: context) (env: solving_env)
     (xtors: xtor list) (branches: branch list)
-    : unit check_result =
+    : (unit, check_error) result =
   let check_one (x: xtor) =
     match List.find_opt (fun ((x': xtor), _, _) ->
         Path.equal x'.name x.name
