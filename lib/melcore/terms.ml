@@ -53,8 +53,8 @@ type typed_term =
   | TypedLet of var * typed_term * typed_term * typ
   | TypedMatch of typed_term * typed_clause list * typ
   | TypedNew of typed_clause list * typ
-  | TypedCtor of xtor * typ list * typed_term list * typ
-  | TypedDtor of xtor * typ list * typed_term list * typ
+  | TypedCtor of xtor * typed_term list * typ
+  | TypedDtor of xtor * typed_term list * typ
 
 and typed_clause =
   xtor * var list * var list * typed_term
@@ -72,8 +72,8 @@ let get_type (tm: typed_term) : typ =
   | TypedLet (_, _, _, ty) -> ty
   | TypedMatch (_, _, ty) -> ty
   | TypedNew (_, ty) -> ty
-  | TypedCtor (_, _, _, ty) -> ty
-  | TypedDtor (_, _, _, ty) -> ty
+  | TypedCtor (_, _, ty) -> ty
+  | TypedDtor (_, _, ty) -> ty
 
 type term_def =
   { name: Path.t
@@ -329,14 +329,14 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
       in
       let (provided_tys, remaining_tys) = split_at actual_arity x_inst.arguments in
       (* Check each provided argument against expected type *)
-      let* (typed_args, ty_args, env) = 
+      let* (typed_args, _, env) = 
         infer_ctor_args defs ctx env provided_tys args in
       (* Build result type: if partial, wrap remaining args as function type *)
       let base_ty = whnf ctx.kinds env.subs x_inst.main in
       let result_ty = List.fold_right (fun arg_ty acc ->
         Types.Fun (arg_ty, acc)
       ) remaining_tys base_ty in
-      Ok (TypedCtor (x, ty_args, typed_args, result_ty), result_ty, env)
+      Ok (TypedCtor (x, typed_args, result_ty), result_ty, env)
   
   | Dtor (x, args) ->
       (* For codata destruction: x is a destructor, last argument type is codomain.
@@ -368,13 +368,13 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
           | h :: t -> let (taken, rest) = split_at (n - 1) t in (h :: taken, rest)
       in
       let (provided_tys, remaining_tys) = split_at actual_arity regular_args in
-      let* (typed_args, ty_args, env) = 
+      let* (typed_args, _, env) = 
         infer_ctor_args defs ctx env provided_tys args in
       (* Build result type: remaining args + final result *)
       let result_ty = List.fold_right (fun arg_ty acc ->
         Types.Fun (arg_ty, acc)
       ) remaining_tys final_result in
-      Ok (TypedDtor (x, ty_args, typed_args, result_ty), result_ty, env)
+      Ok (TypedDtor (x, typed_args, result_ty), result_ty, env)
 
 (** Check a term against an expected type *)
 and check (defs: definitions) (ctx: context) (env: solving_env) (tm: term) (expected: typ)

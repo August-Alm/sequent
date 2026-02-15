@@ -21,12 +21,16 @@ module Sym: sig
 end
 
 module Prim: sig
+  val fun_sgn_lazy: sgn_typ Lazy.t
   val fun_sgn: sgn_typ
   val fun_apply: xtor
+  val raise_sgn_lazy: sgn_typ Lazy.t
   val raise_sgn: sgn_typ
   val raise_pack: xtor
+  val lower_sgn_lazy: sgn_typ Lazy.t
   val lower_sgn: sgn_typ
   val lower_return: xtor
+  val all_sgn_lazy: Ident.t -> kind -> sgn_typ Lazy.t
   val all_sgn: Ident.t -> kind -> sgn_typ
   val all_instantiate: Ident.t -> kind -> xtor
 end

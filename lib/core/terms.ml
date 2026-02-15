@@ -20,7 +20,7 @@ type command =
   | End
 
 and term =
-    Variable of var
+    Var of var
   | Lit of int
   (* Constructors build data (Lhs/producer) *)
   | Ctor of sgn_typ * xtor * term list
@@ -287,7 +287,7 @@ let check_call_args
 let rec infer_typ (dctx: dctx) (kctx: kctx) (ctx: ctx) (env: solving_env) 
     : term -> (chiral_typ * solving_env) check_result =
   function
-    Variable x ->
+    Var x ->
       let* ct = lookup ctx x in
       Ok (ct, env)
   | Lit _ -> 
