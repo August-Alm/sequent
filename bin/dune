@@ -1,6 +1,6 @@
 (executables
- (names main test_parser test_mutual test_simple test_focus test_compose test_pcf test_gadt)
- (public_names sequent test_parser test_mutual test_simple test_focus test_compose test_pcf test_gadt)
+ (names main test_parser test_mutual test_pcf test_gadt)
+ (public_names sequent test_parser test_mutual test_pcf test_gadt)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 
