@@ -1,9 +1,9 @@
 (**
-  module: Common.Types
-  description: A type system common to sequent calculus-based intermediate languages.
+  module: Melcore.Types
+  description: Type system of the Melcore language.
 *)
 
-open Identifiers
+open Common.Identifiers
 
 let ( let* ) o f = Utility.( let* ) o f
 
@@ -11,53 +11,21 @@ type sym = Path.t
 
 type kind = Star | Arrow of kind * kind
 
-(* Newton's method for integer square root *)
-let isqrt n =
-  if n < 0 then invalid_arg "isqrt"
-  else if n = 0 then 0
-  else
-    let rec go x =
-      let x' = (x + n / x) / 2 in
-      if x' >= x then x else go x'
-    in
-    go n
-
-(* Cantor's diagonal *)
-let cantor_pair x y = (x + y) * (x + y + 1) / 2 + y
-
-let cantor_unpair p =
-  let w = (isqrt (8 * p + 1) - 1) / 2 in
-  let t = (w * w + w) / 2 in
-  let y = p - t in
-  let x = w - y in
-  (x, y)
-
-let rec encode =
-  function
-    Star -> 0
-  | Arrow (k1, k2) -> cantor_pair (encode k1) (encode k2) + 3
-
-let rec decode n =
-  if n = 0 then Star
-  else
-    let (x, y) = cantor_unpair (n - 3) in
-    Arrow (decode x, decode y)
-
-let compare_kinds k1 k2 =
-  let n1 = encode k1 in
-  let n2 = encode k2 in
-  compare n1 n2
-
 type ext_typ =
     Int
+
+type polarity = Pos | Neg
   
 type typ =
     Ext of ext_typ (* Built-in, externally implemented types *)
-  | Var of var_typ ref (* Free, local type variable *)
+  | Var of var_typ ref (* Type variable *)
   | Rigid of Ident.t (* Rigid/skolem variable *)
-  | Sym of sym * sgn_typ Lazy.t (* Reference to a signature *)
+  | Sym of sym * polarity * sgn_typ Lazy.t (* Reference to a signature *)
   | App of typ * (typ list) (* Instantiation *)
-  | Sgn of sgn_typ (* An instantiated signature *)
+  | Fun of typ * typ (* Function type *)
+  | All of (Ident.t * kind) * typ (* Universally quantified type *)
+  | Data of sgn_typ (* An instantiated data type *)
+  | Code of sgn_typ (* An instantiated codata type *)
 
 and var_typ =
     Unbound of Ident.t
@@ -76,17 +44,12 @@ and xtor =
   { name: sym
   ; parameters: (Ident.t * kind) list 
   ; existentials: (Ident.t * kind) list
-  ; arguments: chiral_typ list
+  (* For a codata type, the last argument is the codomain! *)
+  ; arguments: typ list
   (* `main` is result type if considered as constructor, the "this"
     type if considered as destructor *)
   ; main: typ
   }
-
-(* Typing judgements in sequent calculi distinguish between
-  left (producer) terms and right (consumer) terms *)
-and chiral_typ =
-    Lhs of typ (* Producer *)
-  | Rhs of typ (* Consumer *)
 
 and equation =
     Equal of typ * typ
@@ -94,11 +57,6 @@ and equation =
   | Exists of var_typ * equation 
   | Implies of equation * equation
   | True
-
-let chiral_map (f: typ -> typ) (ct: chiral_typ) : chiral_typ =
-  match ct with
-    Lhs t -> Lhs (f t)
-  | Rhs t -> Rhs (f t)
 
 type kind_error =
     UnboundVariable of Ident.t
@@ -112,6 +70,16 @@ type kind_check_result = (kind, kind_error) result
 let contains_var (id: Ident.t) (ids: Ident.t list) : bool =
   List.exists (Ident.equal id) ids
 
+(*
+code All(T) where
+  { instantiate: {Y} All(T) -> T(Y)
+  }
+
+code Fun(A, B) where
+  { apply: {A, B} Fun(A, B) -> A -> B
+  }
+*)
+
 (** Check if a rigid variable appears free in a type *)
 let rec rigid_occurs (id: Ident.t) (t: typ) : bool =
   match t with
@@ -120,8 +88,8 @@ let rec rigid_occurs (id: Ident.t) (t: typ) : bool =
   | Var {contents = Unbound _} -> false
   | App (f, args) ->
       rigid_occurs id f || List.exists (rigid_occurs id) args
-  | Sgn s -> rigid_occurs_sgn id s
-  | Sym _ | Ext _ -> false
+  | Data sgn | Code sgn -> rigid_occurs_sgn id sgn
+  | Sym _ | Ext _ | Fun _ | All _ -> false
 
 and rigid_occurs_sgn (id: Ident.t) (s: sgn_typ) : bool =
   (* Don't check under binders that shadow the id *)
@@ -133,9 +101,7 @@ and rigid_occurs_xtor (id: Ident.t) (x: xtor) : bool =
   let bound = List.map fst x.parameters @ List.map fst x.existentials in
   if contains_var id bound then false
   else
-    List.exists (fun ct ->
-      match ct with Lhs t | Rhs t -> rigid_occurs id t
-    ) x.arguments 
+    List.exists (rigid_occurs id) x.arguments 
     || rigid_occurs id x.main
 
 (** Bidirectional kind checking.
@@ -154,7 +120,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
       (match Ident.find_opt id ctx with
         Some k -> Ok k
       | None -> Error (UnboundVariable id))
-  | Sym (_, lazy_sgn) ->
+  | Sym (_, _, lazy_sgn) ->
       (* The kind of a symbol is determined by its parameters *)
       let sgn = Lazy.force lazy_sgn in
       let param_kinds = List.map snd sgn.parameters in
@@ -176,7 +142,15 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
         | k, _ :: _ -> Error (ExpectedHKT (f, k))
       in
       apply_args f_kind args
-  | Sgn s -> 
+  | Fun (a, b) ->
+      let* _ = check_kind ctx a Star in
+      let* _ = check_kind ctx b Star in
+      Ok Star
+  | All ((x, k), body) ->
+      let ctx' = Ident.add x k ctx in
+      let* _ = check_kind ctx' body Star in
+      Ok Star
+  | Data sgn | Code sgn -> 
       (* Kind check the signature for well-formedness:
         1. Check that existentials don't escape into main
         2. Compute kind from parameters *)
@@ -192,7 +166,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
       let rec check_all = function
         | [] -> 
             (* All xtors valid; compute kind from parameters *)
-            let param_kinds = List.map snd s.parameters in
+            let param_kinds = List.map snd sgn.parameters in
             Ok (List.fold_right (fun k acc ->
               Arrow (k, acc)
             ) param_kinds Star)
@@ -201,7 +175,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
             | Ok () -> check_all rest
             | Error e -> Error e
       in
-      check_all s.xtors
+      check_all sgn.xtors
 
 (** Check that a type has the expected kind *)
 and check_kind (ctx: kind Ident.tbl) (t: typ) (expected: kind)
@@ -220,8 +194,9 @@ let rec subst_rigid (ms: (Ident.t * typ) list) (t: typ) : typ =
   | Var ({contents = Link t'}) -> subst_rigid ms t'
   | Var _ -> t
   | App (f, args) -> App (subst_rigid ms f, List.map (subst_rigid ms) args)
-  | Sgn s -> Sgn (subst_rigid_sgn ms s)
-  | Ext _ | Sym (_, _) -> t
+  | Data sgn -> Data (subst_rigid_sgn ms sgn)
+  | Code sgn -> Code (subst_rigid_sgn ms sgn)
+  | Ext _ | Sym (_, _, _) | Fun (_, _) | All (_, _) -> t
 
 and subst_rigid_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
   (* Substitute into xtors. No shadowing check needed here - the signature's
@@ -234,7 +209,7 @@ and subst_rigid_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
   let shadowed = List.map fst x.parameters @ List.map fst x.existentials in
   let ms' = List.filter (fun (id, _) -> not (contains_var id shadowed)) ms in
   { x with
-    arguments = List.map (chiral_map (subst_rigid ms')) x.arguments
+    arguments = List.map (subst_rigid ms') x.arguments
   ; main = subst_rigid ms' x.main
   }
 
@@ -259,15 +234,13 @@ let rec occurs (r: var_typ ref) (t: typ) : bool =
   | Var {contents = Link t'} -> occurs r t'
   | Var {contents = Unbound _} -> false
   | App (f, args) -> occurs r f || List.exists (occurs r) args
-  | Sgn s -> occurs_sgn r s
-  | Sym (_, lazy_sgn) -> occurs_sgn r (Lazy.force lazy_sgn)
-  | Ext _ | Rigid _ -> false
+  | Data sgn | Code sgn -> occurs_sgn r sgn
+  | Sym (_, _, lazy_sgn) -> occurs_sgn r (Lazy.force lazy_sgn)
+  | Ext _ | Rigid _ | Fun _ | All _ -> false
 
 and occurs_sgn (r: var_typ ref) (s: sgn_typ) : bool =
   List.exists (fun (x: xtor) -> 
-    List.exists (fun ct ->
-      match ct with Lhs t | Rhs t -> occurs r t
-    ) x.arguments || occurs r x.main
+    List.exists (occurs r) x.arguments || occurs r x.main
   ) s.xtors
 
 (* ========================================================================= *)
@@ -301,15 +274,17 @@ let rec whnf (kctx: kind Ident.tbl) (subs: (var_typ ref * typ) list) (t: typ) =
       let f' = whnf kctx subs f in
       let args' = List.map (whnf kctx subs) args in
       (match f' with
-        Sym (_, lazy_sgn) ->
+        Sym (_, pol, lazy_sgn) ->
           (* Instantiate: App(Sym, args) -> Sgn with params replaced by args
              and unreachable xtors filtered out *)
-          Sgn (instantiate kctx lazy_sgn args')
+          (match pol with
+            Pos -> Data (instantiate kctx lazy_sgn args')
+          | Neg -> Code (instantiate kctx lazy_sgn args'))
       | App (f'', args'') ->
           (* Nested application - flatten and try again *)
           whnf kctx subs (App (f'', args'' @ args'))
       | _ -> App (f', args'))
-  | Ext _ | Rigid _ | Sym _ | Sgn _ -> t
+  | Ext _ | Rigid _ | Sym _ | Data _ | Code _ | Fun _ | All _ -> t
 
 (** Instantiate a signature with type arguments.
     Substitutes parameters, checks kinds, and filters out GADT-unreachable xtors. *)
@@ -355,17 +330,17 @@ and can_unify_shallow
   match t with
     Var {contents = Link t'} -> can_unify_shallow t' target_args target_name
   | Var {contents = Unbound _} -> true  (* Unbound can unify with anything *)
-  | Sgn sg -> 
-      Path.equal sg.name target_name && 
-      List.length sg.parameters = 0  (* Sgn with no params = already instantiated with matching args *)
-  | App (Sym (p, _), args) ->
+  | Data sgn | Code sgn -> 
+      Path.equal sgn.name target_name && 
+      List.length sgn.parameters = 0  (* Sgn with no params = already instantiated with matching args *)
+  | App (Sym (p, _, _), args) ->
       Path.equal p target_name && 
       List.length args = List.length target_args &&
       List.for_all2 can_unify_shallow_types args target_args
   | App (f, args) ->
       (* Nested App - try to extract the head *)
       (match f with
-        Sym (p, _) -> 
+        Sym (p, _, _) -> 
           Path.equal p target_name && 
           List.length args = List.length target_args &&
           List.for_all2 can_unify_shallow_types args target_args
@@ -381,8 +356,9 @@ and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
   | _, Var {contents = Unbound _} -> true
   | Ext e1, Ext e2 -> e1 = e2
   | Rigid a, Rigid b -> Ident.equal a b
-  | Sym (p1, _), Sym (p2, _) -> Path.equal p1 p2
-  | Sgn sg1, Sgn sg2 -> Path.equal sg1.name sg2.name
+  | Sym (p1, _, _), Sym (p2, _, _) -> Path.equal p1 p2
+  | Data sg1, Data sg2 -> Path.equal sg1.name sg2.name
+  | Code sg1, Code sg2 -> Path.equal sg1.name sg2.name
   | App (f1, a1), App (f2, a2) ->
       can_unify_shallow_types f1 f2 && 
       List.length a1 = List.length a2 &&
@@ -414,10 +390,11 @@ and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
   | t, Var ({contents = Unbound _} as r) ->
       if occurs r t then None else (r := Link t; Some env)
   (* Unapplied symbols: same name means same type constructor *)
-  | Sym (s1, _), Sym (s2, _) -> 
+  | Sym (s1, _, _), Sym (s2, _, _) -> 
       if Path.equal s1 s2 then Some env else None
   (* Instantiated signatures: unify structurally *)
-  | Sgn sg1, Sgn sg2 -> unify_sgn kctx sg1 sg2 env
+  | Data sg1, Data sg2 -> unify_sgn kctx sg1 sg2 env
+  | Code sg1, Code sg2 -> unify_sgn kctx sg1 sg2 env
   (* Rigid variables *)
   | Rigid a, Rigid b when Ident.equal a b -> Some env
   | Rigid a, t | t, Rigid a ->
@@ -458,17 +435,8 @@ and unify_xtor
     Option.bind (unify kctx x1.main x2.main env) (fun env ->
       (* Unify arguments pairwise *)
       List.fold_left2 (fun env_opt a1 a2 ->
-        Option.bind env_opt (fun env -> unify_chiral kctx a1 a2 env)
+        Option.bind env_opt (unify kctx a1 a2)
       ) (Some env) x1.arguments x2.arguments)
-
-(** Unify chiral types *)
-and unify_chiral
-    (kctx: kind Ident.tbl) (ct1: chiral_typ) (ct2: chiral_typ) (env: solving_env)
-    : solving_env option =
-  match ct1, ct2 with
-    Lhs t1, Lhs t2 -> unify kctx t1 t2 env
-  | Rhs t1, Rhs t2 -> unify kctx t1 t2 env
-  | _ -> None  (* Chirality mismatch *)
 
 (* ========================================================================= *)
 (* Equation solving *)

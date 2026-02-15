@@ -1,0 +1,4 @@
+(library
+ (name focused)
+ (public_name sequent.focused)
+ (libraries utility common))

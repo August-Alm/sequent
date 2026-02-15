@@ -1,4 +1,4 @@
 (library
  (name sequent)
  (modules polarize focus simple pcf)
- (libraries utility common lang canon cut core kore))
+ (libraries utility common lang melcore core focused cut kore))

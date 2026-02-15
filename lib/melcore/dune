@@ -1,0 +1,5 @@
+(library
+ (name melcore)
+ (libraries utility common)
+ (public_name sequent.melcore)
+ (flags (:standard -warn-error -27-26)))

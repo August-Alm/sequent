@@ -1,6 +1,6 @@
 (**
-  module: Canon.Terms
-  description: Canonicalized commands for the sequent calculus.
+  module: Focused.Terms
+  description: Focused/canonicalized commands for the core sequent calculus.
 *)
 
 open Common.Identifiers
