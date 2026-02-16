@@ -28,7 +28,7 @@ let test_list_signature () =
   
   let rec list_sgn_lazy = lazy {
     name = list_path;
-    parameters = [(a_id, Star)];  (* Arity: list takes one type arg *)
+    parameters = [Star];  (* Arity: list takes one type arg *)
     xtors = [
       (* Cons : 'a * 'a list -> 'a list *)
       { name = cons_path
@@ -100,7 +100,7 @@ let test_gadt_filtering () =
   
   let rec expr_sgn_lazy = lazy {
     name = expr_path;
-    parameters = [(t_id, Star)];  (* Arity: expr takes one type arg *)
+    parameters = [Star];  (* Arity: expr takes one type arg *)
     xtors = [
       (* Lit : int -> int expr  (no type params, concrete return) *)
       { name = lit_path

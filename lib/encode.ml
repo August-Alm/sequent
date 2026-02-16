@@ -18,10 +18,12 @@ let rec map_kind (k: MTy.kind) : CTy.kind =
   | MTy.Arrow (k1, k2) -> CTy.Arrow (map_kind k1, map_kind k2)
 
 (* Lower ↓(A) *)
-let lower (ty: CTy.typ) : CTy.typ = App (Sgn Prim.lower_sgn, [ty])
+let lower (ty: CTy.typ) : CTy.typ = 
+  CTy.App (CTy.Sym (Sym.lower_t, Prim.lower_sgn_lazy), [ty])
 
 (* Raise ↑(A) *)
-let raise (ty: CTy.typ) : CTy.typ = App (Sgn Prim.raise_sgn, [ty])
+let raise (ty: CTy.typ) : CTy.typ = 
+  CTy.App (CTy.Sym (Sym.raise_t, Prim.raise_sgn_lazy), [ty])
 
 (* Check if a Melcore type is positive (data) or negative (codata)
    Type variables are always positive (Uniform CBV). *)
@@ -76,13 +78,13 @@ let rec map_typ (ty: MTy.typ) : CTy.typ =
 
 and map_data (sgn: MTy.sgn_typ) : CTy.sgn_typ =
   { CTy.name = sgn.MTy.name
-  ; CTy.parameters = List.map (fun (id, k) -> (id, map_kind k)) sgn.MTy.parameters
+  ; CTy.parameters = List.map map_kind sgn.MTy.parameters
   ; CTy.xtors = List.map map_ctor sgn.MTy.xtors
   }
 
 and map_code (sgn: MTy.sgn_typ) : CTy.sgn_typ =
   { CTy.name = sgn.MTy.name
-  ; CTy.parameters = List.map (fun (id, k) -> (id, map_kind k)) sgn.MTy.parameters
+  ; CTy.parameters = List.map map_kind sgn.MTy.parameters
   ; CTy.xtors = List.map map_dtor sgn.MTy.xtors
   }
 
@@ -111,52 +113,33 @@ and map_dtor (xtor: MTy.xtor) : CTy.xtor =
 (* ========================================================================= *)
 
 (* Instantiate the Fun signature with concrete types a and b *)
-let instantiate_fun_sgn (a: CTy.typ) (b: CTy.typ) : CTy.sgn_typ =
-  { Prim.fun_sgn with
-    CTy.parameters = []
-  ; CTy.xtors = [
-      { Prim.fun_apply with
-        CTy.parameters = []
-      ; CTy.arguments = [CTy.Lhs a; CTy.Rhs b]
-      ; CTy.main = CTy.App (CTy.Sym (Sym.fun_t, Prim.fun_sgn_lazy), [a; b])
-      }
-    ]
-  }
+let instantiate_fun_sgn kctx (a: CTy.typ) (b: CTy.typ) : CTy.sgn_typ =
+  CTy.instantiate kctx Prim.fun_sgn_lazy [a; b]
 
-let instantiate_fun_apply (a: CTy.typ) (b: CTy.typ) : CTy.xtor =
-  List.hd (instantiate_fun_sgn a b).xtors
+let instantiate_fun_apply kctx (a: CTy.typ) (b: CTy.typ) : CTy.xtor =
+  List.hd (instantiate_fun_sgn kctx a b).xtors
 
 (* Instantiate the Lower signature with concrete type a *)
-let instantiate_lower_sgn (a: CTy.typ) : CTy.sgn_typ =
-  { Prim.lower_sgn with
-    CTy.parameters = []
-  ; CTy.xtors = [
-      { Prim.lower_return with
-        CTy.parameters = []
-      ; CTy.arguments = [CTy.Lhs a]
-      ; CTy.main = CTy.App (CTy.Sym (Sym.lower_t, Prim.lower_sgn_lazy), [a])
-      }
-    ]
-  }
+let instantiate_lower_sgn kctx (a: CTy.typ) : CTy.sgn_typ =
+  CTy.instantiate kctx Prim.lower_sgn_lazy [a]
 
-let instantiate_lower_return (a: CTy.typ) : CTy.xtor =
-  List.hd (instantiate_lower_sgn a).xtors
+let instantiate_lower_return kctx (a: CTy.typ) : CTy.xtor =
+  List.hd (instantiate_lower_sgn kctx a).xtors
 
 (* Instantiate the Raise signature with concrete type a *)
-let instantiate_raise_sgn (a: CTy.typ) : CTy.sgn_typ =
-  { Prim.raise_sgn with
-    CTy.parameters = []
-  ; CTy.xtors = [
-      { Prim.raise_pack with
-        CTy.parameters = []
-      ; CTy.arguments = [CTy.Rhs a]
-      ; CTy.main = CTy.App (CTy.Sym (Sym.raise_t, Prim.raise_sgn_lazy), [a])
-      }
-    ]
-  }
+let instantiate_raise_sgn kctx (a: CTy.typ) : CTy.sgn_typ =
+  CTy.instantiate kctx Prim.raise_sgn_lazy [a]
 
-let instantiate_raise_pack (a: CTy.typ) : CTy.xtor =
-  List.hd (instantiate_raise_sgn a).xtors
+let instantiate_raise_pack kctx (a: CTy.typ) : CTy.xtor =
+  List.hd (instantiate_raise_sgn kctx a).xtors
+
+(* Instantiate the All signature with a concrete body type *)
+let instantiate_all_sgn kctx (k: CTy.kind) (body: CTy.typ) : CTy.sgn_typ =
+  let a_var = Ident.fresh () in
+  CTy.instantiate kctx (Prim.all_sgn_lazy a_var k) [body]
+
+let instantiate_all_instantiate kctx (k: CTy.kind) (body: CTy.typ) : CTy.xtor =
+  List.hd (instantiate_all_sgn kctx k body).xtors
 
 (* ========================================================================= *)
 (* Term Encoding                                                             *)
@@ -173,6 +156,45 @@ let build_lambdas (var_tys: (Ident.t * MTy.typ) list) (body: MTm.typed_term) : M
     var_tys
     body
 
+(* Helper: wrap a term body in nested type abstractions for the given (var, kind) pairs.
+   build_alls [(a1, K1); (a2, K2)] body 
+   = TypedAll((a1, K1), TypedAll((a2, K2), body, ∀a2:K2. body_ty), ∀a1:K1.∀a2:K2. body_ty) *)
+let build_alls (var_kinds: (Ident.t * MTy.kind) list) (body: MTm.typed_term) : MTm.typed_term =
+  List.fold_right
+    (fun (v, k) body ->
+      let body_ty = MTm.get_type body in
+      MTm.TypedAll ((v, k), body, MTy.All ((v, k), body_ty)))
+    var_kinds
+    body
+
+(* Helper: apply type instantiations to a term.
+   Given t : ∀a1...an. T and vars [(x1,k1)...(xn,kn)],
+   returns (t{Rigid x1}...{Rigid xn}, subst) where subst maps ai to Rigid xi *)
+let apply_type_args (t: MTm.typed_term) (type_args: (Ident.t * MTy.kind) list) : MTm.typed_term * (Ident.t * MTy.typ) list =
+  List.fold_left
+    (fun (acc, subst) (v, k) ->
+      let acc_ty = MTm.get_type acc in
+      match MTy.whnf Ident.emptytbl [] acc_ty with
+        | MTy.All ((x, _), body) ->
+            let ty_arg = MTy.Rigid v in
+            let new_subst = (x, ty_arg) :: subst in
+            let result_ty = MTy.subst_rigid new_subst body in
+            (MTm.TypedIns (acc, ty_arg, k, result_ty), new_subst)
+        | _ -> failwith "Expected All type for type instantiation")
+    (t, [])
+    type_args
+
+(* Helper: apply term arguments to a term *)
+let apply_term_args (subst: (Ident.t * MTy.typ) list) (t: MTm.typed_term) (term_args: (Ident.t * MTy.typ) list) : MTm.typed_term =
+  List.fold_left
+    (fun acc (v, ty) ->
+      let acc_ty = MTm.get_type acc in
+      match MTy.whnf Ident.emptytbl [] acc_ty with
+        | MTy.Fun (_, cod) -> MTm.TypedApp (acc, MTm.TypedVar (v, ty), MTy.subst_rigid subst cod)
+        | _ -> failwith "Expected function type")
+    t
+    term_args
+
 (* Encode a term of a given type, wrapping appropriately for polarity.
   - Positive types produce Lhs (producers/values)
   - Negative types produce Rhs (consumers/computations)
@@ -183,19 +205,19 @@ let build_lambdas (var_tys: (Ident.t * MTy.typ) list) (body: MTm.typed_term) : M
    where args = [arg1; ...; argN] in application order. *)
 let rec collect_symbol_app_chain (tm: MTm.typed_term) : (Path.t * MTy.typ * MTm.typed_term list) option =
   match tm with
-  | MTm.TypedSym (path, ty) -> Some (path, ty, [])
+    MTm.TypedSym (path, ty) -> Some (path, ty, [])
   | MTm.TypedApp (f, arg, _) ->
       (match collect_symbol_app_chain f with
-       | Some (path, sym_ty, args) -> Some (path, sym_ty, args @ [arg])
-       | None -> None)
+        Some (path, sym_ty, args) -> Some (path, sym_ty, args @ [arg])
+      | None -> None)
   | _ -> None
 
-let rec map_term (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (tm: MTm.typed_term) : CTm.term =
+let rec map_term (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl) (tm: MTm.typed_term) : CTm.term =
   (* First, check if this is an application chain to a symbol *)
   match collect_symbol_app_chain tm with
-  | Some (path, sym_ty, args) when args <> [] ->
+    Some (path, sym_ty, args) when args <> [] ->
       (* Application(s) to a symbol - handle the whole chain together *)
-      encode_symbol_with_args defs ctx path sym_ty args (MTm.get_type tm)
+      encode_symbol_with_args defs kctx ctx path sym_ty args (MTm.get_type tm)
   | _ ->
       (* Normal dispatch *)
       match tm with
@@ -204,10 +226,35 @@ let rec map_term (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (tm: MTm
       | MTm.TypedAdd (t1, t2) ->
           (* t1 + t2 where t1, t2 : Int
             Translates to: μL k. add(t1', t2', k) *)
-          let t1' = map_term defs ctx t1 in
-      let t2' = map_term defs ctx t2 in
+          let t1' = map_term defs kctx ctx t1 in
+      let t2' = map_term defs kctx ctx t2 in
       let k = Ident.fresh () in
       CTm.MuLhs (CTy.Ext Int, k, CTm.Add (t1', t2', CTm.Var k))
+  
+  | MTm.TypedIfz (cond, then_branch, else_branch, result_ty) ->
+      (* ifz cond then t else u where cond : Int, t and u : B
+         Translates to: μL/μR k. ifz(cond') then ⟨t' | k⟩ else ⟨u' | k⟩ *)
+      let b = result_ty in
+      let cond' = map_term defs kctx ctx cond in
+      let then' = map_term defs kctx ctx then_branch in
+      let else' = map_term defs kctx ctx else_branch in
+      let k = Ident.fresh () in
+      let b' = map_typ b in
+      let make_mu = if is_positive b then
+        (fun ty k cmd -> CTm.MuLhs (ty, k, cmd))
+      else
+        (fun ty k cmd -> CTm.MuRhs (ty, k, cmd))
+      in
+      let make_branch_cut b' branch k =
+        if is_positive b then
+          CTm.Cut (b', branch, CTm.Var k)
+        else
+          CTm.Cut (b', CTm.Var k, branch)
+      in
+      make_mu b' k
+        (CTm.Ifz (cond', 
+          make_branch_cut b' then' k,
+          make_branch_cut b' else' k))
   
   | MTm.TypedVar (x, _ty) -> 
       CTm.Var x
@@ -216,7 +263,7 @@ let rec map_term (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (tm: MTm
       (* Symbol reference: look up definition and call it.
         If the type is polymorphic (All or Fun at top level), this is a
         partial application and should be encoded like a lambda. *)
-      encode_sym defs ctx path ty
+      encode_sym defs kctx ctx path ty
   
   | MTm.TypedApp (f, arg, result_ty) ->
       (* f arg where f : A → B, arg : A, result : B
@@ -227,30 +274,31 @@ let rec map_term (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (tm: MTm
         | MTy.Fun (a, b) -> (a, b)
         | _ -> failwith "Application of non-function"
       in
-      encode_app defs ctx f arg a b result_ty
+      encode_app defs kctx ctx f arg a b result_ty
   
   | MTm.TypedIns (t, ty_arg, _k, result_ty) ->
       (* t{ty_arg} where t : ∀(x:k). B, result : B[ty_arg/x]
         Similar to application but at the type level. *)
       let t_ty = MTm.get_type t in
-      let ((_x, _), body) = match MTy.whnf Ident.emptytbl [] t_ty with
+      let ((_x, k), body) = match MTy.whnf Ident.emptytbl [] t_ty with
         | MTy.All ((x, k), body) -> ((x, k), body)
         | _ -> failwith "Type instantiation of non-forall"
       in
-      encode_ins defs ctx t ty_arg body result_ty
+      encode_ins defs kctx ctx t ty_arg k body result_ty
   
   | MTm.TypedLam (x, a, body, _fun_ty) ->
       (* λx:A. body where body: B
         Encoding wraps body appropriately based on polarity of B. *)
       let ctx' = Ident.add x a ctx in
       let b = MTm.get_type body in
-      encode_lam defs ctx' x a body b
+      encode_lam defs kctx ctx' x a body b
   
   | MTm.TypedAll ((x, k), body, _all_ty) ->
       (* Λ(x:k). body - type abstraction
         Similar to lambda but binds a type variable. *)
       let body_ty = MTm.get_type body in
-      encode_all defs ctx x k body body_ty
+      let kctx' = Ident.add x (map_kind k) kctx in
+      encode_all defs kctx' ctx x k body body_ty
   
   | MTm.TypedLet (x, t1, t2, _ty) ->
       (* let x = t1 in t2 is equivalent to (λx:A. t2) t1 *)
@@ -258,41 +306,41 @@ let rec map_term (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (tm: MTm
       let b = MTm.get_type t2 in
       let lam = MTm.TypedLam (x, a, t2, MTy.Fun (a, b)) in
       let app = MTm.TypedApp (lam, t1, b) in
-      map_term defs ctx app
+      map_term defs kctx ctx app
   
   | MTm.TypedMatch (scrut, branches, result_ty) ->
       (* match scrut with { branches }
         Encoding: Cut(scrut_ty, scrut', Match(sgn, encoded_branches)) *)
-      encode_match defs ctx scrut branches result_ty
+      encode_match defs kctx ctx scrut branches result_ty
   
   | MTm.TypedNew (branches, result_ty) ->
       (* new { branches } - codata introduction
         Encoding: Comatch(sgn, encoded_branches) *)
-      encode_new defs ctx branches result_ty
+      encode_new defs kctx ctx branches result_ty
   
   | MTm.TypedCtor (xtor, args, result_ty) ->
       (* Constructor application, possibly partial.
         If partial, encode like a lambda. *)
-      encode_ctor defs ctx xtor args result_ty
+      encode_ctor defs kctx ctx xtor args result_ty
   
   | MTm.TypedDtor (xtor, args, result_ty) ->
       (* Destructor application, possibly partial.
         If partial, encode like a lambda. *)
-      encode_dtor defs ctx xtor args result_ty
+      encode_dtor defs kctx ctx xtor args result_ty
 
 (* Encode a symbol applied to some arguments.
-   This handles the case where we have App(...App(Sym(path), arg1)..., argN).
-   If fully saturated, emit a Call. If partial, wrap remaining args in lambdas. *)
-and encode_symbol_with_args (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) 
+  This handles the case where we have App(...App(Sym(path), arg1)..., argN).
+  If fully saturated, emit a Call. If partial, wrap remaining args in lambdas. *)
+and encode_symbol_with_args (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl) 
     (path: Path.t) (_sym_ty: MTy.typ) (args: MTm.typed_term list) (result_ty: MTy.typ) : CTm.term =
   match Path.find_opt path defs with
-  | None -> failwith ("Undefined symbol: " ^ Path.name path)
+    None -> failwith ("Undefined symbol: " ^ Path.name path)
   | Some def ->
       let num_term_args = List.length def.term_args in
       let provided = List.length args in
       if provided = num_term_args then
         (* Fully saturated: emit Call *)
-        let encoded_args = List.map (map_term defs ctx) args in
+        let encoded_args = List.map (map_term defs kctx ctx) args in
         CTm.MuLhs (map_typ result_ty, Ident.fresh (), CTm.Call (path, [], encoded_args))
       else if provided < num_term_args then
         (* Partial application: wrap remaining args in lambdas *)
@@ -313,53 +361,49 @@ and encode_symbol_with_args (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tb
           all_args
           (List.map snd def.term_args)
         in
-        map_term defs ctx (build_lambdas fresh_vars inner)
+        map_term defs kctx ctx (build_lambdas fresh_vars inner)
       else
         failwith "Too many arguments to symbol"
 
 (* Encode a bare symbol reference (not applied to any arguments).
-   If the symbol expects arguments, build a lambda that takes them. *)
-and encode_sym (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) (path: Path.t) (ty: MTy.typ) : CTm.term =
+  If the symbol expects arguments, build a lambda that takes them. *)
+and encode_sym (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl) (path: Path.t) (ty: MTy.typ) : CTm.term =
   match Path.find_opt path defs with
-  | None -> failwith ("Undefined symbol: " ^ Path.name path)
+    None -> failwith ("Undefined symbol: " ^ Path.name path)
   | Some def ->
       let num_term_args = List.length def.term_args in
       let num_type_args = List.length def.type_args in
-      if num_type_args > 0 then
-        failwith "Type-polymorphic symbols not yet implemented"
-      else if num_term_args = 0 then
+      if num_type_args = 0 && num_term_args = 0 then
         (* No arguments: just call *)
         CTm.MuLhs (map_typ ty, Ident.fresh (), CTm.Call (path, [], []))
       else
-        (* Has term arguments: build eta-expansion as TypedLam and recurse.
-           This will be picked up by collect_symbol_app_chain in the recursive call. *)
-        let fresh_vars = List.map (fun (_, ty) -> (Ident.fresh (), ty)) def.term_args in
+        (* Has arguments: build eta-expansion.
+           Λa1...Λan. λx1...λxm. path{a1}...{an}(x1)...(xm) *)
+        let fresh_type_vars = List.map (fun (_, k) -> (Ident.fresh (), k)) def.type_args in
         let sym = MTm.TypedSym (path, ty) in
-        let applied = List.fold_left2
-          (fun acc (v, arg_ty) _param_ty ->
-            let acc_ty = MTm.get_type acc in
-            let result = match MTy.whnf Ident.emptytbl [] acc_ty with
-              | MTy.Fun (_, cod) -> cod
-              | _ -> failwith "Expected function type"
-            in
-            MTm.TypedApp (acc, MTm.TypedVar (v, arg_ty), result))
-          sym
-          fresh_vars
-          def.term_args
-        in
-        map_term defs ctx (build_lambdas fresh_vars applied)
+        let (with_type_apps, type_subst) = apply_type_args sym fresh_type_vars in
+        
+        (* Fresh term vars with types from def, substituted for type vars *)
+        let fresh_term_vars = List.map (fun (_, arg_ty) ->
+          (Ident.fresh (), MTy.subst_rigid type_subst arg_ty)
+        ) def.term_args in
+        
+        let with_term_apps = apply_term_args type_subst with_type_apps fresh_term_vars in
+        let with_lambdas = build_lambdas fresh_term_vars with_term_apps in
+        let with_alls = build_alls fresh_type_vars with_lambdas in
+        map_term defs kctx ctx with_alls
 
 (* Encode function application *)
-and encode_app (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl) 
+and encode_app (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl) 
     (f: MTm.typed_term) (arg: MTm.typed_term) 
     (a: MTy.typ) (b: MTy.typ) (_result_ty: MTy.typ) : CTm.term =
-  let f' = map_term defs ctx f in
-  let arg' = map_term defs ctx arg in
+  let f' = map_term defs kctx ctx f in
+  let arg' = map_term defs kctx ctx arg in
   let k = Ident.fresh () in
   let a' = map_typ a in
   let b' = map_typ b in
-  (* Return type: ↓b' for positive b, ↓↑b' for negative b *)
-  let b_ret = if is_positive b then lower b' else lower (raise b') in
+  (* Return type: always ↓b' - no raise wrapper needed *)
+  let b_ret = lower b' in
   (* Choose Mu form based on whether result type is positive or negative *)
   let make_mu = if is_positive b then
     (fun ty var cmd -> CTm.MuLhs (ty, var, cmd))
@@ -369,11 +413,11 @@ and encode_app (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
   (* For positive a: arg' is used directly
      For negative a: wrap arg' in Pack *)
   let arg_term = if is_positive a then arg' else
-    CTm.Ctor (instantiate_raise_sgn a', instantiate_raise_pack a', [arg'])
+    CTm.Ctor (instantiate_raise_sgn kctx a', instantiate_raise_pack kctx a', [arg'])
   in
   let a_eff = if is_positive a then a' else raise a' in
-  let the_apply_sgn = instantiate_fun_sgn a_eff b_ret in
-  let the_apply_xtor = instantiate_fun_apply a_eff b_ret in
+  let the_apply_sgn = instantiate_fun_sgn kctx a_eff b_ret in
+  let the_apply_xtor = instantiate_fun_apply kctx a_eff b_ret in
   (* Inner cut between return value x and continuation k *)
   let x = Ident.fresh () in
   let make_inner_cut x k =
@@ -382,16 +426,9 @@ and encode_app (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     else
       CTm.Cut (b', CTm.Var k, CTm.Var x)
   in
-  (* Continuation that receives the result *)
+  (* Continuation that receives the result - simplified: no raise/pack unpacking *)
   let continuation =
-    if is_positive b then
-      CTm.Match (instantiate_lower_sgn b', [(instantiate_lower_return b', [x], make_inner_cut x k)])
-    else
-      let packed = Ident.fresh () in
-      let raised_b = raise b' in
-      CTm.Match (instantiate_lower_sgn raised_b, [(instantiate_lower_return raised_b, [packed],
-        CTm.Cut (raised_b, CTm.Var packed, 
-          CTm.Match (instantiate_raise_sgn b', [(instantiate_raise_pack b', [x], make_inner_cut x k)])))])
+    CTm.Match (instantiate_lower_sgn kctx b', [(instantiate_lower_return kctx b', [x], make_inner_cut x k)])
   in
   (* Build the application *)
   make_mu b' k
@@ -400,23 +437,19 @@ and encode_app (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
       f'))
 
 (* Encode type instantiation *)
-and encode_ins (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
-    (t: MTm.typed_term) (ty_arg: MTy.typ) (_body: MTy.typ) (result_ty: MTy.typ) : CTm.term =
+and encode_ins (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
+    (t: MTm.typed_term) (_ty_arg: MTy.typ) (kind: MTy.kind) (_body: MTy.typ) (result_ty: MTy.typ) : CTm.term =
   (* t{A} where t : ∀(x:k). B, result : B[A/x]
-     Similar to function application but at the type level.
+    Similar to function application but at the type level.
      
-     For uniform CBV, type variables are positive. If the type argument A is
-     negative, we must raise it to make it positive before instantiation. *)
-  let t' = map_term defs ctx t in
+    For uniform CBV, type variables are positive. If the type argument A is
+    negative, we must raise it to make it positive before instantiation. *)
+  let t' = map_term defs kctx ctx t in
   let result_ty' = map_typ result_ty in
   let k = Ident.fresh () in
   
-  (* Determine if we need to raise the type argument *)
-  let ty_arg' = map_typ ty_arg in
-  let ty_arg_eff = if is_positive ty_arg then ty_arg' else raise ty_arg' in
-  
-  (* The result type encoding follows the same pattern as function results *)
-  let b_ret = if is_positive result_ty then lower result_ty' else lower (raise result_ty') in
+  (* Result type: always lower[result_ty'] *)
+  let b_ret = lower result_ty' in
   
   let make_mu = if is_positive result_ty then
     (fun ty var cmd -> CTm.MuLhs (ty, var, cmd))
@@ -425,8 +458,8 @@ and encode_ins (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
   in
   
   (* Build the instantiate destructor.
-     The All signature: All(k)[B] has destructor instantiate[∃t:k->*](arg: t(a))
-     We instantiate with the effective type argument (raised if negative). *)
+    The All signature: All(k)[B] has destructor instantiate[∃t:k->*](arg: t(a))
+    We instantiate with the effective type argument (raised if negative). *)
   let x = Ident.fresh () in
   let make_inner_cut x k =
     if is_positive result_ty then
@@ -435,36 +468,17 @@ and encode_ins (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
       CTm.Cut (result_ty', CTm.Var k, CTm.Var x)
   in
   
-  (* Continuation that receives the result *)
+  (* Continuation that receives the result - simplified: no raise/pack unpacking *)
   let continuation =
-    if is_positive result_ty then
-      CTm.Match (instantiate_lower_sgn result_ty', [(instantiate_lower_return result_ty', [x], make_inner_cut x k)])
-    else
-      let packed = Ident.fresh () in
-      let raised_b = raise result_ty' in
-      CTm.Match (instantiate_lower_sgn raised_b, [(instantiate_lower_return raised_b, [packed],
-        CTm.Cut (raised_b, CTm.Var packed, 
-          CTm.Match (instantiate_raise_sgn result_ty', [(instantiate_raise_pack result_ty', [x], make_inner_cut x k)])))])
+    CTm.Match (instantiate_lower_sgn kctx result_ty', [(instantiate_lower_return kctx result_ty', [x], make_inner_cut x k)])
   in
   
-  (* Build the Dtor for instantiate. 
-     The All signature is parameterized by the (effective) type argument. *)
-  let a_var = Ident.fresh () in
-  let k' = CTy.Star in (* Simplified - should come from the All type *)
-  let all_sgn = 
-    { CTy.name = Sym.all_t k'
-    ; CTy.parameters = []  (* instantiated *)
-    ; CTy.xtors = [
-        { CTy.name = Sym.all_instantiate k'
-        ; CTy.parameters = []
-        ; CTy.existentials = []
-        ; CTy.arguments = [CTy.Rhs b_ret]  (* continuation expecting the result *)
-        ; CTy.main = CTy.App (CTy.Sym (Sym.all_t k', Prim.all_sgn_lazy a_var k'), [ty_arg_eff])
-        }
-      ]
-    }
-  in
-  let inst_xtor = List.hd all_sgn.xtors in
+  (* Build the Dtor for instantiate using the helper.
+     The All signature All(k)[body] is instantiated with body = b_ret = lower[result_ty'].
+     The xtor's universal params (t, a) get unified during instantiate. *)
+  let k' = map_kind kind in
+  let all_sgn = instantiate_all_sgn kctx k' b_ret in
+  let inst_xtor = instantiate_all_instantiate kctx k' b_ret in
   
   make_mu result_ty' k
     (CTm.Cut (CTy.Sgn all_sgn,
@@ -472,26 +486,21 @@ and encode_ins (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
       CTm.Dtor (all_sgn, inst_xtor, [continuation])))
 
 (* Encode lambda abstraction *)  
-and encode_lam (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_lam (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (x: Ident.t) (a: MTy.typ) (body: MTm.typed_term) (b: MTy.typ) : CTm.term =
-  let body' = map_term defs ctx body in
+  let body' = map_term defs kctx ctx body in
   let k = Ident.fresh () in
   let a' = map_typ a in
   let b' = map_typ b in
-  (* Return type: ↓b' for positive b, ↓↑b' for negative b *)
-  let b_ret = if is_positive b then lower b' else lower (raise b') in
-  (* Return term construction based on polarity *)
+  (* Return type: always ↓b' - no need for ↑ wrapper, lower[A] works for any A *)
+  let b_ret = lower b' in
+  (* Return term: always return[b'](body') - works for both positive and negative *)
   let make_return body' = 
-    if is_positive b then
-      CTm.Ctor (instantiate_lower_sgn b', instantiate_lower_return b', [body'])
-    else
-      let raised_b = raise b' in
-      CTm.Ctor (instantiate_lower_sgn raised_b, instantiate_lower_return raised_b,
-        [CTm.Ctor (instantiate_raise_sgn b', instantiate_raise_pack b', [body'])])
+    CTm.Ctor (instantiate_lower_sgn kctx b', instantiate_lower_return kctx b', [body'])
   in
   let a_eff = if is_positive a then a' else raise a' in
-  let the_apply_sgn = instantiate_fun_sgn a_eff b_ret in
-  let the_apply_xtor = instantiate_fun_apply a_eff b_ret in
+  let the_apply_sgn = instantiate_fun_sgn kctx a_eff b_ret in
+  let the_apply_xtor = instantiate_fun_apply kctx a_eff b_ret in
   match is_positive a with
     true ->
       (* case { apply[a', b_ret](x, k) ⇒ ⟨return(body') | k⟩ } *)
@@ -504,32 +513,27 @@ and encode_lam (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
       CTm.Match (the_apply_sgn, [(the_apply_xtor, [x'; k],
         CTm.Cut (raise a',
           CTm.Var x',
-          CTm.Match (instantiate_raise_sgn a', [(instantiate_raise_pack a', [x], 
+          CTm.Match (instantiate_raise_sgn kctx a', [(instantiate_raise_pack kctx a', [x], 
             CTm.Cut (b_ret, make_return body', CTm.Var k))])))])
 
 (* Encode type abstraction *)
-and encode_all (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_all (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (x: Ident.t) (k: MTy.kind) (body: MTm.typed_term) (body_ty: MTy.typ) : CTm.term =
   (* Λ(x:k). body where body: B
      This creates a codata value that responds to the instantiate destructor.
      
      For uniform CBV, type variables are positive. When someone instantiates
      with a negative type, it will have been raised, so we may need to unpack. *)
-  let body' = map_term defs ctx body in
+  let body' = map_term defs kctx ctx body in
   let body_ty' = map_typ body_ty in
   let k' = map_kind k in
   
-  (* The return type handling follows the same pattern as lambdas *)
-  let b_ret = if is_positive body_ty then lower body_ty' else lower (raise body_ty') in
+  (* Return type: always lower[body_ty'] - no raise wrapper needed *)
+  let b_ret = lower body_ty' in
   
-  (* Return term construction based on polarity of body *)
+  (* Return term: always return[body_ty'](body') *)
   let make_return body' = 
-    if is_positive body_ty then
-      CTm.Ctor (instantiate_lower_sgn body_ty', instantiate_lower_return body_ty', [body'])
-    else
-      let raised_b = raise body_ty' in
-      CTm.Ctor (instantiate_lower_sgn raised_b, instantiate_lower_return raised_b,
-        [CTm.Ctor (instantiate_raise_sgn body_ty', instantiate_raise_pack body_ty', [body'])])
+    CTm.Ctor (instantiate_lower_sgn kctx body_ty', instantiate_lower_return kctx body_ty', [body'])
   in
   
   (* Build the All signature for this type abstraction *)
@@ -543,10 +547,10 @@ and encode_all (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     CTm.Cut (b_ret, make_return body', CTm.Var kont))])
 
 (* Encode match expression *)
-and encode_match (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_match (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (scrut: MTm.typed_term) (branches: MTm.typed_clause list) (result_ty: MTy.typ) : CTm.term =
   let scrut_ty = MTm.get_type scrut in
-  let scrut' = map_term defs ctx scrut in
+  let scrut' = map_term defs kctx ctx scrut in
   let result_ty' = map_typ result_ty in
   let sgn = match MTy.whnf Ident.emptytbl [] scrut_ty with
     | MTy.Data sgn -> map_data sgn
@@ -569,22 +573,14 @@ and encode_match (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     let ctx' = List.fold_left2 (fun acc v ty ->
       Ident.add v ty acc
     ) ctx tm_vars (List.map (fun _ -> MTm.fresh ()) tm_vars) in
-    let body' = map_term defs ctx' body in
-    let core_xtor =
-      { CTy.name = xtor.MTy.name
-      ; CTy.parameters = List.map (fun (id, k) -> (id, map_kind k)) xtor.MTy.parameters
-      ; CTy.existentials = List.map (fun (id, k) -> (id, map_kind k)) xtor.MTy.existentials
-      ; CTy.arguments = List.map (fun a -> CTy.Lhs (map_typ a)) xtor.MTy.arguments
-      ; CTy.main = map_typ xtor.MTy.main
-      }
-    in
-    (core_xtor, tm_vars, make_result_cut body' k)
+    let body' = map_term defs kctx ctx' body in
+    (map_ctor xtor, tm_vars, make_result_cut body' k)
   ) branches in
   make_mu result_ty' k
     (CTm.Cut (map_typ scrut_ty, scrut', CTm.Match (sgn, encoded_branches)))
 
 (* Encode new expression (codata introduction) *)
-and encode_new (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_new (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (branches: MTm.typed_clause list) (result_ty: MTy.typ) : CTm.term =
   let sgn = match MTy.whnf Ident.emptytbl [] result_ty with
     | MTy.Code sgn -> map_code sgn
@@ -594,76 +590,82 @@ and encode_new (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     let ctx' = List.fold_left2 (fun acc v ty ->
       Ident.add v ty acc
     ) ctx tm_vars (List.map (fun _ -> MTm.fresh ()) tm_vars) in
-    let body' = map_term defs ctx' body in
+    let body' = map_term defs kctx ctx' body in
     let body_ty = MTm.get_type body in
     let body_ty' = map_typ body_ty in
     (* For codata, body provides the result to a continuation *)
+    let k = List.hd (List.rev tm_vars) in
     let result_cut = if is_positive body_ty then
-      let k = List.hd (List.rev tm_vars) in
       CTm.Cut (body_ty', body', CTm.Var k)
     else
-      let k = List.hd (List.rev tm_vars) in
       CTm.Cut (body_ty', CTm.Var k, body')
     in
-    let (dtor_args, dtor_cod) = Utility.split_at_last xtor.MTy.arguments in
-    let core_xtor =
-      { CTy.name = xtor.MTy.name
-      ; CTy.parameters = List.map (fun (id, k) -> (id, map_kind k)) xtor.MTy.parameters
-      ; CTy.existentials = List.map (fun (id, k) -> (id, map_kind k)) xtor.MTy.existentials
-      ; CTy.arguments = 
-          List.map (fun a -> CTy.Lhs (map_typ a)) dtor_args @ [CTy.Rhs (map_typ dtor_cod)]
-      ; CTy.main = map_typ xtor.MTy.main
-      }
-    in
-    (core_xtor, tm_vars, result_cut)
+    (map_dtor xtor, tm_vars, result_cut)
   ) branches in
   CTm.Comatch (sgn, encoded_branches)
 
 (* Encode constructor application (possibly partial) *)
-and encode_ctor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_ctor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (xtor: MTy.xtor) (args: MTm.typed_term list) (result_ty: MTy.typ) : CTm.term =
   (* Check if this is a partial application by comparing with xtor arity *)
   let expected_arity = List.length xtor.MTy.arguments in
   let actual_arity = List.length args in
   if actual_arity < expected_arity then
     (* Partial application: encode as lambda *)
-    encode_partial_ctor defs ctx xtor args result_ty
+    encode_partial_ctor defs kctx ctx xtor args result_ty
   else
     (* Full application: build the constructor directly.
-       result_ty is Data(sgn) - already instantiated from type checking. *)
-    let args' = List.map (map_term defs ctx) args in
+      result_ty is Data(sgn) - already instantiated from type checking. *)
+    let args' = List.map (map_term defs kctx ctx) args in
     let core_xtor = map_ctor xtor in
     let sgn = match result_ty with
-      | MTy.Data sgn -> map_data sgn
+        MTy.Data sgn -> map_data sgn
       | _ -> failwith "Constructor result type is not Data"
     in
     CTm.Ctor (sgn, core_xtor, args')
 
 (* Encode partial constructor application as lambda *)
-and encode_partial_ctor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_partial_ctor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (xtor: MTy.xtor) (args: MTm.typed_term list) (result_ty: MTy.typ) : CTm.term =
   let actual_arity = List.length args in
+  
+  (* Type parameters and existentials all become type abstractions.
+    Both are universally quantified in partial application - the caller
+    chooses the types (even for existentials, which are "caller chooses witness"). *)
+  let type_params = xtor.MTy.parameters @ xtor.MTy.existentials in
+  
+  (* Use original names so references in xtor's argument types match *)
   let remaining_arg_tys = List.filteri (fun i _ -> i >= actual_arity) xtor.MTy.arguments in
   let fresh_var_tys = List.map (fun ty -> (Ident.fresh (), ty)) remaining_arg_tys in
   let fresh_typed_args = List.map (fun (v, ty) -> MTm.TypedVar (v, ty)) fresh_var_tys in
   let all_args = args @ fresh_typed_args in
-  (* Compute the base type (after all function types are peeled off) *)
-  let base_ty = match MTy.whnf Ident.emptytbl [] result_ty with
-    | MTy.Fun (_, cod) -> 
+  
+  (* Compute the base type (after peeling off foralls and functions) *)
+  let rec peel_foralls ty =
+    match MTy.whnf Ident.emptytbl [] ty with
+        MTy.All ((_, _), body) -> peel_foralls body
+      | t -> t
+  in
+  let mono_ty = peel_foralls result_ty in
+  let base_ty =
+    match MTy.whnf Ident.emptytbl [] mono_ty with
+      MTy.Fun (_, cod) -> 
         let rec get_codomain n ty = 
           if n <= 0 then ty
           else match MTy.whnf Ident.emptytbl [] ty with
-            | MTy.Fun (_, cod) -> get_codomain (n - 1) cod
+              MTy.Fun (_, cod) -> get_codomain (n - 1) cod
             | _ -> ty
         in
         get_codomain (List.length remaining_arg_tys - 1) cod
     | ty -> ty
   in
   let full_ctor = MTm.TypedCtor (xtor, all_args, base_ty) in
-  map_term defs ctx (build_lambdas fresh_var_tys full_ctor)
+  let with_lambdas = build_lambdas fresh_var_tys full_ctor in
+  let with_alls = build_alls type_params with_lambdas in
+  map_term defs kctx ctx with_alls
 
 (* Encode destructor application (possibly partial) *)
-and encode_dtor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_dtor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (xtor: MTy.xtor) (args: MTm.typed_term list) (result_ty: MTy.typ) : CTm.term =
   (* For destructors, the last "argument" in the signature is the return type *)
   let all_args = xtor.MTy.arguments in
@@ -672,11 +674,11 @@ and encode_dtor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
   let actual_arity = List.length args in
   if actual_arity < expected_arity then
     (* Partial application: encode as lambda *)
-    encode_partial_dtor defs ctx xtor args result_ty
+    encode_partial_dtor defs kctx ctx xtor args result_ty
   else
     (* Full application: build the destructor.
-       xtor.main is Code(sgn) - already instantiated from type checking. *)
-    let args' = List.map (map_term defs ctx) args in
+      xtor.main is Code(sgn) - already instantiated from type checking. *)
+    let args' = List.map (map_term defs kctx ctx) args in
     let core_xtor = map_dtor xtor in
     let sgn = match xtor.MTy.main with
       | MTy.Code sgn -> map_code sgn
@@ -685,16 +687,28 @@ and encode_dtor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     CTm.Dtor (sgn, core_xtor, args')
 
 (* Encode partial destructor application as lambda *)
-and encode_partial_dtor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
+and encode_partial_dtor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (xtor: MTy.xtor) (args: MTm.typed_term list) (result_ty: MTy.typ) : CTm.term =
-  let all_args = xtor.MTy.arguments in
-  let (regular_args, _codomain) = Utility.split_at_last all_args in
+  let all_xtor_args = xtor.MTy.arguments in
+  let (regular_args, _codomain) = Utility.split_at_last all_xtor_args in
   let actual_arity = List.length args in
+  
+  (* Type parameters and existentials become type abstractions *)
+  let type_params = xtor.MTy.parameters @ xtor.MTy.existentials in
+  
   let remaining_arg_tys = List.filteri (fun i _ -> i >= actual_arity) regular_args in
   let fresh_var_tys = List.map (fun ty -> (Ident.fresh (), ty)) remaining_arg_tys in
   let fresh_typed_args = List.map (fun (v, ty) -> MTm.TypedVar (v, ty)) fresh_var_tys in
   let all_term_args = args @ fresh_typed_args in
-  let base_ty = match MTy.whnf Ident.emptytbl [] result_ty with
+  
+  (* Compute the base type (after peeling off foralls and functions) *)
+  let rec peel_foralls ty =
+    match MTy.whnf Ident.emptytbl [] ty with
+      | MTy.All ((_, _), body) -> peel_foralls body
+      | t -> t
+  in
+  let mono_ty = peel_foralls result_ty in
+  let base_ty = match MTy.whnf Ident.emptytbl [] mono_ty with
     | MTy.Fun (_, cod) -> 
         let rec get_codomain n ty = 
           if n <= 0 then ty
@@ -706,4 +720,6 @@ and encode_partial_dtor (defs: MTm.typed_definitions) (ctx: MTy.typ Ident.tbl)
     | ty -> ty
   in
   let full_dtor = MTm.TypedDtor (xtor, all_term_args, base_ty) in
-  map_term defs ctx (build_lambdas fresh_var_tys full_dtor)
+  let with_lambdas = build_lambdas fresh_var_tys full_dtor in
+  let with_alls = build_alls type_params with_lambdas in
+  map_term defs kctx ctx with_alls

@@ -35,6 +35,8 @@ type term =
   | Ctor of xtor * (term list)
   (* dtor{ai's}(ti's); type and term arguments *)
   | Dtor of xtor * (term list)
+  (* ifz t then u else v *)
+  | Ifz of term * term * term
 
 and branch =
   (* xtor(ti's) => t; type and term arguments, and return *)
@@ -55,6 +57,7 @@ type typed_term =
   | TypedNew of typed_clause list * typ
   | TypedCtor of xtor * typed_term list * typ
   | TypedDtor of xtor * typed_term list * typ
+  | TypedIfz of typed_term * typed_term * typed_term * typ
 
 and typed_clause =
   xtor * var list * var list * typed_term
@@ -74,6 +77,7 @@ let get_type (tm: typed_term) : typ =
   | TypedNew (_, ty) -> ty
   | TypedCtor (_, _, ty) -> ty
   | TypedDtor (_, _, ty) -> ty
+  | TypedIfz (_, _, _, ty) -> ty
 
 type term_def =
   { name: Path.t
@@ -217,6 +221,12 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
       let* (t', _, env) = check defs ctx env t (Ext Int) in
       let* (u', _, env) = check defs ctx env u (Ext Int) in
       Ok (TypedAdd (t', u'), Ext Int, env)
+  
+  | Ifz (cond, then_branch, else_branch) ->
+      let* (cond', _, env) = check defs ctx env cond (Ext Int) in
+      let* (then', then_ty, env) = infer defs ctx env then_branch in
+      let* (else', _, env) = check defs ctx env else_branch then_ty in
+      Ok (TypedIfz (cond', then', else', then_ty), then_ty, env)
   
   | Var x ->
       let* ty = lookup ctx x in

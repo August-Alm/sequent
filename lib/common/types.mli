@@ -27,7 +27,7 @@ and var_typ = Unbound of Ident.t | Link of typ
 
 and sgn_typ =
   { name: sym
-  ; parameters: (Ident.t * kind) list
+  ; parameters: kind list  (* Just kinds, no names - GADT style *)
   ; xtors: xtor list;
   }
 

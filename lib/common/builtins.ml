@@ -20,14 +20,24 @@ module Sym = struct
   let box_t = Path.of_primitive 103 "box"
   let box_mk = Path.access box_t "mk"
 
-  let all_t k = Path.of_primitive (1000 + encode k) "all"
+  let exists_t k = Path.of_primitive (999 + 2 * encode k) "exists"
+  let exists_pack k = Path.access (exists_t k) "pack"
+
+  let all_t k = Path.of_primitive (1000 + 2 * encode k) "all"
   let all_instantiate k = Path.access (all_t k) "instantiate"
 
   let all_kind_opt (s: Path.t) =
     match Path.as_ident s with
     | Some id ->
-      let n = Ident.stamp id - 1000 in
-      if n >= 0 then Some (decode n) else None
+      let n = -Ident.stamp id - 1000 in
+      if n >= 0 && n mod 2 = 0 then Some (decode (n / 2)) else None
+    | None -> None
+
+  let exists_kind_opt (s: Path.t) =
+    match Path.as_ident s with
+    | Some id ->
+      let n = -Ident.stamp id - 999 in
+      if n >= 0 && n mod 2 = 0 then Some (decode (n / 2)) else None
     | None -> None
 
 end
@@ -41,10 +51,10 @@ module Prim = struct
     let tb = Var (ref (Unbound b)) in
     lazy
     { name = Sym.fun_t
-    ; parameters = [(a, Star); (b, Star)]
+    ; parameters = [Star; Star]  (* Just kinds, no names *)
     ; xtors = [
         { name = Sym.fun_apply
-        ; parameters = [(a, Star); (b, Star)]
+        ; parameters = [(a, Star); (b, Star)]  (* xtor binds the type vars *)
         ; existentials = []
         ; arguments = [Lhs ta; Rhs tb]
         ; main = App (Sym (Sym.fun_t, fun_sgn_lazy), [ta; tb])
@@ -60,10 +70,10 @@ module Prim = struct
     let ta = Var (ref (Unbound a)) in
     lazy
     { name = Sym.raise_t
-    ; parameters = [(a, Star)]
+    ; parameters = [Star]  (* Just kinds *)
     ; xtors = [
         { name = Sym.raise_pack
-        ; parameters = [(a, Star)]
+        ; parameters = [(a, Star)]  (* xtor binds the type var *)
         ; existentials = []
         ; arguments = [Rhs ta]
         ; main = App (Sym (Sym.raise_t, raise_sgn_lazy), [ta])
@@ -79,10 +89,10 @@ module Prim = struct
     let ta = Var (ref (Unbound a)) in
     lazy
     { name = Sym.lower_t
-    ; parameters = [(a, Star)]
+    ; parameters = [Star]  (* Just kinds *)
     ; xtors = [
         { name = Sym.lower_return
-        ; parameters = [(a, Star)]
+        ; parameters = [(a, Star)]  (* xtor binds the type var *)
         ; existentials = []
         ; arguments = [Lhs ta]
         ; main = App (Sym (Sym.lower_t, lower_sgn_lazy), [ta])
@@ -99,11 +109,11 @@ module Prim = struct
     let ta = Var (ref (Unbound a)) in
     lazy
     { name = Sym.all_t k
-    ; parameters = [(a, k)]
+    ; parameters = [k]  (* Just kinds *)
     ; xtors = [
         { name = Sym.all_instantiate k
-        ; parameters = [(a, k)]
-        ; existentials = [(t, Arrow (k, Star))]
+        ; parameters = [(t, Arrow (k, Star)); (a, k)]
+        ; existentials = []
         ; arguments = [Lhs (App (tt, [ta]))]
         ; main = App (Sym (Sym.all_t k, all_sgn_lazy a k), [App (tt, [ta])])
         }

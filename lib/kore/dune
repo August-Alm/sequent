@@ -1,5 +1,0 @@
-(library
- (name kore)
- (public_name sequent.kore)
- (libraries utility common)
- (flags (:standard -warn-error -27-26-33)))
