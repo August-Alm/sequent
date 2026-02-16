@@ -237,6 +237,32 @@ and subst_rigid_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
   ; parameters = []  (* Clear parameters after instantiation *)
   }
 
+(** Substitute unbound unification variables by identifier name.
+    Used for instantiating xtor template parameters (which use Var not Rigid). *)
+let rec subst_unbound (ms: (Ident.t * typ) list) (t: typ) : typ =
+  match t with
+  | Var ({contents = Unbound id}) ->
+      (match List.find_opt (fun (id', _) -> Ident.equal id id') ms with
+        Some (_, t') -> t' | None -> t)
+  | Var ({contents = Link t'}) -> subst_unbound ms t'
+  | Rigid _ -> t
+  | App (f, args) -> App (subst_unbound ms f, List.map (subst_unbound ms) args)
+  | Sgn s -> Sgn (subst_unbound_sgn ms s)
+  | Ext _ | Sym (_, _) -> t
+
+and subst_unbound_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
+  { s with xtors = List.map (subst_unbound_xtor ms) s.xtors }
+
+and subst_unbound_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
+  (* Don't substitute identifiers bound by existentials (they are local). *)
+  let shadowed = List.map fst x.existentials in
+  let ms' = List.filter (fun (id, _) -> not (contains_var id shadowed)) ms in
+  { x with
+    arguments = List.map (chiral_map (subst_unbound ms')) x.arguments
+  ; main = subst_unbound ms' x.main
+  ; parameters = []
+  }
+
 type solving_env =
   { subs: (var_typ ref * typ) list (* Current substitution - keyed by ref *)
   ; local_eqs: (typ * typ) list (* Local assumptions (from GADT matches) *)
@@ -338,12 +364,12 @@ and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ lis
       (* Fresh unification variables for xtor's universal parameters only *)
       let fresh_vars = List.map (fun (id, _) -> ref (Unbound id)) x.parameters in
       let fresh_mapping = List.map2 (fun (id, _) r -> (id, Var r)) x.parameters fresh_vars in
-      (* Substitute Rigid params with fresh Vars; existentials stay as Rigid *)
-      let main_with_fresh = subst_rigid fresh_mapping x.main in
+      (* Substitute Unbound params with fresh Vars; existentials stay as Rigid *)
+      let main_with_fresh = subst_unbound fresh_mapping x.main in
       (* Try to unify with target *)
       if can_unify_shallow main_with_fresh args sgn.name then begin
         (* Apply substitution to arguments *)
-        let args_subst = List.map (chiral_map (subst_rigid fresh_mapping)) x.arguments in
+        let args_subst = List.map (chiral_map (subst_unbound fresh_mapping)) x.arguments in
         Some { x with 
           parameters = []  (* Universals cleared after instantiation *)
         (* existentials stay - they become Rigid skolems during pattern match *)
@@ -466,12 +492,13 @@ and unify_xtor
   if not (Path.equal x1.name x2.name) then None
   else if List.length x1.arguments <> List.length x2.arguments then None
   else
-    (* Unify main types *)
-    Option.bind (unify kctx x1.main x2.main env) (fun env ->
-      (* Unify arguments pairwise *)
-      List.fold_left2 (fun env_opt a1 a2 ->
+    (* Skip unifying main types - they are both App(Sym(sgn.name), args) which would
+       trigger infinite recursion through whnf -> instantiate. The signatures 
+       already have the same name (checked in unify_sgn), so main types are equal. *)
+    (* Unify arguments pairwise *)
+    List.fold_left2 (fun env_opt a1 a2 ->
         Option.bind env_opt (fun env -> unify_chiral kctx a1 a2 env)
-      ) (Some env) x1.arguments x2.arguments)
+      ) (Some env) x1.arguments x2.arguments
 
 (** Unify chiral types *)
 and unify_chiral
