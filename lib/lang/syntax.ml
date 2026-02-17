@@ -8,7 +8,7 @@
 type ast_kind = AST_KStar | AST_KArrow of ast_kind * ast_kind
 
 type ast_typ =
-  | AST_TyVar of string
+    AST_TyVar of string
   | AST_TyApp of ast_typ * (ast_typ list)
   | AST_TyFun of ast_typ * ast_typ
   | AST_TyAll of (string * ast_kind option) * ast_typ
@@ -16,10 +16,10 @@ type ast_typ =
 type ast =
   (* n *)
   | AST_Int of int
-  (* x *)
-  | AST_Var of string
   (* t + u *)
   | AST_Add of ast * ast
+  (* x *)
+  | AST_Var of string
   (* t(u) *)
   | AST_App of ast * ast
   (* t{ty} *)
@@ -87,7 +87,6 @@ type ast_term_def =
   }
 
 (*
-
   type t = ...
   
   let f {a0: k0} ... {aM: kM} (x0: t0) ... (xN: tN) : ty = t
@@ -107,7 +106,7 @@ type ast_defs =
 
 let ident n = "\n" ^ String.make (2 * n) ' '
 
-(* convert kind to string *)
+(* Convert kind to string *)
 let rec kind_to_string = function
   | AST_KStar -> "type"
   | AST_KArrow (k1, k2) ->
@@ -118,7 +117,7 @@ let rec kind_to_string = function
     in
     k1_str ^ " -> " ^ kind_to_string k2
 
-(* convert type to string *)
+(* Convert type to string *)
 let rec typ_to_string = function
   | AST_TyVar x -> x
   | AST_TyApp (t, args) ->
@@ -147,7 +146,7 @@ and typ_atom_to_string = function
   | AST_TyVar x -> x
   | t -> "(" ^ typ_to_string t ^ ")"
 
-(* convert term to string *)
+(* Convert term to string *)
 let rec ast_to_string (lvl: int) = function
   | AST_Int n -> string_of_int n
   | AST_Var x -> x
@@ -209,7 +208,7 @@ and clause_to_string (lvl: int) (xtor, ty_binders, tm_binders, body) =
   let tm_binders_str = String.concat "" (List.map (fun x -> "(" ^ x ^ ")") tm_binders) in
   xtor ^ ty_binders_str ^ tm_binders_str ^ " => " ^ ast_to_string lvl body
 
-(* convert constructor declaration to string *)
+(* Convert constructor declaration to string *)
 let xtor_to_string (xtor : ast_xtor) =
   let ty_args_str = String.concat " " (List.map (fun (x, k_opt) ->
     match k_opt with
@@ -224,7 +223,7 @@ let xtor_to_string (xtor : ast_xtor) =
   let args_sep = if ty_args_str = "" || tm_args_str = "" then "" else " " in
   xtor.name ^ ": " ^ ty_args_str ^ args_sep ^ tm_args_str
 
-(* convert type definition to string *)
+(* Convert type definition to string *)
 let type_def_to_string = function
   | AST_TyAlias (name, ty) ->
     "type " ^ name ^ " = " ^ typ_to_string ty
@@ -241,7 +240,7 @@ let type_def_to_string = function
     "code " ^ dec.name ^ ": " ^ kind_to_string dec.kind ^ 
     " where" ^ ident 1 ^ "{ " ^ xtors_str ^ ident 1 ^"}"
 
-(* convert term definition to string *)
+(* Convert term definition to string *)
 let term_def_to_string def =
   let ty_args_str = String.concat "" (List.map type_arg_to_string def.type_args) in
   let tm_args_str = String.concat "" (List.map (fun (x, ty) ->
@@ -251,7 +250,7 @@ let term_def_to_string def =
   ": " ^ typ_to_string def.return_type ^ 
   " =" ^ ident 1 ^ ast_to_string 1 def.body
 
-(* convert all definitions to string *)
+(* Convert all definitions to string *)
 let defs_to_string defs =
   let type_strs = List.map type_def_to_string defs.type_defs in
   let term_strs = List.map term_def_to_string defs.term_defs in

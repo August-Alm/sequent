@@ -266,9 +266,9 @@ and occurs_sgn_aux (visited: PathSet.t) (r: var_typ ref) (s: sgn_typ) : bool =
 let occurs (r: var_typ ref) (t: typ) : bool = occurs_aux PathSet.empty r t
 
 (* ========================================================================= *)
-(* Weak head normal form, instantiation, and unification
+(* Weak head normal form, instantiation, and unification                     *)
 (* ========================================================================= *)
-   
+(*
    These are mutually recursive because:
    - whnf calls instantiate to reduce App(Sym, args) -> Sgn
    - instantiate filters unreachable xtors using unify
@@ -306,7 +306,19 @@ let rec whnf (kctx: kind Ident.tbl) (subs: (var_typ ref * typ) list) (t: typ) =
           (* Nested application - flatten and try again *)
           whnf kctx subs (App (f'', args'' @ args'))
       | _ -> App (f', args'))
-  | Ext _ | Rigid _ | Sym _ | Data _ | Code _ | Fun _ | All _ -> t
+  | Sym (_, pol, lazy_sgn) ->
+      (* Nullary type symbol: instantiate with no arguments.
+         This handles bare Sym without App wrapper. *)
+      let sgn = Lazy.force lazy_sgn in
+      if sgn.parameters = [] then
+        (* Nullary: instantiate directly *)
+        (match pol with
+          Pos -> Data (instantiate kctx lazy_sgn [])
+        | Neg -> Code (instantiate kctx lazy_sgn []))
+      else
+        (* Has parameters: leave as Sym, will be applied later *)
+        t
+  | Ext _ | Rigid _ | Data _ | Code _ | Fun _ | All _ -> t
 
 (** Instantiate a signature with type arguments.
     Substitutes parameters, checks kinds, and filters out GADT-unreachable xtors. *)
@@ -330,28 +342,49 @@ and instantiate
       3. Apply substitution to arguments
       4. Filter out xtors that can't unify (GADT refinement)
       
-      Note: xtor.parameters are universals (exposed by pattern matching) -> fresh Var refs
+      Note: xtor.parameters are universals (exposed by pattern matching) -> substituted with caller's args
             xtor.existentials are existentials (hidden) -> stay as Rigid *)
-    let target_typ = App (Sym (sgn.name, Pos, lazy_sgn), args) in
     let instantiate_xtor (x: xtor) : xtor option =
-      (* Fresh unification variables for xtor's universal parameters only *)
-      let fresh_vars = List.map (fun (id, _) -> ref (Unbound id)) x.parameters in
-      let fresh_mapping =
-        List.map2 (fun (id, _) r -> (id, Var r)) x.parameters fresh_vars in
-      (* Substitute Unbound params with fresh Vars; existentials stay as Rigid *)
-      let main_with_fresh = subst_unbound fresh_mapping x.main in
-      (* Try to unify with target *)
-      if can_unify_shallow main_with_fresh args sgn.name then begin
-        (* Apply substitution to arguments *)
-        let args_subst = List.map (subst_unbound fresh_mapping) x.arguments in
-        Some { x with 
-          parameters = []  (* Universals cleared after instantiation *)
-        (* existentials stay - they become Rigid skolems during pattern match *)
-        ; arguments = args_subst
-        ; main = target_typ
-        }
-      end else
-        None
+      (* Derive substitution by matching xtor.main against target type.
+         For non-GADT types: xtor.main = App(Sym(parent), [vars...])
+         We match positionally with caller's args to get substitution.
+         This ensures substituted types contain caller's args (already kind-checked). *)
+      match x.main with
+      | App (Sym (p, _, _), main_args) when Path.equal p sgn.name ->
+          if List.length main_args <> List.length args then
+            None  (* Arity mismatch - xtor not reachable *)
+          else begin
+            (* Check if all args can unify (GADT filtering) *)
+            let can_match = List.for_all2 can_unify_shallow_types main_args args in
+            if not can_match then
+              None  (* GADT refinement: xtor not reachable at this type *)
+            else begin
+              (* Build substitution: xtor's param vars -> caller's args *)
+              let subst = List.fold_left2 (fun acc main_arg caller_arg ->
+                match main_arg with
+                | Var {contents = Unbound id} -> (id, caller_arg) :: acc
+                | Var {contents = Link _} -> acc  (* Already linked *)
+                | _ -> acc  (* Complex pattern - handled by can_unify check *)
+              ) [] main_args args in
+              let args_subst = List.map (subst_unbound subst) x.arguments in
+              Some { x with 
+                parameters = []  (* Universals cleared after instantiation *)
+              ; arguments = args_subst
+              ; main = x.main  (* Keep original - avoids infinite expansion *)
+              }
+            end
+          end
+      | Sym (p, _, _) when Path.equal p sgn.name ->
+          (* Nullary main type - xtor produces/consumes bare parent type *)
+          if args = [] then Some { x with parameters = [] }
+          else None  (* Caller passed args but xtor expects none *)
+      | Var {contents = Unbound id} ->
+          (* main is just a var - matches any target (degenerate GADT case) *)
+          let target = App (Sym (sgn.name, Pos, lazy sgn), args) in
+          let subst = [(id, target)] in
+          let args_subst = List.map (subst_unbound subst) x.arguments in
+          Some { x with parameters = []; arguments = args_subst }
+      | _ -> None  (* Doesn't match target type *)
     in
     let reachable_xtors = List.filter_map instantiate_xtor sgn.xtors in
     {sgn with parameters = []; xtors = reachable_xtors}
@@ -370,6 +403,9 @@ and can_unify_shallow
   | Data sgn | Code sgn -> 
       Path.equal sgn.name target_name && 
       sgn.parameters = []  (* Sgn with no params = already instantiated *)
+  | Sym (p, _, _) ->
+      (* Bare Sym (nullary type): matches if path equals and no target args *)
+      Path.equal p target_name && target_args = []
   | App (Sym (p, _, _), args) ->
       Path.equal p target_name && 
       List.length args = List.length target_args &&
@@ -432,9 +468,16 @@ and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
   (* Function types: unify domain and codomain *)
   | Fun (a1, b1), Fun (a2, b2) ->
       Option.bind (unify kctx a1 a2 env) (unify kctx b1 b2)
-  (* Instantiated signatures: unify structurally *)
-  | Data sg1, Data sg2 -> unify_sgn kctx sg1 sg2 env
-  | Code sg1, Code sg2 -> unify_sgn kctx sg1 sg2 env
+  (* Instantiated signatures: check name equality to avoid infinite recursion *)
+  | Data sg1, Data sg2 -> 
+      (* If same name and both have no parameters (already instantiated), they're equal *)
+      if Path.equal sg1.name sg2.name && sg1.parameters = [] && sg2.parameters = []
+      then Some env
+      else unify_sgn kctx sg1 sg2 env
+  | Code sg1, Code sg2 -> 
+      if Path.equal sg1.name sg2.name && sg1.parameters = [] && sg2.parameters = []
+      then Some env
+      else unify_sgn kctx sg1 sg2 env
   (* Rigid variables *)
   | Rigid a, Rigid b when Ident.equal a b -> Some env
   | Rigid a, t | t, Rigid a ->
@@ -477,12 +520,13 @@ and unify_xtor
   if not (Path.equal x1.name x2.name) then None
   else if List.length x1.arguments <> List.length x2.arguments then None
   else
-    (* Unify main types *)
-    Option.bind (unify kctx x1.main x2.main env) (fun env ->
-      (* Unify arguments pairwise *)
-      List.fold_left2 (fun env_opt a1 a2 ->
-        Option.bind env_opt (unify kctx a1 a2)
-      ) (Some env) x1.arguments x2.arguments)
+    (* Don't unify main types - if xtors have same name from same signature,
+       their main types are definitionally equal. Unifying them would cause
+       infinite recursion since main contains the signature that contains xtors. *)
+    (* Just unify arguments pairwise *)
+    List.fold_left2 (fun env_opt a1 a2 ->
+      Option.bind env_opt (unify kctx a1 a2)
+    ) (Some env) x1.arguments x2.arguments
 
 (* ========================================================================= *)
 (* Equation solving *)

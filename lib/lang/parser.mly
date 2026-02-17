@@ -10,14 +10,12 @@
 %token <int> INT
 %token EOF
 
-(* Precedence and associativity *)
-%left PLUS
-%right ARROW
-%nonassoc KW_IN
-%nonassoc KW_WITH
-%nonassoc KW_END
-%nonassoc KW_TYPE
-%nonassoc DBLARROW
+(* Precedence and associativity - lowest to highest *)
+%nonassoc DBLARROW       (* lowest - lambda body extends as far right as possible *)
+%nonassoc KW_IN          (* let ... in ... *)
+%nonassoc KW_WITH KW_END (* match ... with ... *)
+%left PLUS               (* addition *)
+%right ARROW             (* type arrows *)
 (* Start symbol *)
 %start <Syntax.ast> main_expr
 %start <Syntax.ast_typ> main_typ

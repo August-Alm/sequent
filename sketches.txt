@@ -55,3 +55,28 @@ def idInt(x: prd Box(I32), k: cns Box(I32)) =
     close(cocase {apply(x, k) ⇒ 
       ⟨cocase {thunk(k') ⇒ ⟨[t] | k'⟩} | k⟩ 
     })
+
+      
+let nat_sym = Path.of_string "nat"
+let zero_sym = Path.of_string "zero"
+let succ_sym = Path.of_string "succ"
+
+let rec nat_sgn_lazy =
+  lazy
+  { name = nat_sym
+  ; parameters = []
+  ; xtors =
+    [ { name = zero_sym
+      ; parameters = []
+      ; existentials = []
+      ; arguments = []
+      ; main = Sym (nat_sym, Data, lower_sgn_lazy)
+      }
+    ; { name = succ_sym
+      ; parameters = []
+      ; existentials = []
+      ; arguments = [Sym (nat_sym, Data, lower_sgn_lazy)]
+      ; main = Sym (nat_sym, Data, lower_sgn_lazy)
+      }
+    ]
+  }

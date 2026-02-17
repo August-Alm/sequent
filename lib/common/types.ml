@@ -466,8 +466,11 @@ and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
   (* Unapplied symbols: same name means same type constructor *)
   | Sym (s1, _), Sym (s2, _) -> 
       if Path.equal s1 s2 then Some env else None
-  (* Instantiated signatures: unify structurally *)
-  | Sgn sg1, Sgn sg2 -> unify_sgn kctx sg1 sg2 env
+  (* Instantiated signatures: check name equality to avoid infinite recursion *)
+  | Sgn sg1, Sgn sg2 -> 
+      if Path.equal sg1.name sg2.name && sg1.parameters = [] && sg2.parameters = []
+      then Some env
+      else unify_sgn kctx sg1 sg2 env
   (* Rigid variables *)
   | Rigid a, Rigid b when Ident.equal a b -> Some env
   | Rigid a, t | t, Rigid a ->
