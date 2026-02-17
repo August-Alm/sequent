@@ -145,13 +145,9 @@ let run_test ~name ~manual_repr (term: MTm.term) =
           with e ->
             Printf.printf "  Exception: %s\n" (Printexc.to_string e));
           
-          (* 6. Focused type checking - temporarily disabled due to hang *)
-          (*
+          (* 6. Focused type checking *)
           print_endline "Focused Type Check:";
-          print_endline "  (skipped)"
-          *)
           (try
-            (* Type check the closed command (no ret variable needed) *)
             let empty_kctx = Ident.emptytbl in
             let empty_ctx = Ident.emptytbl in
             let empty_env = Common.Types.empty_env in
@@ -170,8 +166,7 @@ let run_test ~name ~manual_repr (term: MTm.term) =
                   | FTerms.UnificationFailed _ -> "Unification failed"
                 in
                 Printf.printf "  ✗ Type check failed: %s\n" err_msg
-          with 
-          | e ->
+          with e ->
             Printf.printf "  Exception: %s\n" (Printexc.to_string e))
         with e ->
           Printf.printf "  Focus Exception: %s\n" (Printexc.to_string e));

@@ -249,21 +249,31 @@ let rec find_subst (r: var_typ ref) (subs: (var_typ ref * typ) list) =
   | (r', t) :: _ when r == r' -> Some t
   | _ :: rest -> find_subst r rest
 
-(** Occurs check: does variable r occur in type t? *)
-let rec occurs (r: var_typ ref) (t: typ) : bool =
+(** Set of signature paths for tracking visited signatures in occurs check *)
+module PathSet = Set.Make(struct type t = Path.t let compare = Path.compare end)
+
+(** Occurs check: does variable r occur in type t?
+    Uses a visited set to prevent infinite recursion on recursive types. *)
+let rec occurs_aux (visited: PathSet.t) (r: var_typ ref) (t: typ) : bool =
   match t with
     Var r' when r == r' -> true
-  | Var {contents = Link t'} -> occurs r t'
+  | Var {contents = Link t'} -> occurs_aux visited r t'
   | Var {contents = Unbound _} -> false
-  | App (f, args) -> occurs r f || List.exists (occurs r) args
-  | Data sgn | Code sgn -> occurs_sgn r sgn
-  | Sym (_, _, lazy_sgn) -> occurs_sgn r (Lazy.force lazy_sgn)
+  | App (f, args) -> occurs_aux visited r f || List.exists (occurs_aux visited r) args
+  | Data sgn | Code sgn ->
+      if PathSet.mem sgn.name visited then false
+      else occurs_sgn_aux (PathSet.add sgn.name visited) r sgn
+  | Sym (name, _, lazy_sgn) ->
+      if PathSet.mem name visited then false
+      else occurs_sgn_aux (PathSet.add name visited) r (Lazy.force lazy_sgn)
   | Ext _ | Rigid _ | Fun _ | All _ -> false
 
-and occurs_sgn (r: var_typ ref) (s: sgn_typ) : bool =
+and occurs_sgn_aux (visited: PathSet.t) (r: var_typ ref) (s: sgn_typ) : bool =
   List.exists (fun (x: xtor) -> 
-    List.exists (occurs r) x.arguments || occurs r x.main
+    List.exists (occurs_aux visited r) x.arguments || occurs_aux visited r x.main
   ) s.xtors
+
+let occurs (r: var_typ ref) (t: typ) : bool = occurs_aux PathSet.empty r t
 
 (* ========================================================================= *)
 (* Weak head normal form, instantiation, and unification

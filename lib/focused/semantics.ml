@@ -257,14 +257,16 @@ let cmd_name = function
   | Ret (_, v) -> "ret " ^ Ident.name v
 
 (** Run the machine until it stops. Returns (final_config, step_count) *)
-let rec run ?(trace=false) ?(steps=0) (cfg: config) : config * int =
+let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * int =
+  if steps > max_steps then
+    failwith (Printf.sprintf "[LOOP] Machine exceeded %d steps" max_steps);
   let (cmd, e) = cfg in
   if trace then 
     Printf.printf "    [%d] %s | env has %d bindings\n"
       steps (cmd_name cmd) (List.length (Ident.to_list e));
   match step cfg with
     None -> (cfg, steps)
-  | Some cfg' -> run ~trace ~steps:(steps + 1) cfg'
+  | Some cfg' -> run ~trace ~steps:(steps + 1) ~max_steps cfg'
 
 (** Run with tracing, returning all intermediate configurations *)
 let rec run_trace (cfg: config) : config list =

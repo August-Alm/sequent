@@ -277,23 +277,35 @@ let rec find_subst (r: var_typ ref) (subs: (var_typ ref * typ) list) =
   | (r', t) :: _ when r == r' -> Some t
   | _ :: rest -> find_subst r rest
 
-(** Occurs check: does variable r occur in type t? *)
-let rec occurs (r: var_typ ref) (t: typ) : bool =
+(** Occurs check: does variable r occur in type t?
+    Uses a visited set to handle recursive type definitions. *)
+module PathSet = Set.Make(struct type t = Path.t let compare = Path.compare end)
+
+let rec occurs_aux (visited: PathSet.t) (r: var_typ ref) (t: typ) : bool =
   match t with
     Var r' when r == r' -> true
-  | Var {contents = Link t'} -> occurs r t'
+  | Var {contents = Link t'} -> occurs_aux visited r t'
   | Var {contents = Unbound _} -> false
-  | App (f, args) -> occurs r f || List.exists (occurs r) args
-  | Sgn s -> occurs_sgn r s
-  | Sym (_, lazy_sgn) -> occurs_sgn r (Lazy.force lazy_sgn)
+  | App (f, args) -> 
+      occurs_aux visited r f || List.exists (occurs_aux visited r) args
+  | Sgn s ->
+      (* If we've already visited this signature, don't recurse into it *)
+      if PathSet.mem s.name visited then false
+      else occurs_sgn_aux (PathSet.add s.name visited) r s
+  | Sym (name, lazy_sgn) ->
+      (* If we've already visited this signature, don't recurse into it *)
+      if PathSet.mem name visited then false
+      else occurs_sgn_aux (PathSet.add name visited) r (Lazy.force lazy_sgn)
   | Ext _ | Rigid _ -> false
 
-and occurs_sgn (r: var_typ ref) (s: sgn_typ) : bool =
+and occurs_sgn_aux (visited: PathSet.t) (r: var_typ ref) (s: sgn_typ) : bool =
   List.exists (fun (x: xtor) -> 
     List.exists (fun ct ->
-      match ct with Lhs t | Rhs t -> occurs r t
-    ) x.arguments || occurs r x.main
+      match ct with Lhs t | Rhs t -> occurs_aux visited r t
+    ) x.arguments || occurs_aux visited r x.main
   ) s.xtors
+
+let occurs r t = occurs_aux PathSet.empty r t
 
 (* ========================================================================= *)
 (* Weak head normal form, instantiation, and unification
