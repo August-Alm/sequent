@@ -92,13 +92,13 @@ type context = chiral_typ VarMap.tbl
 
 type check_error =
     UnboundVariable of var
-  | TypeMismatch of { expected: chiral_typ; actual: chiral_typ }
-  | ChiralityMismatch of { expected_chirality: [`Lhs | `Rhs]; actual: chiral_typ }
+  | TypeMismatch of {expected: chiral_typ; actual: chiral_typ}
+  | ChiralityMismatch of {expected_chirality: [`Lhs | `Rhs]; actual: chiral_typ}
   | ExpectedSignature of typ  (* Type was expected to be a signature *)
   | SignatureMismatch of sgn_typ * sgn_typ  (* Expected, actual *)
   | XtorNotInSignature of xtor * sgn_typ
   | NonExhaustive of xtor list  (* Missing branches for these reachable xtors *)
-  | ArityMismatch of { xtor: xtor; expected: int; actual: int }
+  | ArityMismatch of {xtor: xtor; expected: int; actual: int}
   | UnificationFailed of typ * typ
 
 let lookup (ctx: context) (v: var) : (chiral_typ, check_error) result =

@@ -68,7 +68,7 @@ let pp_ext_typ (e: ext_typ) : string =
 let rec pp_typ ?(cfg=default_config) (t: typ) : string =
   match t with
     Ext e -> pp_ext_typ e
-  | Var {contents = Unbound id} -> "?" ^ pp_ident id
+  | Var {contents = Unbound id} -> pp_ident id
   | Var {contents = Link t'} -> pp_typ ~cfg t'
   | Rigid id -> pp_ident id
   | Sym (s, _, _) -> pp_path s
@@ -94,10 +94,13 @@ and pp_typ_base ?(cfg=default_config) (t: typ) : string =
   | Ext _ | Var _ | Rigid _ | Sym _ -> pp_typ ~cfg t
   | _ -> parens (pp_typ ~cfg t)
 
+(* pp_typ_atom: types that don't need outer parens in most contexts.
+   App is included because its arguments are already parenthesized: stream(a) not (stream(a)).
+   Only Fun and All need parens since they use infix/prefix syntax. *)
 and pp_typ_atom ?(cfg=default_config) (t: typ) : string =
   match t with
-  | Ext _ | Var _ | Rigid _ | Sym _ -> pp_typ ~cfg t
-  | _ -> parens (pp_typ ~cfg t)
+  | Ext _ | Var _ | Rigid _ | Sym _ | App _ | Data _ | Code _ -> pp_typ ~cfg t
+  | Fun _ | All _ -> parens (pp_typ ~cfg t)
 
 and pp_sgn_typ ?(cfg=default_config) (s: sgn_typ) : string =
   ignore cfg;
@@ -190,7 +193,6 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
         |> List.map (pp_branch ~cfg ~lvl:(lvl + cfg.indent_size))
         |> String.concat (indent lvl ^ "; ")
       in
-      (if lvl = 0 then "" else indent lvl) ^
       "match " ^ pp_term ~cfg ~lvl t ^ " with" ^
       indent lvl ^ "{ " ^ branches_str ^
       indent lvl ^ "}"
@@ -202,10 +204,12 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
       in
       let branches_str =
         branches
-        |> List.map (pp_branch ~cfg ~lvl)
-        |> String.concat "; "
+        |> List.map (pp_branch ~cfg ~lvl:(lvl + cfg.indent_size))
+        |> String.concat (indent lvl ^ "; ")
       in
-      "new" ^ ty_str ^ " { " ^ branches_str ^ " }"
+      "new" ^ ty_str ^
+      indent lvl ^ "{ " ^ branches_str ^
+      indent lvl ^ "}"
   
   | Ctor (xtor, args) ->
       let name = pp_xtor_name xtor in
@@ -230,7 +234,14 @@ and pp_term_app ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
 and pp_branch ?(cfg=default_config) ?(lvl=0) ((xtor, vars, body): branch) : string =
   let name = pp_xtor_name xtor in
   let vars_str = List.map (fun x -> parens (pp_ident x)) vars in
-  name ^ String.concat "" vars_str ^ " => " ^ pp_term ~cfg ~lvl body
+  (* For multi-line bodies like Match/New, put on new line with extra indentation *)
+  let body_str = match body with
+    | Match _ | New _ ->
+        let body_lvl = lvl + cfg.indent_size in
+        indent body_lvl ^ pp_term ~cfg ~lvl:body_lvl body
+    | _ -> pp_term ~cfg ~lvl body
+  in
+  name ^ String.concat "" vars_str ^ " => " ^ body_str
 
 (* ========================================================================= *)
 (* Typed term printing                                                       *)

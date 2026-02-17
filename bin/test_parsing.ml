@@ -66,7 +66,8 @@ let run_test ~name (source: string) =
       match desugared with
       | None ->
           print_endline "FAIL: Desugar error\n"
-      | Some melcore_defs ->
+      | Some result ->
+          let melcore_defs = result.Sequent.Desugar.term_defs in
           (* 3. Pretty-print Melcore *)
           print_endline "Melcore (pretty-printed):";
           Path.to_list melcore_defs

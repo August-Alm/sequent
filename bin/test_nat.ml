@@ -27,7 +27,8 @@ let iszero(n: nat): nat =
   print_endline "OK";
   
   print_endline "Desugaring...";
-  let melcore_defs = Sequent.Desugar.desugar ast_defs in
+  let result = Sequent.Desugar.desugar ast_defs in
+  let melcore_defs = result.Sequent.Desugar.term_defs in
   print_endline "OK";
   
   print_endline "Melcore:";

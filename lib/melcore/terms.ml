@@ -107,18 +107,18 @@ type context =
 type check_error =
     UnboundVariable of var
   | UnboundSymbol of Path.t
-  | TypeMismatch of { expected: typ; actual: typ }
+  | TypeMismatch of {expected: typ; actual: typ}
   | ExpectedData of typ  (* Type was expected to be a data type *)
   | ExpectedCode of typ  (* Type was expected to be a codata type *)
   | SignatureMismatch of sgn_typ * sgn_typ  (* Expected, actual *)
   | XtorNotInSignature of xtor * sgn_typ
   | NonExhaustive of xtor list  (* Missing branches for these reachable xtors *)
-  | ArityMismatch of { xtor: xtor; expected: int; actual: int }
+  | ArityMismatch of {xtor: xtor; expected: int; actual: int}
   | UnificationFailed of typ * typ
 
 let lookup (ctx: context) (v: var) : (typ, check_error) result =
   match Ident.find_opt v ctx.types with
-  | Some ct -> Ok ct
+    Some ct -> Ok ct
   | None -> Error (UnboundVariable v)
 
 let extend (ctx: context) (v: var) (ct: typ) : context =
@@ -319,11 +319,10 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
   
   | Ctor (x, args) ->
       (* The xtor carries its signature info. x.main is the result type.
-         x.arguments are the expected argument types.
-         Partial application: if fewer args provided, result is a function. *)
-      let (exist_bindings, x_inst) = instantiate_xtor_existentials x in
-      let exist_vars = List.map fst exist_bindings in
-      let _ = exist_vars in (* existentials are packed, not exposed *)
+        x.arguments are the expected argument types.
+        Partial application: if fewer args provided, result is a function. *)
+      let (_exist_bindings, x_inst) = instantiate_xtor_existentials x in
+      (* exist_bindings are existentials - packed, not exposed to caller *)
       let expected_arity = List.length x_inst.arguments in
       let actual_arity = List.length args in
       let* () =
@@ -350,10 +349,8 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
   
   | Dtor (x, args) ->
       (* For codata destruction: x is a destructor, last argument type is codomain.
-         Partial application is supported. *)
-      let (exist_bindings, x_inst) = instantiate_xtor_existentials x in
-      let exist_vars = List.map fst exist_bindings in
-      let _ = exist_vars in
+        Partial application is supported. *)
+      let (_exist_bindings, x_inst) = instantiate_xtor_existentials x in
       let all_args = x_inst.arguments in
       (* For codata, last argument is the codomain/result type *)
       let (regular_args, final_result) = match List.rev all_args with
@@ -387,7 +384,9 @@ let rec infer (defs: definitions) (ctx: context) (env: solving_env) (tm: term)
       Ok (TypedDtor (x, typed_args, result_ty), result_ty, env)
 
 (** Check a term against an expected type *)
-and check (defs: definitions) (ctx: context) (env: solving_env) (tm: term) (expected: typ)
+and check
+    (defs: definitions) (ctx: context) (env: solving_env)
+    (tm: term) (expected: typ)
     : (typed_term * typ * solving_env, check_error) result =
   match tm with
     Lam (x, None, body) ->
@@ -481,7 +480,7 @@ and infer_cobranches (defs: definitions) (ctx: context) (env: solving_env)
         let exist_vars = List.map fst exist_bindings in
         let all_args = x_inst.arguments in
         let (regular_args, codomain) = match List.rev all_args with
-          | cod :: rev_rest -> (List.rev rev_rest, cod)
+            cod :: rev_rest -> (List.rev rev_rest, cod)
           | [] -> ([], self_ty)  (* No arguments means identity *)
         in
         let expected_arity = List.length regular_args in
@@ -524,19 +523,19 @@ let infer_term (defs: definitions) (ctx: context) (tm: term)
   Ok (tm', ty)
 
 (** Type check a definition *)
-let check_definition (defs: definitions) (def: term_def) 
-    : (typed_term_def, check_error) result =
-  let ctx = { kinds = Ident.emptytbl; types = Ident.emptytbl } in
+let check_definition
+    (defs: definitions) (def: term_def) : (typed_term_def, check_error) result =
+  let ctx = {kinds = Ident.emptytbl; types = Ident.emptytbl} in
   (* Add type parameters to kind context *)
   let ctx = extend_kinds ctx def.type_args in
   (* Add term parameters to type context *)
   let ctx = extend_many ctx def.term_args in
   (* Check body against declared return type *)
-  let* (body', _, _) =
-    check defs ctx empty_env def.body def.return_type
-  in Ok { name = def.name
-        ; type_args = def.type_args
-        ; term_args = def.term_args
-        ; return_type = def.return_type
-        ; body = body'
-        }
+  let* (body', _, _) = check defs ctx empty_env def.body def.return_type in
+  Ok
+    { name = def.name
+    ; type_args = def.type_args
+    ; term_args = def.term_args
+    ; return_type = def.return_type
+    ; body = body'
+    }

@@ -553,7 +553,7 @@ and encode_match (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: 
   let scrut' = map_term defs kctx ctx scrut in
   let result_ty' = map_typ result_ty in
   let sgn = match MTy.whnf Ident.emptytbl [] scrut_ty with
-    | MTy.Data sgn -> map_data sgn
+      MTy.Data sgn -> map_data sgn
     | _ -> failwith "Match on non-data type"
   in
   (* Build continuation that receives result *)
@@ -583,7 +583,7 @@ and encode_match (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: 
 and encode_new (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: MTy.typ Ident.tbl)
     (branches: MTm.typed_clause list) (result_ty: MTy.typ) : CTm.term =
   let sgn = match MTy.whnf Ident.emptytbl [] result_ty with
-    | MTy.Code sgn -> map_code sgn
+      MTy.Code sgn -> map_code sgn
     | _ -> failwith "New with non-codata type"
   in
   let encoded_branches = List.map (fun (xtor, _ty_vars, tm_vars, body) ->
@@ -681,7 +681,7 @@ and encode_dtor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: M
     let args' = List.map (map_term defs kctx ctx) args in
     let core_xtor = map_dtor xtor in
     let sgn = match xtor.MTy.main with
-      | MTy.Code sgn -> map_code sgn
+        MTy.Code sgn -> map_code sgn
       | _ -> failwith "Destructor main type is not Code"
     in
     CTm.Dtor (sgn, core_xtor, args')
@@ -704,7 +704,7 @@ and encode_partial_dtor (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl)
   (* Compute the base type (after peeling off foralls and functions) *)
   let rec peel_foralls ty =
     match MTy.whnf Ident.emptytbl [] ty with
-      | MTy.All ((_, _), body) -> peel_foralls body
+        MTy.All ((_, _), body) -> peel_foralls body
       | t -> t
   in
   let mono_ty = peel_foralls result_ty in

@@ -74,7 +74,7 @@ let pp_ext_typ (e: ext_typ) : string =
 let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   match t with
     Ext e -> pp_ext_typ e
-  | Var {contents = Unbound id} -> "?" ^ pp_ident id
+  | Var {contents = Unbound id} -> pp_ident id
   | Var {contents = Link t'} -> pp_typ ~cfg ~nested t'
   | Rigid id -> pp_ident id
   | Sym (s, _) -> pp_sym s
