@@ -432,6 +432,14 @@ and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
   | Sym (p1, _, _), Sym (p2, _, _) -> Path.equal p1 p2
   | Data sg1, Data sg2 -> Path.equal sg1.name sg2.name
   | Code sg1, Code sg2 -> Path.equal sg1.name sg2.name
+  (* App can unify with Data/Code if the App's head is an unbound var or 
+     the App would reduce to the same signature *)
+  | App (Var {contents = Unbound _}, _), (Data _ | Code _) -> true
+  | (Data _ | Code _), App (Var {contents = Unbound _}, _) -> true
+  | App (Sym (p1, _, _), _), Data sg2 -> Path.equal p1 sg2.name
+  | App (Sym (p1, _, _), _), Code sg2 -> Path.equal p1 sg2.name
+  | Data sg1, App (Sym (p2, _, _), _) -> Path.equal sg1.name p2
+  | Code sg1, App (Sym (p2, _, _), _) -> Path.equal sg1.name p2
   | App (f1, a1), App (f2, a2) ->
       can_unify_shallow_types f1 f2 && 
       List.length a1 = List.length a2 &&

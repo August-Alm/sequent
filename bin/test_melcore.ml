@@ -536,6 +536,78 @@ let () =
     
     closure_capture;
 
+  (* ══════════════════════════════════════════════════════════════════
+     Test 22: Polymorphic identity
+     Polymorphic identity: λ{a} x:a. x
+     ══════════════════════════════════════════════════════════════════ *)
+  let a = Ident.mk "a" in
+  let at = MTy.Var (ref (MTy.Unbound a)) in
+  let x = Ident.mk "x" in
+  let id_poly = MTm.All ((a, MTy.Star), MTm.Lam (x, Some at, MTm.Var x)) in
+  run_test
+    ~name:"{a}. a -> a: λx:a. x"
+    ~manual_repr:"λ{a} x:a. x"
+    
+    id_poly;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 23: Applied polymorphic identity
+     Identity on integers: (λ{a} x:a. x){Int} 5 = 5
+     ══════════════════════════════════════════════════════════════════ *)
+  let a = Ident.mk "a" in
+  let at = MTy.Var (ref (MTy.Unbound a)) in
+  let x = Ident.mk "x" in
+  let id_poly = MTm.All ((a, MTy.Star), MTm.Lam (x, Some at, MTm.Var x)) in
+  let id_int = MTm.Ins (id_poly, int_ty) in
+  let id_int_app = MTm.App (id_int, MTm.Int 5) in
+  run_test
+    ~name:"Applied polymorphic identity: (λ{a} x:a. x){Int} 5 = 5"
+    ~manual_repr:"(λ{a} x:a. x){Int} 5"
+    
+    id_int_app;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 24: Applied monomorphic identity
+     Identity on integers: (λx:Int. x) 5 = 5
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let id_int = MTm.Lam (x, Some int_ty, MTm.Var x) in
+  let id_int_app = MTm.App (id_int, MTm.Int 5) in
+  run_test
+    ~name:"Applied monomorphic identity: (λx:Int. x) 5 = 5"
+    ~manual_repr:"(λx:Int. x) 5"
+    
+    id_int_app;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 25: Monomorphic identity with expression argument
+     (λx:Int. x) (5 + 3) - is the argument evaluated CBV or CBN?
+     ══════════════════════════════════════════════════════════════════ *)
+  let x = Ident.mk "x" in
+  let id_int = MTm.Lam (x, Some int_ty, MTm.Var x) in
+  let id_int_expr = MTm.App (id_int, MTm.Add (MTm.Int 5, MTm.Int 3)) in
+  run_test
+    ~name:"Monomorphic id with expr: (λx:Int. x) (5+3)"
+    ~manual_repr:"(λx:Int. x) (5+3)"
+    
+    id_int_expr;
+
+  (* ══════════════════════════════════════════════════════════════════
+     Test 26: Polymorphic identity with expression argument
+     (λ{a} x:a. x){Int} (5 + 3) - is the argument evaluated CBV or CBN?
+     ══════════════════════════════════════════════════════════════════ *)
+  let a = Ident.mk "a" in
+  let at = MTy.Var (ref (MTy.Unbound a)) in
+  let x = Ident.mk "x" in
+  let id_poly = MTm.All ((a, MTy.Star), MTm.Lam (x, Some at, MTm.Var x)) in
+  let id_int = MTm.Ins (id_poly, int_ty) in
+  let id_poly_expr = MTm.App (id_int, MTm.Add (MTm.Int 5, MTm.Int 3)) in
+  run_test
+    ~name:"Polymorphic id with expr: (λ{a} x:a. x){Int} (5+3)"
+    ~manual_repr:"(λ{a} x:a. x){Int} (5+3)"
+    
+    id_poly_expr;
+
   (* Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Results: %d/%d tests passed\n" !pass_count !test_count;

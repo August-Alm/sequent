@@ -274,7 +274,17 @@ and transform_cut_sgn (sgn: sgn_typ) (_ty: typ) (lhs: Core.term) (rhs: Core.term
       bind_terms args (fun arg_vars ->
         Focused.Let (a, xtor, arg_vars, transform_command cmd))
 
-  (* Match/Comatch | Var: bind and Switch/Invoke *)
+  (* Match/Comatch | Ctor/Dtor: inline the matching branch (beta reduction) *)
+  | Core.Match (_, branches), Core.Ctor (_, xtor, args) ->
+      inline_branch xtor args branches
+  | Core.Match (_, branches), Core.Dtor (_, xtor, args) ->
+      inline_branch xtor args branches
+  | Core.Comatch (_, branches), Core.Ctor (_, xtor, args) ->
+      inline_branch xtor args branches
+  | Core.Comatch (_, branches), Core.Dtor (_, xtor, args) ->
+      inline_branch xtor args branches
+
+  (* Match/Comatch | Var: bind and Switch with eta-branches *)
   | Core.Match (_, _branches) as m, Core.Var y ->
       bind_term m (fun x ->
         let eta_branches = List.map (fun xtor ->
@@ -282,13 +292,18 @@ and transform_cut_sgn (sgn: sgn_typ) (_ty: typ) (lhs: Core.term) (rhs: Core.term
           (xtor, params, Focused.Invoke (y, xtor, params))
         ) sgn.xtors in
         Focused.Switch (sgn, x, eta_branches))
-  | Core.Comatch (_, _branches) as m, Core.Var y ->
-      bind_term m (fun x ->
-        let eta_branches = List.map (fun xtor ->
-          let params = fresh_params xtor in
-          (xtor, params, Focused.Invoke (y, xtor, params))
-        ) sgn.xtors in
-        Focused.Switch (sgn, x, eta_branches))
+  | Core.Comatch (_, branches) as _m, Core.Var y ->
+      (* Comatch | Var: bind the comatch, then eta-expand via Switch.
+         This ensures proper call-by-need semantics for codata. *)
+      let v = Ident.fresh () in
+      let focused_branches = List.map (fun (xtor, vars, cmd) ->
+        (xtor, vars, transform_command cmd)
+      ) branches in
+      let eta_branches = List.map (fun xtor ->
+        let params = fresh_params xtor in
+        (xtor, params, Focused.Invoke (y, xtor, params))
+      ) sgn.xtors in
+      Focused.New (sgn, v, focused_branches, Focused.Switch (sgn, v, eta_branches))
 
   (* Match/Comatch | Match/Comatch: bind lhs, then Switch *)
   | (Core.Match _ | Core.Comatch _ as m1), 
@@ -328,7 +343,28 @@ and transform_cut_sgn (sgn: sgn_typ) (_ty: typ) (lhs: Core.term) (rhs: Core.term
       ) sgn.xtors in
       Focused.New (sgn, x, fwd_branches, transform_command mu_cmd)
 
-  | _ -> failwith "transform_cut_sgn: unsupported form"
+  | _ -> 
+      let lhs_form = match lhs with
+        | Core.Var _ -> "Var"
+        | Core.Lit _ -> "Lit"
+        | Core.Ctor _ -> "Ctor"
+        | Core.Dtor _ -> "Dtor"
+        | Core.Match _ -> "Match"
+        | Core.Comatch _ -> "Comatch"
+        | Core.MuLhs _ -> "MuLhs"
+        | Core.MuRhs _ -> "MuRhs"
+      in
+      let rhs_form = match rhs with
+        | Core.Var _ -> "Var"
+        | Core.Lit _ -> "Lit"
+        | Core.Ctor _ -> "Ctor"
+        | Core.Dtor _ -> "Dtor"
+        | Core.Match _ -> "Match"
+        | Core.Comatch _ -> "Comatch"
+        | Core.MuLhs _ -> "MuLhs"
+        | Core.MuRhs _ -> "MuRhs"
+      in
+      failwith (Printf.sprintf "transform_cut_sgn: unsupported form %s | %s" lhs_form rhs_form)
 
 (** Inline a branch: find matching branch and substitute args for params directly.
     This enables pack/unpack elimination by letting Ctor(pack, [arg]) meet
@@ -448,6 +484,33 @@ and transform_command (cmd: Core.command) : Focused.command =
       bind_term cond (fun v ->
         Focused.Ifz (v, transform_command then_cmd, transform_command else_cmd))
 
+(* ========================================================================= *)
+(* Optimization pass (currently a no-op traversal)                           *)
+(* ========================================================================= *)
+
+(** Optimize focused commands. Currently just recursively processes subexpressions.
+    Future work: inline New/Switch pairs when safe. *)
+let rec optimize (cmd: Focused.command) : Focused.command =
+  match cmd with
+  | Focused.Let (x, xtor, args, body) ->
+      Focused.Let (x, xtor, args, optimize body)
+  | Focused.Switch (sgn, v, branches) ->
+      Focused.Switch (sgn, v, 
+        List.map (fun (x, vs, b) -> (x, vs, optimize b)) branches)
+  | Focused.New (sgn, v, branches, body) ->
+      Focused.New (sgn, v,
+        List.map (fun (x, vs, b) -> (x, vs, optimize b)) branches,
+        optimize body)
+  | Focused.Lit (n, v, body) ->
+      Focused.Lit (n, v, optimize body)
+  | Focused.Add (a, b, r, body) ->
+      Focused.Add (a, b, r, optimize body)
+  | Focused.Ifz (v, then_cmd, else_cmd) ->
+      Focused.Ifz (v, optimize then_cmd, optimize else_cmd)
+  | Focused.Invoke _ | Focused.Axiom _ | Focused.End | Focused.Ret _ ->
+      cmd
+
 (** Entry point: transform a Core command to Focused command *)
 let focus (cmd: Core.command) : Focused.command =
-  transform_command cmd
+  let result = transform_command cmd in
+  optimize result

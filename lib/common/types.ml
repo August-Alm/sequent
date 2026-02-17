@@ -147,7 +147,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
   | Var {contents = Unbound id} ->
       (match Ident.find_opt id ctx with
         Some k -> Ok k
-      | None -> Error (UnboundVariable id))
+      | None -> Ok Star)  (* Default to Star for unbound vars *)
   | Var {contents = Link t'} -> infer_kind ctx t'
   | Rigid id ->
       (match Ident.find_opt id ctx with
@@ -433,6 +433,12 @@ and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
   | Rigid a, Rigid b -> Ident.equal a b
   | Sym (p1, _), Sym (p2, _) -> Path.equal p1 p2
   | Sgn sg1, Sgn sg2 -> Path.equal sg1.name sg2.name
+  (* App can unify with Sgn if the App's head is an unbound var or 
+     the App would reduce to the same Sgn *)
+  | App (Var {contents = Unbound _}, _), Sgn _ -> true
+  | Sgn _, App (Var {contents = Unbound _}, _) -> true
+  | App (Sym (p1, _), _), Sgn sg2 -> Path.equal p1 sg2.name
+  | Sgn sg1, App (Sym (p2, _), _) -> Path.equal sg1.name p2
   | App (f1, a1), App (f2, a2) ->
       can_unify_shallow_types f1 f2 && 
       List.length a1 = List.length a2 &&

@@ -79,6 +79,43 @@ let get_type (tm: typed_term) : typ =
   | TypedDtor (_, _, ty) -> ty
   | TypedIfz (_, _, _, ty) -> ty
 
+(** Substitute type variables (Unbound) in all type annotations of a typed term.
+    Used for type-level beta reduction: (Λa. body){ty_arg} -> body[ty_arg/a] *)
+let rec subst_type_in_typed_term
+    (ms: (Ident.t * typ) list) (tm: typed_term) : typed_term =
+  let go = subst_type_in_typed_term ms in
+  let go_typ = subst_unbound ms in
+  let go_xtor (x: xtor) : xtor =
+    {x with arguments = List.map go_typ x.arguments; main = go_typ x.main}
+  in
+  let go_clause (xtor, ty_vars, tm_vars, body) =
+    (go_xtor xtor, ty_vars, tm_vars, go body)
+  in
+  match tm with
+    TypedInt n -> TypedInt n
+  | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
+  | TypedVar (x, ty) -> TypedVar (x, go_typ ty)
+  | TypedSym (path, ty) -> TypedSym (path, go_typ ty)
+  | TypedApp (f, arg, ty) ->
+      TypedApp (go f, go arg, go_typ ty)
+  | TypedIns (t, ty_arg, k, ty) -> TypedIns (go t, go_typ ty_arg, k, go_typ ty)
+  | TypedLam (x, a, body, ty) -> TypedLam (x, go_typ a, go body, go_typ ty)
+  | TypedAll ((x, k), body, ty) ->
+      (* Filter out substitutions shadowed by this binder *)
+      let ms' = List.filter (fun (id, _) -> not (Ident.equal id x)) ms in
+      TypedAll ((x, k), subst_type_in_typed_term ms' body, go_typ ty)
+  | TypedLet (x, t1, t2, ty) -> TypedLet (x, go t1, go t2, go_typ ty)
+  | TypedMatch (scrut, branches, ty) ->
+      TypedMatch (go scrut, List.map go_clause branches, go_typ ty)
+  | TypedNew (branches, ty) ->
+      TypedNew (List.map go_clause branches, go_typ ty)
+  | TypedCtor (xtor, args, ty) ->
+      TypedCtor (go_xtor xtor, List.map go args, go_typ ty)
+  | TypedDtor (xtor, args, ty) ->
+      TypedDtor (go_xtor xtor, List.map go args, go_typ ty)
+  | TypedIfz (cond, then_br, else_br, ty) ->
+      TypedIfz (go cond, go then_br, go else_br, go_typ ty)
+
 type term_def =
   { name: Path.t
   ; type_args: (var * kind) list

@@ -45,7 +45,7 @@ let rec map_typ (ty: MTy.typ) : CTy.typ =
     MTy.Ext Int -> CTy.Ext Int
   | MTy.Var v ->
       (match !v with
-        Unbound x -> CTy.Var (ref (CTy.Unbound (Ident.mk (Ident.name x))))
+        Unbound x -> CTy.Var (ref (CTy.Unbound x))
       | Link t -> CTy.Var (ref (CTy.Link (map_typ t))))
   | MTy.Rigid r -> CTy.Rigid r
   | MTy.Sym (s, Pos, sgn_lazy) -> CTy.Sym (s, lazy (map_data (Lazy.force sgn_lazy)))
@@ -276,6 +276,12 @@ let rec map_term (defs: MTm.typed_definitions) (kctx: CTy.kind Ident.tbl) (ctx: 
       in
       encode_app defs kctx ctx f arg a b result_ty
   
+  | MTm.TypedIns (MTm.TypedAll ((a, _k), body, _all_ty), ty_arg, _, _result_ty) ->
+      (* Type-level beta reduction: (Λa. body){ty_arg} -> body[ty_arg/a]
+         Substitute the type argument for the bound variable and recurse. *)
+      let body' = MTm.subst_type_in_typed_term [(a, ty_arg)] body in
+      map_term defs kctx ctx body'
+
   | MTm.TypedIns (t, ty_arg, _k, result_ty) ->
       (* t{ty_arg} where t : ∀(x:k). B, result : B[ty_arg/x]
         Similar to application but at the type level. *)
