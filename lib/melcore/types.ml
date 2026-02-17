@@ -61,24 +61,14 @@ and equation =
 type kind_error =
     UnboundVariable of Ident.t
   | ExpectedHKT of typ * kind
-  | KindMismatch of { expected: kind; actual: kind }
-  | ExistentialEscape of { xtor: Path.t; existential: Ident.t }
+  | KindMismatch of {expected: kind; actual: kind}
+  | ExistentialEscape of {xtor: Path.t; existential: Ident.t}
 
 type kind_check_result = (kind, kind_error) result
 
 (** Check if an identifier is in a list, using Ident.equal *)
 let contains_var (id: Ident.t) (ids: Ident.t list) : bool =
   List.exists (Ident.equal id) ids
-
-(*
-code All(T) where
-  { instantiate: {Y} All(T) -> T(Y)
-  }
-
-code Fun(A, B) where
-  { apply: {A, B} Fun(A, B) -> A -> B
-  }
-*)
 
 (** Check if a rigid variable appears free in a type *)
 let rec rigid_occurs (id: Ident.t) (t: typ) : bool =
@@ -136,7 +126,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
             if arg_kind = param_kind then
               apply_args result_kind rest
             else
-              Error (KindMismatch { expected = param_kind; actual = arg_kind })
+              Error (KindMismatch {expected = param_kind; actual = arg_kind})
         | k, _ :: _ -> Error (ExpectedHKT (f, k))
       in
       apply_args f_kind args
@@ -159,7 +149,7 @@ let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
         match escaped with
         | [] -> Ok ()
         | (id, _) :: _ ->
-          Error (ExistentialEscape { xtor = x.name; existential = id })
+          Error (ExistentialEscape {xtor = x.name; existential = id})
       in
       let rec check_all = function
         | [] -> 
@@ -179,7 +169,7 @@ and check_kind (ctx: kind Ident.tbl) (t: typ) (expected: kind)
     : (unit, kind_error) result =
   let* actual = infer_kind ctx t in
   if actual = expected then Ok ()
-  else Error (KindMismatch { expected; actual })
+  else Error (KindMismatch {expected; actual})
 
 (** Substitute rigid type variables with types in a type.
     Used for instantiating signature parameters. *)
@@ -199,7 +189,7 @@ and subst_rigid_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
   (* Substitute into xtors. No shadowing check needed here - the signature's
     parameters are exactly what we want to substitute. Shadowing is handled
     in subst_rigid_xtor for xtor-local bindings. *)
-  { s with xtors = List.map (subst_rigid_xtor ms) s.xtors }
+  {s with xtors = List.map (subst_rigid_xtor ms) s.xtors}
 
 and subst_rigid_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
   (* Don't substitute identifiers rebound by xtor's own params or existentials *)
@@ -225,7 +215,7 @@ let rec subst_unbound (ms: (Ident.t * typ) list) (t: typ) : typ =
   | Ext _ | Sym (_, _, _) | Fun (_, _) | All (_, _) -> t
 
 and subst_unbound_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
-  { s with xtors = List.map (subst_unbound_xtor ms) s.xtors }
+  {s with xtors = List.map (subst_unbound_xtor ms) s.xtors}
 
 and subst_unbound_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
   let shadowed = List.map fst x.parameters @ List.map fst x.existentials in
@@ -240,7 +230,7 @@ type solving_env =
   ; local_eqs: (typ * typ) list (* Local assumptions (from GADT matches) *)
   }
 
-let empty_env : solving_env = { subs = []; local_eqs = [] }
+let empty_env: solving_env = {subs = []; local_eqs = []}
 
 (** Find a var ref in the substitution using physical equality *)
 let rec find_subst (r: var_typ ref) (subs: (var_typ ref * typ) list) =
@@ -249,7 +239,7 @@ let rec find_subst (r: var_typ ref) (subs: (var_typ ref * typ) list) =
   | (r', t) :: _ when r == r' -> Some t
   | _ :: rest -> find_subst r rest
 
-(** Set of signature paths for tracking visited signatures in occurs check *)
+(* Set of signature paths for tracking visited signatures in occurs check *)
 module PathSet = Set.Make(struct type t = Path.t let compare = Path.compare end)
 
 (** Occurs check: does variable r occur in type t?
@@ -320,7 +310,9 @@ let rec whnf (kctx: kind Ident.tbl) (subs: (var_typ ref * typ) list) (t: typ) =
 
 (** Instantiate a signature with type arguments.
     Substitutes parameters, checks kinds, and filters out GADT-unreachable xtors. *)
-and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ list) : sgn_typ =
+and instantiate
+    (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ list)
+    : sgn_typ =
   let sgn = Lazy.force lazy_sgn in
   let param_kinds = sgn.parameters in
   if List.length param_kinds <> List.length args then
@@ -333,18 +325,19 @@ and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ lis
       | Error _ -> failwith "instantiate: kind mismatch"
     ) param_kinds args;
     (* For each xtor:
-       1. Create fresh unification variables for its universal parameters
-       2. Unify main with target type to derive substitution
-       3. Apply substitution to arguments
-       4. Filter out xtors that can't unify (GADT refinement)
-       
-       Note: xtor.parameters are universals (exposed by pattern matching) -> fresh Var refs
-             xtor.existentials are existentials (hidden) -> stay as Rigid *)
+      1. Create fresh unification variables for its universal parameters
+      2. Unify main with target type to derive substitution
+      3. Apply substitution to arguments
+      4. Filter out xtors that can't unify (GADT refinement)
+      
+      Note: xtor.parameters are universals (exposed by pattern matching) -> fresh Var refs
+            xtor.existentials are existentials (hidden) -> stay as Rigid *)
     let target_typ = App (Sym (sgn.name, Pos, lazy_sgn), args) in
     let instantiate_xtor (x: xtor) : xtor option =
       (* Fresh unification variables for xtor's universal parameters only *)
       let fresh_vars = List.map (fun (id, _) -> ref (Unbound id)) x.parameters in
-      let fresh_mapping = List.map2 (fun (id, _) r -> (id, Var r)) x.parameters fresh_vars in
+      let fresh_mapping =
+        List.map2 (fun (id, _) r -> (id, Var r)) x.parameters fresh_vars in
       (* Substitute Unbound params with fresh Vars; existentials stay as Rigid *)
       let main_with_fresh = subst_unbound fresh_mapping x.main in
       (* Try to unify with target *)
@@ -361,7 +354,7 @@ and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ lis
         None
     in
     let reachable_xtors = List.filter_map instantiate_xtor sgn.xtors in
-    { sgn with parameters = []; xtors = reachable_xtors }
+    {sgn with parameters = []; xtors = reachable_xtors}
   end
 
 (** Shallow unification check for GADT filtering.
@@ -438,7 +431,7 @@ and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
       if Path.equal s1 s2 then Some env else None
   (* Function types: unify domain and codomain *)
   | Fun (a1, b1), Fun (a2, b2) ->
-      Option.bind (unify kctx a1 a2 env) (fun env' -> unify kctx b1 b2 env')
+      Option.bind (unify kctx a1 a2 env) (unify kctx b1 b2)
   (* Instantiated signatures: unify structurally *)
   | Data sg1, Data sg2 -> unify_sgn kctx sg1 sg2 env
   | Code sg1, Code sg2 -> unify_sgn kctx sg1 sg2 env
@@ -495,7 +488,9 @@ and unify_xtor
 (* Equation solving *)
 (* ========================================================================= *)
 
-let rec solve (kctx: kind Ident.tbl) (c: equation) (env: solving_env) : solving_env option =
+let rec solve
+    (kctx: kind Ident.tbl) (c: equation) (env: solving_env)
+    : solving_env option =
   match c with
     True -> Some env
   | Equal (t1, t2) -> unify kctx t1 t2 env
@@ -514,4 +509,6 @@ let rec solve (kctx: kind Ident.tbl) (c: equation) (env: solving_env) : solving_
       match solve kctx assumption env with
         None -> None
       | Some env' ->
-          solve kctx body { env' with local_eqs = collect_eqs assumption @ env'.local_eqs }
+          solve kctx body { env' with
+            local_eqs = collect_eqs assumption @ env'.local_eqs
+          }

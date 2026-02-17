@@ -1,6 +1,6 @@
 (**
   Module: Lang.Syntax
-  Description: Parsed syntax of surface language.
+  Description: Abstract syntax of surface language.
   
   This module defines the abstract syntax of the surface language.
 *)
@@ -258,6 +258,7 @@ let defs_to_string defs =
   let all_strs = type_strs @ term_strs in
   String.concat "\n\n" all_strs
 
+(*
 (* ===== CONVERSION TO INTERNAL REPRESENTATION ===== *)
 
 open Common.Identifiers
@@ -713,3 +714,4 @@ let to_definitions (ast_defs: ast_defs) : definitions =
   let term_defs = List.map (to_term_def ctx) ast_defs.term_defs in
   
   { type_defs = ty_defs; term_defs = term_defs }
+*)

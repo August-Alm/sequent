@@ -91,7 +91,7 @@ module VarMap = Ident
 type context = chiral_typ VarMap.tbl
 
 type check_error =
-  | UnboundVariable of var
+    UnboundVariable of var
   | TypeMismatch of { expected: chiral_typ; actual: chiral_typ }
   | ChiralityMismatch of { expected_chirality: [`Lhs | `Rhs]; actual: chiral_typ }
   | ExpectedSignature of typ  (* Type was expected to be a signature *)
@@ -103,7 +103,7 @@ type check_error =
 
 let lookup (ctx: context) (v: var) : (chiral_typ, check_error) result =
   match VarMap.find_opt v ctx with
-  | Some ct -> Ok ct
+    Some ct -> Ok ct
   | None -> Error (UnboundVariable v)
 
 let extend (ctx: context) (v: var) (ct: chiral_typ) : context =
