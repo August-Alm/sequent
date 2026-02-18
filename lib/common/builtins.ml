@@ -112,9 +112,11 @@ module Prim = struct
     ; parameters = [k]  (* Just kinds *)
     ; xtors = [
         { name = Sym.all_instantiate k
-        ; parameters = [(t, Arrow (k, Star)); (a, k)]
-        ; existentials = []
-        ; arguments = [Lhs (App (tt, [ta]))]
+        ; parameters = [(t, Arrow (k, Star))]
+        ; existentials = [(a, k)]
+        (* The continuation argument should be Rhs (consumer) not Lhs.
+           This matches the pattern: destructor returns to a continuation. *)
+        ; arguments = [Rhs (App (tt, [ta]))]
         ; main = App (Sym (Sym.all_t k, all_sgn_lazy a k), [App (tt, [ta])])
         }
       ]

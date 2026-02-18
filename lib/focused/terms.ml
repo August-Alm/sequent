@@ -208,6 +208,7 @@ let rec check_command
           else
             check_branches_simple kctx ctx env' actual_sg.xtors branches)
 
+
   | New (sg, v, branches, body) ->
       (* sg is the instantiated signature - xtors already GADT-filtered *)
       let branch_names = List.map (fun ((x: xtor), _, _) -> 

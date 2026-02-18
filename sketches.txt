@@ -80,3 +80,13 @@ let rec nat_sgn_lazy =
       }
     ]
   }
+
+  ⟨C(Γ) | µ˜x.s ⟩                    → let v = m(Γ); s
+  ⟨x | case {C(Γ) ⇒ s, ... }⟩        → switch v {m(Γ) ⇒ s, ...}
+  ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩     → new v = {m(Γ) ⇒ s, ...}; s
+  ⟨C(Γ) | α⟩                         → invoke v m(Γ)
+  
+  ⟨µα.s |D(Γ)⟩                       → let v = m(Γ); s
+  ⟨cocase {D(Γ) ⇒ s, ... } | α⟩      → switch v {m(Γ) ⇒ s, ...}
+  ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩  → new v = {m(Γ) ⇒ s, ...}; s
+  ⟨x | D(Γ)⟩                         → invoke v m(Γ)
