@@ -7,3 +7,6 @@
 ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.⟨x | α⟩⟩
 
 new x = {m(Γ) ⇒ s, ...}; ⟨x | α⟩
+
+⟨x | α⟩_T ~ ⟨x | case {C1(Γ1) ⇒ ⟨C1(Γ1)| α⟩, ... }⟩ where data T {C1(Γ1), ... }
+⟨x | α⟩_T ~ ⟨cocase {D1(Γ1) ⇒ ⟨x | D1(Γ1)⟩, ... }| α⟩ where codata T {D1(Γ1), ...}
