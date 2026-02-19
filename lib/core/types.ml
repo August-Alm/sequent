@@ -128,7 +128,7 @@ let rec unify t1 t2 sbs =
   let t1 = apply_subst sbs t1 in
   let t2 = apply_subst sbs t2 in
   match t1, t2 with
-  | TVar v1, TVar v2 when Ident.equal v1 v2 -> Some sbs
+    TVar v1, TVar v2 when Ident.equal v1 v2 -> Some sbs
   | TVar _, _ | _, TVar _ -> None
   | TMeta v1, TMeta v2 when Ident.equal v1 v2 -> Some sbs
   | TMeta v, t | t, TMeta v ->
@@ -167,9 +167,13 @@ let freshen_rigid quantified =
     ) ([], Ident.emptytbl) quantified
   in (List.rev fresh_vars, subst)
 
+(** Freshen a list of kinds (without names), generating fresh meta variables *)
+let freshen_kinds (kinds: typ list) : (Ident.t * typ) list =
+  List.map (fun k -> (Ident.fresh (), k)) kinds
+
 let rec apply_fresh_subst sbs t =
   match t with
-  | TVar v ->
+    TVar v ->
       (match Ident.find_opt v sbs with Some t' -> t' | None -> t)
   | TMeta v ->
       (match Ident.find_opt v sbs with Some t' -> t' | None -> t)
@@ -193,12 +197,10 @@ let is_promotable type_name (ctor: xtor) : bool =
   ) ctor.argument_types in
   let canonical_result =
     match ctor.main with
-    | Sgn (name, args) when Path.equal name type_name ->
+      Sgn (name, args) when Path.equal name type_name ->
         List.length args = List.length ctor.quantified &&
         List.for_all2 (fun arg (qvar, _) ->
-          match arg with
-          | TVar v -> Ident.equal v qvar
-          | _ -> false
+          match arg with TVar v -> Ident.equal v qvar | _ -> false
         ) args ctor.quantified
     | _ -> false
   in no_existentials && only_producer_args && canonical_result
@@ -211,20 +213,19 @@ let is_dec_promotable (dec: dec) : bool =
 
 (* Helper to sequence result checks over a list *)
 let rec check_all f = function
-  | [] -> Ok ()
-  | x :: xs -> let* _ = f x in check_all f xs
+    [] -> Ok () | x :: xs -> let* _ = f x in check_all f xs
 
 (* Helper to sequence result checks over two lists *)
 let rec check_all2 f xs ys =
   match xs, ys with
-  | [], [] -> Ok ()
+    [], [] -> Ok ()
   | x :: xs', y :: ys' -> let* _ = f x y in check_all2 f xs' ys'
   | _ -> Error (Arity_mismatch { kind = None; num_args = 0 })
 
 (* Check if a type is a valid kind (can classify types) *)
 let rec valid_kind (ctx: context) (t: typ) : (unit, kind_error) result =
   match t with
-  | Pos | Neg -> Ok ()
+    Pos | Neg -> Ok ()
   | Arrow (k1, k2) -> let* _ = valid_kind ctx k1 in valid_kind ctx k2
   | Sgn (name, args) ->
       let* kind =
@@ -233,7 +234,7 @@ let rec valid_kind (ctx: context) (t: typ) : (unit, kind_error) result =
       let rec arity k =
         match k with Arrow (_, r) -> 1 + arity r | _ -> 0 in
       (match kind, args with
-      | Pos, [] | Neg, [] -> Ok ()
+        Pos, [] | Neg, [] -> Ok ()
       | Arrow _, _ when List.length args <= arity kind -> Ok ()
       | _, [] -> Ok ()
       | _, _ -> Error (Arity_mismatch {
@@ -249,13 +250,13 @@ let rec valid_kind (ctx: context) (t: typ) : (unit, kind_error) result =
 (* Infer the kind of a type *)
 let rec infer_kind (ctx: context) (t: typ) : (typ, kind_error) result =
   match t with
-  | Pos -> Ok Pos
+    Pos -> Ok Pos
   | Neg -> Ok Neg
   | Int -> Ok Pos
   | TVar v -> ident_find v ctx.typ_vars (Unbound_type_variable v)
   | TMeta v ->
       (match Ident.find_opt v ctx.subst with
-      | Some t' -> infer_kind ctx t'
+        Some t' -> infer_kind ctx t'
       | None -> ident_find v ctx.typ_vars (Unbound_meta_variable v))
   | Arrow (t1, t2) ->
       let* k1 = infer_kind ctx t1 in
@@ -305,7 +306,7 @@ let rec infer_kind (ctx: context) (t: typ) : (typ, kind_error) result =
 and apply_args (ctx: context) (kind: typ) (args: typ list)
     : (typ, kind_error) result =
   match kind, args with
-  | k, [] -> Ok k
+    k, [] -> Ok k
   | Arrow (param_kind, result_kind), arg :: rest ->
       let* _ = check_kind ctx arg param_kind in
       apply_args ctx result_kind rest
@@ -321,8 +322,7 @@ and check_kind (ctx: context) (t: typ) (expected_kind: typ)
 
 and is_inhabitable (ctx: context) (t: typ) : bool =
   match check_kind ctx t Pos with
-  | Ok () -> true
-  | Error _ -> Result.is_ok (check_kind ctx t Neg)
+    Ok () -> true | Error _ -> Result.is_ok (check_kind ctx t Neg)
 
 (* Check that a constructor or destructor is well-kinded *)
 let check_xtor_well_kinded (ctx: context) (pol: polarity) (xtor: xtor) : bool =
@@ -402,9 +402,7 @@ let add_declaration (ctx: context) (dec: dec) : context option =
 (* Add multiple declarations in sequence *)
 let add_declarations (ctx: context) (decs: dec list) : context option =
   List.fold_left (fun ctx_opt dec ->
-    match ctx_opt with
-    | None -> None
-    | Some ctx -> add_declaration ctx dec
+    Option.bind ctx_opt (fun ctx -> add_declaration ctx dec)
   ) (Some ctx) decs
 
 (* Add mutually recursive declarations *)
