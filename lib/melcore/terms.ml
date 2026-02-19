@@ -115,7 +115,7 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
       TypedIfz (go cond, go then_br, go else_br, go_typ ty)
 
 type term_def =
-  { name: Path.t
+  { name: sym
   ; type_params: (var * typ) list  (* type parameters with their kinds *)
   ; term_params: (var * typ) list  (* term parameters with their types *)
   ; return_type: typ
@@ -123,7 +123,7 @@ type term_def =
   }
 
 type typed_term_def =
-  { name: Path.t
+  { name: sym
   ; type_params: (var * typ) list
   ; term_params: (var * typ) list
   ; return_type: typ
@@ -146,17 +146,17 @@ type tc_context =
 
 type check_error =
     UnboundVariable of var
-  | UnboundSymbol of Path.t
-  | UnboundDeclaration of Path.t
-  | UnboundXtor of Path.t * Path.t
+  | UnboundSymbol of sym
+  | UnboundDeclaration of sym
+  | UnboundXtor of sym * sym
   | TypeMismatch of { expected: typ; actual: typ }
   | ExpectedFun of typ
   | ExpectedForall of typ
   | ExpectedData of typ
   | ExpectedCodata of typ
-  | XtorArityMismatch of { xtor: Path.t; expected: int; got: int }
-  | TypeArgArityMismatch of { xtor: Path.t; expected: int; got: int }
-  | NonExhaustive of { dec: Path.t; missing: Path.t list }
+  | XtorArityMismatch of { xtor: sym; expected: int; got: int }
+  | TypeArgArityMismatch of { xtor: sym; expected: int; got: int }
+  | NonExhaustive of { dec: sym; missing: sym list }
   | UnificationFailed of typ * typ
   | KindError of kind_error
 
@@ -201,7 +201,8 @@ let find_xtor (dec: dec) (xtor_name: Path.t) : xtor option =
 let fresh_meta () : typ = TMeta (Ident.fresh ())
 
 (** Unify two types, returning updated substitution or error *)
-let unify_or_error (t1: typ) (t2: typ) (sbs: subst) : (subst, check_error) result =
+let unify_or_error
+    (t1: typ) (t2: typ) (sbs: subst) : (subst, check_error) result =
   match unify t1 t2 sbs with
     Some sbs' -> Ok sbs' | None -> Error (UnificationFailed (t1, t2))
 
@@ -224,15 +225,17 @@ let expect_fun (sbs: subst) (t: typ) : (typ * typ, check_error) result =
         Some _ -> Ok (a, b) | None -> Error (ExpectedFun t'))
   | _ -> Error (ExpectedFun t')
 
-(** Extract forall binder and body *)
-let expect_forall (sbs: subst) (t: typ) : (Ident.t * typ * typ, check_error) result =
+(** Extract forall binder and body, depolarizing the body *)
+let expect_forall (sbs: subst) (t: typ)
+    : (Ident.t * typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Forall (x, k, body) -> Ok (x, k, body)
+  | Forall (x, k, body) -> Ok (x, k, Types.depolarize_codomain body)
   | _ -> Error (ExpectedForall t')
 
 (** Check that a type is a data type (positive polarity) *)
-let expect_data (ctx: tc_context) (sbs: subst) (t: typ) : (dec * typ list, check_error) result =
+let expect_data (ctx: tc_context) (sbs: subst) (t: typ)
+    : (dec * typ list, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
   | Sgn (name, args) ->
@@ -242,7 +245,8 @@ let expect_data (ctx: tc_context) (sbs: subst) (t: typ) : (dec * typ list, check
   | _ -> Error (ExpectedData t')
 
 (** Check that a type is a codata type (negative polarity) *)
-let expect_codata (ctx: tc_context) (sbs: subst) (t: typ) : (dec * typ list, check_error) result =
+let expect_codata (ctx: tc_context) (sbs: subst) (t: typ)
+    : (dec * typ list, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
   | Sgn (name, args) ->
@@ -301,12 +305,15 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
   | Sym p ->
       let* def = lookup_def ctx p in
       (* Build polymorphic type: ∀a1..an. t1 -> ... -> tm -> ret *)
+      let base_ty =
+        List.fold_right (fun (_, arg_ty) acc ->
+          Types.mk_fun ctx.tyctx arg_ty acc
+        ) def.term_params def.return_type
+      in
       let ty =
-        List.fold_right (fun (v, k) acc -> Forall (v, k, acc))
-          def.type_params
-          (List.fold_right (fun (_, arg_ty) acc ->
-            Types.mk_fun ctx.tyctx arg_ty acc
-          ) def.term_params def.return_type)
+        List.fold_right (fun (v, k) acc ->
+          Types.mk_forall ctx.tyctx v k acc
+        ) def.type_params base_ty
       in
       Ok (TypedSym (p, ty), ty, sbs)
 
@@ -341,7 +348,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
   | All ((x, k), body) ->
       let ctx' = extend_tyvar ctx x k in
       let* (body', body_ty, sbs) = infer ctx' sbs body in
-      let all_ty = Forall (x, k, body_ty) in
+      let all_ty = Types.mk_forall ctx.tyctx x k body_ty in
       Ok (TypedAll ((x, k), body', all_ty), all_ty, sbs)
 
   | Let (x, rhs, body) ->

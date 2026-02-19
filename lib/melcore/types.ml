@@ -84,3 +84,15 @@ let unmk_fun (t: typ) : (typ * typ) option =
   match t with
     Fun (dom, cod) -> Some (depolarize_domain dom, depolarize_codomain cod)
   | _ -> None
+
+(** Build a forall type from user-level body, applying appropriate polarity shift.
+    Body must be negative (codata), so wrap positive types with Lower. *)
+let mk_forall (ctx: context) (x: Ident.t) (k: typ) (body: typ) : typ =
+  Forall (x, k, polarize_codomain ctx body)
+
+(** Extract user-visible body from an internal Forall type.
+    Unwraps Lower if present. *)
+let unmk_forall (t: typ) : (Ident.t * typ * typ) option =
+  match t with
+    Forall (x, k, body) -> Some (x, k, depolarize_codomain body)
+  | _ -> None
