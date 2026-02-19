@@ -4,7 +4,8 @@
 *)
 
 open Common.Identifiers
-open Types
+open Types.MelcoreBase
+open Types.MelcoreTypes
 
 type var = Ident.t
 
@@ -24,7 +25,7 @@ type term =
   (* fun x => t or fun(x: a) => t *)
   | Lam of var * (typ option) * term
   (* all {a: k} t *)
-  | All of (var * kind) * term
+  | All of (var * typ) * term
   (* let x = t in u *)
   | Let of var * term * term
   (* match t with { branches } *)

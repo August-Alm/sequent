@@ -2,7 +2,7 @@
   Module: Common.Printing
   Description: Pretty-printing for Common.Types
 *)
-
+(*
 open Identifiers
 open Types
 
@@ -186,3 +186,4 @@ let kind_to_string = pp_kind ~cfg:default_config
 let xtor_to_string = pp_xtor ~cfg:default_config
 let chiral_to_string = pp_chiral_typ ~cfg:default_config
 let sgn_to_string = pp_sgn_typ
+*)

@@ -1,559 +1,520 @@
 (**
   module: Common.Types
-  description: A type system common to sequent calculus-based intermediate languages.
+  description: A modularized type system.
+
+  It incorporates the following features:
+  - Polarity (positive/negative) to distinguish data and codata types
+  - Chirality (producer/consumer) to distinguish terms
+  - Higher-kinded types
+  - Generalized algebraic data types
+  - Generalized algebraic codata types
+  - Algebraic data types automatically promoted to the kind level
 *)
 
-open Identifiers
+module type BASE = sig
+  type polarity
+  val eq_polarity: polarity -> polarity -> bool
+  val code_polarity: polarity
+  val data_polarity: polarity
+  val polarities: polarity list
 
-let ( let* ) o f = Utility.( let* ) o f
+  type 'a chiral
+  val chiral_map: ('a -> 'b) -> 'a chiral -> 'b chiral
+  val strip_chirality: 'a chiral -> 'a
+  val mk_producer: 'a -> 'a chiral
+  val mk_consumer: 'a -> 'a chiral
+  val is_producer: 'a chiral -> bool
+  val is_consumer: 'a chiral -> bool
+end
 
-type sym = Path.t
+module TypeSystem(Base: BASE) = struct
 
-type kind = Star | Arrow of kind * kind
+  open Identifiers
 
-(* Newton's method for integer square root *)
-let isqrt n =
-  if n < 0 then invalid_arg "isqrt"
-  else if n = 0 then 0
-  else
-    let rec go x =
-      let x' = (x + n / x) / 2 in
-      if x' >= x then x else go x'
+  let ( let* ) = Result.bind
+
+  (* External types are always positive *)
+  type ext_type = Int
+
+  (* Types *)
+  type typ =
+      Base of Base.polarity (* Base kinds *)
+    | Arrow of typ * typ (* Only for kinds *)
+    | Ext of ext_type
+    | TVar of Ident.t
+    | TMeta of Ident.t
+    | Sgn of Path.t * typ list (* Signatures; applied data or codata type *)
+    | PromotedCtor of Path.t * Path.t * typ list
+    (* The remaining could have been encoded as signatures *)
+    | Fun of typ * typ (* Only for term types *)
+    | Forall of Ident.t * typ * typ (* ∀(x: k). body, has kind - when body : - *)
+    | Raise of typ
+    | Lower of typ
+
+  let as_typ = fun pol -> Base pol
+
+  type chiral_typ = typ Base.chiral
+
+  let strip_chirality = Base.strip_chirality
+
+  let chiral_map = Base.chiral_map
+
+  (* Constructor or destructor
+    In the Melcore language, a destructor syntactically declared as
+      dtor: {qi's} main -> argN -> ... -> arg0
+    has
+      - quantified = qi's
+      - existential = [] (we don't allow it)
+      - argument_types = [arg0; ...; argN] (in reverse order for easier unification)
+      - main = the "this"-type *)
+  type xtor =
+    { name: Path.t
+    ; quantified: (Ident.t * typ) list
+    ; existentials: (Ident.t * typ) list
+    ; argument_types: chiral_typ list
+    (* `main` is the result type of data types and the "this"
+      type of codata types *)
+    ; main: typ
+    }
+
+  (* Declaration *)
+  type dec =
+    { name: Path.t
+    ; polarity: Base.polarity
+    ; param_kinds: typ list
+    ; xtors: xtor list
+    }
+
+  (* Promoted constructor info *)
+  type promoted_ctor_info =
+    { quantified : (Ident.t * typ) list
+    ; arg_kinds : typ list
+    ; result_kind : typ
+    }
+
+  (* Kind errors *)
+  type kind_error =
+      Unbound_type_variable of Ident.t
+    | Unbound_meta_variable of Ident.t
+    | Unknown_data_type of Path.t
+    | Unknown_promoted_ctor of Path.t * Path.t
+    | Not_a_promoted_type of Path.t
+    | Invalid_kind of typ
+    | Kind_mismatch of { expected: typ; actual: typ; in_type: typ }
+    | Arity_mismatch of { kind: typ option; num_args: int }
+    | Arrow_domain_not_typ of typ
+    | Arrow_codomain_not_typ of typ
+    | Too_many_arguments of { kind: typ; extra_args: typ list }
+
+  let ident_find (v: Ident.t) (tbl: 'a Ident.tbl) (err: kind_error) : ('a, kind_error) result =
+    match Ident.find_opt v tbl with Some x -> Ok x | None -> Error err
+
+  let path_find (p: Path.t) (tbl: 'a Path.tbl) (err: kind_error) : ('a, kind_error) result =
+    match Path.find_opt p tbl with Some x -> Ok x | None -> Error err
+
+  (* Substitution *)
+  type subst = typ Ident.tbl
+
+  (* Context *)
+  type context =
+    { decs: dec Path.tbl
+    ; data_kinds: typ Path.tbl
+    ; promoted_ctors: promoted_ctor_info Path.tbl
+    ; subst: subst
+    ; typ_vars: typ Ident.tbl
+    }
+
+  (* The empty context *)
+  let empty_context : context =
+    { subst = Ident.emptytbl
+    ; decs = Path.emptytbl
+    ; data_kinds = Path.emptytbl
+    ; promoted_ctors = Path.emptytbl
+    ; typ_vars = Ident.emptytbl
+    }
+
+  let rec apply_subst sbs t =
+    match t with
+      TMeta v ->
+        (match Ident.find_opt v sbs with
+          Some t' -> apply_subst sbs t'
+        | None -> t)
+    | TVar _ -> t
+    | Arrow (t1, t2) -> Arrow (apply_subst sbs t1, apply_subst sbs t2)
+    | Fun (t1, t2) -> Fun (apply_subst sbs t1, apply_subst sbs t2)
+    | Forall (x, k, body) -> Forall (x, apply_subst sbs k, apply_subst sbs body)
+    | Raise t' -> Raise (apply_subst sbs t')
+    | Lower t' -> Lower (apply_subst sbs t')
+    | Sgn (name, args) -> Sgn (name, List.map (apply_subst sbs) args)
+    | PromotedCtor (data_name, ctor_name, args) ->
+        PromotedCtor (data_name, ctor_name, List.map (apply_subst sbs) args)
+    | _ -> t
+
+  let rec occurs v t =
+    match t with
+      TVar v' -> Ident.equal v v'
+    | TMeta v' -> Ident.equal v v'
+    | Arrow (t1, t2) -> occurs v t1 || occurs v t2
+    | Fun (t1, t2) -> occurs v t1 || occurs v t2
+    | Forall (x, k, body) ->
+        occurs v k || (not (Ident.equal v x) && occurs v body)
+    | Raise t' -> occurs v t'
+    | Lower t' -> occurs v t'
+    | Sgn (_, args) -> List.exists (occurs v) args
+    | PromotedCtor (_, _, args) -> List.exists (occurs v) args
+    | _ -> false
+
+  let rec apply_fresh_subst sbs t =
+    match t with
+      TVar v ->
+        (match Ident.find_opt v sbs with Some t' -> t' | None -> t)
+    | TMeta v ->
+        (match Ident.find_opt v sbs with Some t' -> t' | None -> t)
+    | Arrow (t1, t2) ->
+        Arrow (apply_fresh_subst sbs t1, apply_fresh_subst sbs t2)
+    | Fun (t1, t2) ->
+        Fun (apply_fresh_subst sbs t1, apply_fresh_subst sbs t2)
+    | Forall (x, k, body) ->
+        (* Avoid capture: if x is in sbs, we need to rename *)
+        if Ident.contains_key x sbs then
+          let x' = Ident.mk (Ident.name x) in
+          let body' = apply_fresh_subst (Ident.add x (TVar x') Ident.emptytbl) body in
+          Forall (x', apply_fresh_subst sbs k, apply_fresh_subst sbs body')
+        else
+          Forall (x, apply_fresh_subst sbs k, apply_fresh_subst sbs body)
+    | Raise t' -> Raise (apply_fresh_subst sbs t')
+    | Lower t' -> Lower (apply_fresh_subst sbs t')
+    | Sgn (name, args) ->
+        Sgn (name, List.map (apply_fresh_subst sbs) args)
+    | PromotedCtor (d, c, args) ->
+        PromotedCtor (d, c, List.map (apply_fresh_subst sbs) args)
+    | _ -> t
+
+  let rec unify t1 t2 sbs =
+    let rec fold_zip acc = function
+      | [], [] -> acc
+      | x :: xs, y :: ys ->
+          Option.bind acc (fun subst' ->
+            fold_zip (unify x y subst') (xs, ys))
+      | _ -> None
     in
-    go n
+    let t1 = apply_subst sbs t1 in
+    let t2 = apply_subst sbs t2 in
+    match t1, t2 with
+      TVar v1, TVar v2 when Ident.equal v1 v2 -> Some sbs
+    | TVar _, _ | _, TVar _ -> None
+    | TMeta v1, TMeta v2 when Ident.equal v1 v2 -> Some sbs
+    | TMeta v, t | t, TMeta v ->
+        if occurs v t then None else Some (Ident.add v t sbs)
+    | Arrow (a1, b1), Arrow (a2, b2) ->
+        Option.bind (unify a1 a2 sbs) (unify b1 b2)
+    | Fun (a1, b1), Fun (a2, b2) ->
+        Option.bind (unify a1 a2 sbs) (unify b1 b2)
+    | Forall (x1, k1, body1), Forall (x2, k2, body2) ->
+        (* Alpha-rename x2 to x1 in body2 for comparison *)
+        let body2' = apply_fresh_subst (Ident.add x2 (TVar x1) Ident.emptytbl) body2 in
+        Option.bind (unify k1 k2 sbs) (unify body1 body2')
+    | Raise t1, Raise t2 -> unify t1 t2 sbs
+    | Lower t1, Lower t2 -> unify t1 t2 sbs
+    | Ext e, Ext e' when e = e' -> Some sbs
+    | Base pol1, Base pol2 when Base.eq_polarity pol1 pol2 -> Some sbs
+    | Sgn (name1, args1), Sgn (name2, args2) when
+          Path.equal name1 name2 &&
+          List.length args1 = List.length args2 ->
+        fold_zip (Some sbs) (args1, args2)
+    | PromotedCtor (d1, c1, args1), PromotedCtor (d2, c2, args2) when
+          Path.equal d1 d2 && Path.equal c1 c2 &&
+          List.length args1 = List.length args2 ->
+        fold_zip (Some sbs) (args1, args2)
+    | _ -> None
 
-(* Cantor's diagonal *)
-let cantor_pair x y = (x + y) * (x + y + 1) / 2 + y
+  let equiv sbs t1 t2 =
+    match unify t1 t2 sbs with Some _ -> true | None -> false
 
-let cantor_unpair p =
-  let w = (isqrt (8 * p + 1) - 1) / 2 in
-  let t = (w * w + w) / 2 in
-  let y = p - t in
-  let x = w - y in
-  (x, y)
+  let freshen_meta quantified =
+    let fresh_vars, subst =
+      List.fold_left (fun (vars, s) (v, k) ->
+        let fresh = Ident.mk (Ident.name v) in
+        ((fresh, k) :: vars, Ident.add v (TMeta fresh) s)
+      ) ([], Ident.emptytbl) quantified
+    in (List.rev fresh_vars, subst)
 
-let rec encode =
-  function
-    Star -> 0
-  | Arrow (k1, k2) -> cantor_pair (encode k1) (encode k2) + 3
+  let freshen_rigid quantified =
+    let fresh_vars, subst =
+      List.fold_left (fun (vars, s) (v, k) ->
+        let fresh = Ident.mk (Ident.name v) in
+        ((fresh, k) :: vars, Ident.add v (TVar fresh) s)
+      ) ([], Ident.emptytbl) quantified
+    in (List.rev fresh_vars, subst)
 
-let rec decode n =
-  if n = 0 then Star
-  else
-    let (x, y) = cantor_unpair (n - 3) in
-    Arrow (decode x, decode y)
+  let freshen_kinds (kinds: typ list) : (Ident.t * typ) list =
+    List.map (fun k -> (Ident.fresh (), k)) kinds
 
-let compare_kinds k1 k2 =
-  let n1 = encode k1 in
-  let n2 = encode k2 in
-  compare n1 n2
+  (* A constructor is promotable (can be lifted to the type/kind level) if:
+    1. It has no existential variables
+    2. All its argument types are producer types (Prd)
+    3. Its result type is the canonical form:
+        Sgn(typeName, [TVar q1, TVar q2, ...])
+      where the variables are exactly the quantified variables, in order. *)
+  let is_promotable type_name (ctor: xtor) : bool =
+    let no_existentials = (ctor.existentials = []) in
+    let only_producer_args =
+      List.for_all (Base.is_producer) ctor.argument_types in
+    let canonical_result =
+      match ctor.main with
+        Sgn (name, args) when Path.equal name type_name ->
+          List.length args = List.length ctor.quantified &&
+          List.for_all2 (fun arg (qvar, _) ->
+            match arg with TVar v -> Ident.equal v qvar | _ -> false
+          ) args ctor.quantified
+      | _ -> false
+    in no_existentials && only_producer_args && canonical_result
 
-type ext_typ =
-    Int
-  
-type typ =
-    Ext of ext_typ (* Built-in, externally implemented types *)
-  | Var of var_typ ref (* Free, local type variable *)
-  | Rigid of Ident.t (* Rigid/skolem variable *)
-  | Sym of sym * sgn_typ Lazy.t (* Reference to a signature *)
-  | App of typ * (typ list) (* Instantiation *)
-  | Sgn of sgn_typ (* An instantiated signature *)
+  (* Check if a declaration can serve as a DataKind (if all constructors
+    are promotable). Only data types are promotable. *)
+  let is_dec_promotable (dec: dec) : bool =
+    (Base.eq_polarity dec.polarity Base.data_polarity) &&
+    List.for_all (is_promotable dec.name) dec.xtors
 
-and var_typ =
-    Unbound of Ident.t
-  | Link of typ
+  (* Helper to sequence result checks over a list *)
+  let rec check_all f = function
+      [] -> Ok () | x :: xs -> let* _ = f x in check_all f xs
 
-(* Signatures are not polarised as data or codata, but can
- function as both, depending on context *)
-and sgn_typ =
-  { name: sym
-  ; parameters: kind list  (* Just kinds, no names - GADT style *)
-  ; xtors: xtor list
-  }
+  (* Helper to sequence result checks over two lists *)
+  let rec check_all2 f xs ys =
+    match xs, ys with
+      [], [] -> Ok ()
+    | x :: xs', y :: ys' -> let* _ = f x y in check_all2 f xs' ys'
+    | _ -> Error (Arity_mismatch { kind = None; num_args = 0 })
 
-(* Unifying, unpolarized notion constructors and destructors *)
-and xtor =
-  { name: sym
-  ; parameters: (Ident.t * kind) list 
-  ; existentials: (Ident.t * kind) list
-  ; arguments: chiral_typ list
-  (* `main` is result type if considered as constructor, the "this"
-    type if considered as destructor *)
-  ; main: typ
-  }
+  (* Check if a type is a valid kind (can classify types) *)
+  let rec valid_kind (ctx: context) (t: typ) : (unit, kind_error) result =
+    match t with
+      Base _ -> Ok ()
+    | Arrow (k1, k2) -> let* _ = valid_kind ctx k1 in valid_kind ctx k2
+    | Sgn (name, args) ->
+        let* kind =
+          path_find name ctx.data_kinds (Not_a_promoted_type name) in
+        let* _ = check_all (valid_kind ctx) args in
+        let rec arity k =
+          match k with Arrow (_, r) -> 1 + arity r | _ -> 0 in
+        (match kind, args with
+          Base _, [] -> Ok ()
+        | Arrow _, _ when List.length args <= arity kind -> Ok ()
+        | _, [] -> Ok ()
+        | _, _ -> Error (Arity_mismatch {
+          kind = Some kind; num_args = List.length args }))
+    | TVar v ->
+        let* k = ident_find v ctx.typ_vars (Unbound_type_variable v) in
+        valid_kind ctx k
+    | TMeta v ->
+        let* k = ident_find v ctx.typ_vars (Unbound_meta_variable v) in
+        valid_kind ctx k
+    | _ -> Error (Invalid_kind t)
 
-(* Typing judgements in sequent calculi distinguish between
-  left (producer) terms and right (consumer) terms *)
-and chiral_typ =
-    Lhs of typ (* Producer *)
-  | Rhs of typ (* Consumer *)
+  (* Infer the kind of a type *)
+  let rec infer_kind (ctx: context) (t: typ) : (typ, kind_error) result =
+    match t with
+      Base _ -> Ok t
+    | Ext _ -> Ok (as_typ Base.data_polarity)
+    | TVar v -> ident_find v ctx.typ_vars (Unbound_type_variable v)
+    | TMeta v ->
+        (match Ident.find_opt v ctx.subst with
+          Some t' -> infer_kind ctx t'
+        | None -> ident_find v ctx.typ_vars (Unbound_meta_variable v))
+    | Arrow (t1, t2) ->
+        let* k1 = infer_kind ctx t1 in
+        let* k2 = infer_kind ctx t2 in
+        (* Arrow types at the kind level: both must be valid kinds *)
+        let* _ = valid_kind ctx k1 in
+        let* _ = valid_kind ctx k2 in
+        Ok (as_typ Base.code_polarity) (* Arrow types are negative *)
+    | Fun (t1, t2) ->
+        (* In a polarized system: (A: +) -> (B: -) : - *)
+        let* _ = check_kind ctx t1 (as_typ Base.data_polarity) in
+        let* _ = check_kind ctx t2 (as_typ Base.code_polarity) in
+        Ok (as_typ Base.code_polarity)
+    | Raise t ->
+        let* _ = check_kind ctx t (as_typ Base.code_polarity) in
+        Ok (as_typ Base.data_polarity)
+    | Lower t ->
+        let* _ = check_kind ctx t (as_typ Base.data_polarity) in
+        Ok (as_typ Base.code_polarity)
+    | Forall (x, k, body) ->
+        (* ∀(x: k). body : - when body : - under x: k *)
+        let* _ = valid_kind ctx k in
+        let ctx' = { ctx with typ_vars = Ident.add x k ctx.typ_vars } in
+        let* _ = check_kind ctx' body (as_typ Base.code_polarity) in
+        Ok (as_typ Base.code_polarity)
+    | Sgn (name, args) ->
+        let* dec = path_find name ctx.decs (Unknown_data_type name) in
+        let full_kind = List.fold_right (fun k acc ->
+          Arrow (k, acc)
+        ) dec.param_kinds (as_typ dec.polarity)
+        in
+        apply_args ctx full_kind args
+    | PromotedCtor (data_name, ctor_name, args) ->
+        let key = Path.access data_name (Path.name ctor_name) in
+        let* info =
+          path_find key ctx.promoted_ctors
+            (Unknown_promoted_ctor (data_name, ctor_name)) in
+        let num_quantified = List.length info.quantified in
+        let num_kind_args = List.length info.arg_kinds in
+        let expected_args = num_quantified + num_kind_args in
+        if List.length args <> expected_args then
+          Error (Arity_mismatch {
+            kind = Some info.result_kind; num_args = List.length args })
+        else
+          let type_args = List.filteri (fun i _ -> i < num_quantified) args in
+          let kind_args = List.filteri (fun i _ -> i >= num_quantified) args in
+          let ty_subst =
+            List.fold_left2 (fun s (v, _) t -> Ident.add v t s)
+              Ident.emptytbl info.quantified type_args
+          in
+          let* _ = check_all2 (fun (_, expected_kind) arg ->
+            let expected_kind' = apply_fresh_subst ty_subst expected_kind in
+            check_kind ctx arg expected_kind'
+          ) info.quantified type_args in
+          let subst_arg_kinds =
+            List.map (apply_fresh_subst ty_subst) info.arg_kinds in
+          let* _ = check_all2 (fun expected_kind arg ->
+            check_kind ctx arg expected_kind
+          ) subst_arg_kinds kind_args in
+          let subst_result = apply_fresh_subst ty_subst info.result_kind in
+          Ok subst_result
 
-and equation =
-    Equal of typ * typ
-  | And of equation * equation
-  | Exists of var_typ * equation 
-  | Implies of equation * equation
-  | True
+  (* Apply type arguments to a kind, returning the resulting kind *)
+  and apply_args (ctx: context) (kind: typ) (args: typ list)
+      : (typ, kind_error) result =
+    match kind, args with
+      k, [] -> Ok k
+    | Arrow (param_kind, result_kind), arg :: rest ->
+        let* _ = check_kind ctx arg param_kind in
+        apply_args ctx result_kind rest
+    | _, extra_args -> Error (Too_many_arguments { kind; extra_args })
 
-let chiral_map (f: typ -> typ) (ct: chiral_typ) : chiral_typ =
-  match ct with
-    Lhs t -> Lhs (f t)
-  | Rhs t -> Rhs (f t)
+  (* Check that a type has the expected kind *)
+  and check_kind (ctx: context) (t: typ) (expected_kind: typ)
+      : (unit, kind_error) result =
+    let* inferred_kind = infer_kind ctx t in
+    if equiv ctx.subst inferred_kind expected_kind then Ok ()
+    else Error (Kind_mismatch {
+      expected = expected_kind; actual = inferred_kind; in_type = t })
 
-type kind_error =
-    UnboundVariable of Ident.t
-  | ExpectedHKT of typ * kind
-  | KindMismatch of {expected: kind; actual: kind}
-  | ExistentialEscape of {xtor: Path.t; existential: Ident.t}
+  and is_inhabitable (ctx: context) (t: typ) : bool =
+    match infer_kind ctx t with
+    | Error _ -> false
+    | Ok (Base p) -> List.exists (Base.eq_polarity p) Base.polarities
+    | Ok _ -> false
 
-type kind_check_result = (kind, kind_error) result
-
-(** Check if an identifier is in a list, using Ident.equal *)
-let contains_var (id: Ident.t) (ids: Ident.t list) : bool =
-  List.exists (Ident.equal id) ids
-
-(** Check if a rigid variable appears free in a type *)
-let rec rigid_occurs (id: Ident.t) (t: typ) : bool =
-  match t with
-    Rigid id' -> Ident.equal id id'
-  | Var {contents = Link t'} -> rigid_occurs id t'
-  | Var {contents = Unbound _} -> false
-  | App (f, args) ->
-      rigid_occurs id f || List.exists (rigid_occurs id) args
-  | Sgn s -> rigid_occurs_sgn id s
-  | Sym _ | Ext _ -> false
-
-and rigid_occurs_sgn (id: Ident.t) (s: sgn_typ) : bool =
-  (* sgn.parameters are just kinds, no binders to shadow *)
-  List.exists (rigid_occurs_xtor id) s.xtors
-
-and rigid_occurs_xtor (id: Ident.t) (x: xtor) : bool =
-  (* Don't check under binders that shadow the id *)
-  let bound = List.map fst x.parameters @ List.map fst x.existentials in
-  if contains_var id bound then false
-  else
-    List.exists (fun ct ->
-      match ct with Lhs t | Rhs t -> rigid_occurs id t
-    ) x.arguments 
-    || rigid_occurs id x.main
-
-(** Bidirectional kind checking.
-    infer_kind computes the kind of a type given a kind context.
-    check_kind verifies a type has the expected kind.
-    The context maps identifiers (both Rigid and Var binders) to their kinds. *)
-let rec infer_kind (ctx: kind Ident.tbl) (t: typ) : kind_check_result =
-  match t with
-    Ext _ -> Ok Star
-  | Var {contents = Unbound id} ->
-      (match Ident.find_opt id ctx with
-        Some k -> Ok k
-      | None -> Ok Star)  (* Default to Star for unbound vars *)
-  | Var {contents = Link t'} -> infer_kind ctx t'
-  | Rigid id ->
-      (match Ident.find_opt id ctx with
-        Some k -> Ok k
-      | None -> Error (UnboundVariable id))
-  | Sym (_, lazy_sgn) ->
-      (* The kind of a symbol is determined by its parameters *)
-      let sgn = Lazy.force lazy_sgn in
-      Ok (List.fold_right (fun k acc ->
-        Arrow (k, acc)
-      ) sgn.parameters Star)
-  | App (f, args) ->
-      let* f_kind = infer_kind ctx f in
-      (* Apply each argument, consuming one arrow at a time *)
-      let rec apply_args (fk: kind) (args: typ list) =
-        match fk, args with
-          k, [] -> Ok k
-        | Arrow (param_kind, result_kind), arg :: rest ->
-            let* arg_kind = infer_kind ctx arg in
-            if arg_kind = param_kind then
-              apply_args result_kind rest
-            else
-              Error (KindMismatch {expected = param_kind; actual = arg_kind})
-        | k, _ :: _ -> Error (ExpectedHKT (f, k))
-      in
-      apply_args f_kind args
-  | Sgn s -> 
-      (* Kind check the signature for well-formedness:
-        1. Check that existentials don't escape into main
-        2. Compute kind from parameters *)
-      let check_xtor (x: xtor) : (unit, kind_error) result =
-        let escaped = List.filter (fun (id, _) ->
-          rigid_occurs id x.main
-        ) x.existentials in
-        match escaped with
-        | [] -> Ok ()
-        | (id, _) :: _ ->
-          Error (ExistentialEscape {xtor = x.name; existential = id})
-      in
-      let rec check_all = function
-        | [] -> 
-            (* All xtors valid; compute kind from parameters *)
-            Ok (List.fold_right (fun k acc ->
-              Arrow (k, acc)
-            ) s.parameters Star)
-        | x :: rest -> 
-            match check_xtor x with
-            | Ok () -> check_all rest
-            | Error e -> Error e
-      in
-      check_all s.xtors
-
-(** Check that a type has the expected kind *)
-and check_kind (ctx: kind Ident.tbl) (t: typ) (expected: kind)
-    : (unit, kind_error) result =
-  let* actual = infer_kind ctx t in
-  if actual = expected then Ok ()
-  else Error (KindMismatch { expected; actual })
-
-(** Substitute rigid type variables with types in a type.
-    Used for instantiating signature parameters. *)
-let rec subst_rigid (ms: (Ident.t * typ) list) (t: typ) : typ =
-  match t with
-    Rigid id ->
-      (match List.find_opt (fun (id', _) -> Ident.equal id id') ms with
-        Some (_, t') -> t' | None -> t)
-  | Var ({contents = Link t'}) -> subst_rigid ms t'
-  | Var _ -> t
-  | App (f, args) -> App (subst_rigid ms f, List.map (subst_rigid ms) args)
-  | Sgn s -> Sgn (subst_rigid_sgn ms s)
-  | Ext _ | Sym (_, _) -> t
-
-and subst_rigid_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
-  (* Substitute into xtors. No shadowing check needed here - the signature's
-    parameters are exactly what we want to substitute. Shadowing is handled
-    in subst_rigid_xtor for xtor-local bindings. *)
-  {s with xtors = List.map (subst_rigid_xtor ms) s.xtors}
-
-and subst_rigid_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
-  (* Don't substitute identifiers bound by existentials (they are local to xtor).
-    xtor.parameters are copies of signature parameters and SHOULD be substituted. *)
-  let shadowed = List.map fst x.existentials in
-  let ms' = List.filter (fun (id, _) -> not (contains_var id shadowed)) ms in
-  { x with
-    arguments = List.map (chiral_map (subst_rigid ms')) x.arguments
-  ; main = subst_rigid ms' x.main
-  ; parameters = []  (* Clear parameters after instantiation *)
-  }
-
-(** Substitute unbound unification variables by identifier name.
-    Used for instantiating xtor template parameters (which use Var not Rigid). *)
-let rec subst_unbound (ms: (Ident.t * typ) list) (t: typ) : typ =
-  match t with
-    Var ({contents = Unbound id}) ->
-      (match List.find_opt (fun (id', _) -> Ident.equal id id') ms with
-        Some (_, t') -> t' | None -> t)
-  | Var ({contents = Link t'}) -> subst_unbound ms t'
-  | Rigid _ -> t
-  | App (f, args) -> App (subst_unbound ms f, List.map (subst_unbound ms) args)
-  | Sgn s -> Sgn (subst_unbound_sgn ms s)
-  | Ext _ | Sym (_, _) -> t
-
-and subst_unbound_sgn (ms: (Ident.t * typ) list) (s: sgn_typ) : sgn_typ =
-  {s with xtors = List.map (subst_unbound_xtor ms) s.xtors}
-
-and subst_unbound_xtor (ms: (Ident.t * typ) list) (x: xtor) : xtor =
-  (* Don't substitute identifiers bound by existentials (they are local). *)
-  let shadowed = List.map fst x.existentials in
-  let ms' = List.filter (fun (id, _) -> not (contains_var id shadowed)) ms in
-  { x with
-    arguments = List.map (chiral_map (subst_unbound ms')) x.arguments
-  ; main = subst_unbound ms' x.main
-  ; parameters = []
-  }
-
-type solving_env =
-  { subs: (var_typ ref * typ) list (* Current substitution - keyed by ref *)
-  ; local_eqs: (typ * typ) list (* Local assumptions (from GADT matches) *)
-  }
-
-let empty_env : solving_env = { subs = []; local_eqs = [] }
-
-(** Find a var ref in the substitution using physical equality *)
-let rec find_subst (r: var_typ ref) (subs: (var_typ ref * typ) list) =
-  match subs with
-    [] -> None
-  | (r', t) :: _ when r == r' -> Some t
-  | _ :: rest -> find_subst r rest
-
-(** Occurs check: does variable r occur in type t?
-    Uses a visited set to handle recursive type definitions. *)
-module PathSet = Set.Make(struct type t = Path.t let compare = Path.compare end)
-
-let rec occurs_aux (visited: PathSet.t) (r: var_typ ref) (t: typ) : bool =
-  match t with
-    Var r' when r == r' -> true
-  | Var {contents = Link t'} -> occurs_aux visited r t'
-  | Var {contents = Unbound _} -> false
-  | App (f, args) -> 
-      occurs_aux visited r f || List.exists (occurs_aux visited r) args
-  | Sgn s ->
-      (* If we've already visited this signature, don't recurse into it *)
-      if PathSet.mem s.name visited then false
-      else occurs_sgn_aux (PathSet.add s.name visited) r s
-  | Sym (name, lazy_sgn) ->
-      (* If we've already visited this signature, don't recurse into it *)
-      if PathSet.mem name visited then false
-      else occurs_sgn_aux (PathSet.add name visited) r (Lazy.force lazy_sgn)
-  | Ext _ | Rigid _ -> false
-
-and occurs_sgn_aux (visited: PathSet.t) (r: var_typ ref) (s: sgn_typ) : bool =
-  List.exists (fun (x: xtor) -> 
-    List.exists (fun ct ->
-      match ct with Lhs t | Rhs t -> occurs_aux visited r t
-    ) x.arguments || occurs_aux visited r x.main
-  ) s.xtors
-
-let occurs r t = occurs_aux PathSet.empty r t
-
-(* ========================================================================= *)
-(* Weak head normal form, instantiation, and unification
-(* ========================================================================= *)
-   
-   These are mutually recursive because:
-   - whnf calls instantiate to reduce App(Sym, args) -> Sgn
-   - instantiate filters unreachable xtors using unify
-   - unify calls whnf to normalize before comparing
-   
-   GADT filtering happens in instantiate: after substituting type parameters,
-   we check each xtor's `main` type against the instantiated signature type.
-   Xtors that can't unify are filtered out.
-*)
-
-(** Reduce a type to weak head normal form.
-    - Follows variable links
-    - Reduces App(Sym(...), args) to instantiated Sgn (with GADT filtering)
-    - Applies the current substitution
-    kctx is the kind context for kind checking during instantiation. *)
-let rec whnf (kctx: kind Ident.tbl) (subs: (var_typ ref * typ) list) (t: typ) =
-  match t with
-    Var {contents = Link t'} -> whnf kctx subs t'
-  | Var ({contents = Unbound _} as r) ->
-      (match find_subst r subs with 
-        Some t' -> whnf kctx subs t'
-      | None -> t)
-  | App (f, args) ->
-      (* First reduce the function *)
-      let f' = whnf kctx subs f in
-      let args' = List.map (whnf kctx subs) args in
-      (match f' with
-        Sym (_, lazy_sgn) ->
-          (* Instantiate: App(Sym, args) -> Sgn with params replaced by args
-             and unreachable xtors filtered out *)
-          Sgn (instantiate kctx lazy_sgn args')
-      | App (f'', args'') ->
-          (* Nested application - flatten and try again *)
-          whnf kctx subs (App (f'', args'' @ args'))
-      | _ -> App (f', args'))
-  | Ext _ | Rigid _ | Sym _ | Sgn _ -> t
-
-(** Instantiate a signature with type arguments.
-    Substitutes parameters, checks kinds, and filters out GADT-unreachable xtors. *)
-and instantiate (kctx: kind Ident.tbl) (lazy_sgn: sgn_typ Lazy.t) (args: typ list) : sgn_typ =
-  let sgn = Lazy.force lazy_sgn in
-  let param_kinds = sgn.parameters in
-  if List.length param_kinds <> List.length args then
-    failwith (Printf.sprintf "instantiate: arity mismatch (params=%d, args=%d)" 
-      (List.length param_kinds) (List.length args))
-  else begin
-    (* Kind check: verify each arg has the expected kind *)
-    List.iter2 (fun expected_kind arg ->
-      match check_kind kctx arg expected_kind with
-        Ok () -> ()
-      | Error _ -> failwith "instantiate: kind mismatch"
-    ) param_kinds args;
-    (* For each xtor:
-      1. Create fresh unification variables for its universal parameters
-      2. Unify main with target type to derive substitution  
-      3. Apply substitution to arguments
-      4. Filter out xtors that can't unify (GADT refinement)
-      
-      Note: xtor.parameters are universals (exposed by pattern matching) -> fresh Var refs
-            xtor.existentials are existentials (hidden) -> stay as Rigid *)
-    let target_typ = App (Sym (sgn.name, lazy_sgn), args) in
-    let instantiate_xtor (x: xtor) : xtor option =
-      (* Fresh unification variables for xtor's universal parameters only *)
-      let fresh_vars = List.map (fun (id, _) -> ref (Unbound id)) x.parameters in
-      let fresh_mapping = List.map2 (fun (id, _) r -> (id, Var r)) x.parameters fresh_vars in
-      (* Substitute Unbound params with fresh Vars; existentials stay as Rigid *)
-      let main_with_fresh = subst_unbound fresh_mapping x.main in
-      (* Try to unify with target *)
-      if can_unify_shallow main_with_fresh args sgn.name then begin
-        (* Apply substitution to arguments *)
-        let args_subst = List.map (chiral_map (subst_unbound fresh_mapping)) x.arguments in
-        Some { x with 
-          parameters = []  (* Universals cleared after instantiation *)
-        (* existentials stay - they become Rigid skolems during pattern match *)
-        ; arguments = args_subst
-        ; main = target_typ
-        }
-      end else
-        None
+  (* Check that a constructor or destructor is well-kinded *)
+  let check_xtor_well_kinded
+      (ctx: context) (pol: Base.polarity) (xtor: xtor) : bool =
+    let ty_ctx =
+      List.fold_left (fun acc (v, k) ->
+          { acc with typ_vars = Ident.add v k acc.typ_vars }
+        ) ctx (xtor.quantified @ xtor.existentials)
     in
-    let reachable_xtors = List.filter_map instantiate_xtor sgn.xtors in
-    { sgn with parameters = []; xtors = reachable_xtors }
-  end
+    (* kinds_valid && args_valid && result_valid *)
+    List.for_all (fun (_, k) ->
+      Result.is_ok (valid_kind ty_ctx k)
+    ) (xtor.quantified @ xtor.existentials) &&
+    List.for_all (fun ct ->
+      (* Argument types must be inhabitable (kind + or -) *)
+      is_inhabitable ty_ctx (strip_chirality ct)
+    ) xtor.argument_types &&
+    Result.is_ok (check_kind ty_ctx xtor.main (as_typ pol))
 
-(** Shallow unification check for GADT filtering.
-    Checks if type `t` can unify with `App(Sym(target_name, _), target_args)`.
-    Returns true if t can potentially equal the target type, without recursing 
-    deeply into signature structure. This avoids infinite recursion when 
-    signatures contain recursive references. *)
-and can_unify_shallow
-    (t: typ) (target_args: typ list) (target_name: Path.t) : bool =
-  match t with
-    Var {contents = Link t'} -> can_unify_shallow t' target_args target_name
-  | Var {contents = Unbound _} -> true  (* Unbound can unify with anything *)
-  | Sgn sg -> 
-      Path.equal sg.name target_name && 
-      sg.parameters = []  (* Sgn with no params = already instantiated *)
-  | App (Sym (p, _), args) ->
-      Path.equal p target_name && 
-      List.length args = List.length target_args &&
-      List.for_all2 can_unify_shallow_types args target_args
-  | App (f, args) ->
-      (* Nested App - try to extract the head *)
-      (match f with
-        Sym (p, _) -> 
-          Path.equal p target_name && 
-          List.length args = List.length target_args &&
-          List.for_all2 can_unify_shallow_types args target_args
-      | _ -> false)
-  | _ -> false
+  (* Check that a declaration is well-kinded *)
+  let check_dec_well_kinded (ctx: context) (dec: dec) : bool =
+    let param_kinds_valid =
+      List.for_all (fun k ->
+        Result.is_ok (valid_kind ctx k)
+      ) dec.param_kinds in
+    let ctors_valid =
+      List.for_all (check_xtor_well_kinded ctx dec.polarity) dec.xtors in
+    param_kinds_valid && ctors_valid
 
-(** Check if two types can potentially unify (shallow) *)
-and can_unify_shallow_types (t1: typ) (t2: typ) : bool =
-  match t1, t2 with
-    Var {contents = Link t1'}, _ -> can_unify_shallow_types t1' t2
-  | _, Var {contents = Link t2'} -> can_unify_shallow_types t1 t2'
-  | Var {contents = Unbound _}, _ -> true
-  | _, Var {contents = Unbound _} -> true
-  | Ext e1, Ext e2 -> e1 = e2
-  | Rigid a, Rigid b -> Ident.equal a b
-  | Sym (p1, _), Sym (p2, _) -> Path.equal p1 p2
-  | Sgn sg1, Sgn sg2 -> Path.equal sg1.name sg2.name
-  (* App can unify with Sgn if the App's head is an unbound var or 
-     the App would reduce to the same Sgn *)
-  | App (Var {contents = Unbound _}, _), Sgn _ -> true
-  | Sgn _, App (Var {contents = Unbound _}, _) -> true
-  | App (Sym (p1, _), _), Sgn sg2 -> Path.equal p1 sg2.name
-  | Sgn sg1, App (Sym (p2, _), _) -> Path.equal sg1.name p2
-  | App (f1, a1), App (f2, a2) ->
-      can_unify_shallow_types f1 f2 && 
-      List.length a1 = List.length a2 &&
-      List.for_all2 can_unify_shallow_types a1 a2
-  | _ -> false
+  (* Build PromotedCtorInfo for a promotable constructor *)
+  let build_promoted_ctor_info (ctor: xtor) : promoted_ctor_info =
+    { quantified = ctor.quantified
+    ; arg_kinds = List.map strip_chirality ctor.argument_types
+    ; result_kind = ctor.main
+    }
 
-(** Unify two lists of types pairwise *)
-and unify_args
-    (kctx: kind Ident.tbl) (args1: typ list) (args2: typ list) (env: solving_env) 
-    : solving_env option =
-  match args1, args2 with
-    [], [] -> Some env
-  | t1 :: rest1, t2 :: rest2 ->
-      Option.bind (unify kctx t1 t2 env) (unify_args kctx rest1 rest2)
-  | _ -> None (* Length mismatch *)
+  (* Build promoted constructor entries for a declaration (only if all
+    ctors are promotable) *)
+  let build_promoted_ctors (d: dec) : (Path.t * promoted_ctor_info) list =
+    if is_dec_promotable d then
+      List.map (fun (c: xtor) ->
+        (Path.access d.name (Path.name c.name), build_promoted_ctor_info c)
+      ) d.xtors
+    else []
 
-(** Unify two types. Reduces both to whnf first, then compares structurally. *)
-and unify (kctx: kind Ident.tbl) (t1: typ) (t2: typ) (env: solving_env)
-    : solving_env option =
-  let t1 = whnf kctx env.subs t1 in
-  let t2 = whnf kctx env.subs t2 in
-  match t1, t2 with
-  (* Identical externals *)
-    Ext e1, Ext e2 -> if e1 = e2 then Some env else None
-  (* Same variable (by physical equality) *)
-  | Var r1, Var r2 when r1 == r2 -> Some env
-  (* Unbound variable: occurs check, then link *)
-  | Var ({contents = Unbound _} as r), t 
-  | t, Var ({contents = Unbound _} as r) ->
-      if occurs r t then None else (r := Link t; Some env)
-  (* Unapplied symbols: same name means same type constructor *)
-  | Sym (s1, _), Sym (s2, _) -> 
-      if Path.equal s1 s2 then Some env else None
-  (* Instantiated signatures: check name equality to avoid infinite recursion *)
-  | Sgn sg1, Sgn sg2 -> 
-      if Path.equal sg1.name sg2.name && sg1.parameters = [] && sg2.parameters = []
-      then Some env
-      else unify_sgn kctx sg1 sg2 env
-  (* Rigid variables *)
-  | Rigid a, Rigid b when Ident.equal a b -> Some env
-  | Rigid a, t | t, Rigid a ->
-      (* Check if local assumptions tell us rigid 'a equals t *)
-      if List.exists (fun (t1', t2') -> 
-        (t1' = Rigid a && t2' = t) || (t2' = Rigid a && t1' = t)
-      ) env.local_eqs
-      then Some env else None
-  (* Stuck applications: unify head and args separately *)
-  | App (f1, a1), App (f2, a2) ->
-      Option.bind (unify kctx f1 f2 env) (unify_args kctx a1 a2)
-  (* Everything else fails *)
-  | _ -> None
+  (* Compute the kind of a data type from its param_kinds *)
+  let data_kind_from_param_kinds (param_kinds: typ list) : typ =
+    List.fold_right (fun k acc ->
+      Arrow (k, acc)
+    ) param_kinds (as_typ Base.data_polarity)
 
-(** Unify two signatures structurally.
-    Both signatures should already have unreachable xtors filtered out. *)
-and unify_sgn
-    (kctx: kind Ident.tbl) (sg1: sgn_typ) (sg2: sgn_typ) (env: solving_env)
-    : solving_env option =
-  (* Must have same name *)
-  if not (Path.equal sg1.name sg2.name) then None
-  (* Must have same xtors (after GADT filtering) *)
-  else if List.length sg1.xtors <> List.length sg2.xtors then None
-  else
-    (* Unify corresponding xtors by name *)
-    List.fold_left2 (fun env_opt (x1: xtor) (x2: xtor) ->
-      Option.bind env_opt (fun env -> unify_xtor kctx x1 x2 env)
-    ) (Some env) sg1.xtors sg2.xtors
+  (* Add a declaration to the context *)
+  let add_dec (ctx: context) (dec: dec) : context =
+    let new_decs = Path.add dec.name dec ctx.decs in
+    let is_prom = is_dec_promotable dec in
+    let new_data_kinds =
+      if is_prom then
+        let kind = data_kind_from_param_kinds dec.param_kinds in
+        Path.add dec.name kind ctx.data_kinds
+      else ctx.data_kinds
+    in
+    let new_promoted_ctors =
+      List.fold_left (fun acc (k, v) ->
+        Path.add k v acc
+      ) ctx.promoted_ctors (build_promoted_ctors dec)
+    in
+    { ctx with
+      decs = new_decs
+    ; data_kinds = new_data_kinds
+    ; promoted_ctors = new_promoted_ctors
+    }
 
-(** Unify two xtors structurally *)
-and unify_xtor
-    (kctx: kind Ident.tbl) (x1: xtor) (x2: xtor) (env: solving_env)
-    : solving_env option =
-  if not (Path.equal x1.name x2.name) then None
-  else if List.length x1.arguments <> List.length x2.arguments then None
-  else
-    (* Skip unifying main types - they are both App(Sym(sgn.name), args) which would
-       trigger infinite recursion through whnf -> instantiate. The signatures 
-       already have the same name (checked in unify_sgn), so main types are equal. *)
-    (* Unify arguments pairwise *)
-    List.fold_left2 (fun env_opt a1 a2 ->
-        Option.bind env_opt (fun env -> unify_chiral kctx a1 a2 env)
-      ) (Some env) x1.arguments x2.arguments
+  (* Add a declaration to the context, checking well-kindedness and promoting
+    as data kind, if possible *)
+  let add_declaration (ctx: context) (dec: dec) : context option =
+    let temp_ctx = { ctx with decs = Path.add dec.name dec ctx.decs } in
+    if not (check_dec_well_kinded temp_ctx dec) then None
+    else Some (add_dec ctx dec)
 
-(** Unify chiral types *)
-and unify_chiral
-    (kctx: kind Ident.tbl) (ct1: chiral_typ) (ct2: chiral_typ) (env: solving_env)
-    : solving_env option =
-  match ct1, ct2 with
-    Lhs t1, Lhs t2 -> unify kctx t1 t2 env
-  | Rhs t1, Rhs t2 -> unify kctx t1 t2 env
-  | _ -> None  (* Chirality mismatch *)
+  (* Add multiple declarations in sequence *)
+  let add_declarations (ctx: context) (decs: dec list) : context option =
+    List.fold_left (fun ctx_opt dec ->
+      Option.bind ctx_opt (fun ctx -> add_declaration ctx dec)
+    ) (Some ctx) decs
 
-(* ========================================================================= *)
-(* Equation solving *)
-(* ========================================================================= *)
+  (* Add mutually recursive declarations *)
+  let add_declarations_recursive (ctx: context) (decs: dec list) : context option =
+    let temp_ctx = List.fold_left add_dec ctx decs in
+    let all_valid = List.for_all (check_dec_well_kinded temp_ctx) decs in
+    if not all_valid then None
+    else Some temp_ctx
 
-let rec solve (kctx: kind Ident.tbl) (c: equation) (env: solving_env)
-    : solving_env option =
-  match c with
-    True -> Some env
-  | Equal (t1, t2) -> unify kctx t1 t2 env
-  | And (c1, c2) -> Option.bind (solve kctx c1 env) (solve kctx c2)
-  | Exists (_, c) -> solve kctx c env
-  | Implies (assumption, body) ->
-      (* Verify assumption is solvable, then add to local equations for body *)
-      let rec collect_eqs (eq: equation) : (typ * typ) list =
-        match eq with
-          Equal (t1, t2) -> [(t1, t2)]
-        | And (e1, e2) -> collect_eqs e1 @ collect_eqs e2
-        | Implies (_, e) -> collect_eqs e
-        | Exists (_, e) -> collect_eqs e
-        | True -> []
-      in
-      match solve kctx assumption env with
-        None -> None
-      | Some env' ->
-          solve kctx body { env' with
-            local_eqs = collect_eqs assumption @ env'.local_eqs
-          }
+  (* Check if a constructor is reachable given scrutinee type arguments *)
+  let is_xtor_reachable (ctx: context) (dec: dec) (xtor: xtor) (scrutinee_args: typ list)
+      : subst option =
+    let _, fresh_subst = freshen_meta xtor.quantified in
+    let fresh_result = apply_fresh_subst fresh_subst xtor.main in
+    let scrutinee_type = Sgn (dec.name, scrutinee_args) in
+    unify fresh_result scrutinee_type ctx.subst
+
+  (* Check exhaustivity: all reachable constructors must be covered *)
+  let check_exhaustive
+      (ctx: context) (d: dec) (scrutinee_args: typ list) (covered_ctors: Path.t list)
+      : Path.t list =
+    List.filter_map (fun (x: xtor) ->
+      if not (List.exists (Path.equal x.name) covered_ctors) &&
+         Option.is_some (is_xtor_reachable ctx d x scrutinee_args)
+      then Some x.name
+      else None
+    ) d.xtors
+
+end

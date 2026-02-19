@@ -4,7 +4,8 @@
 *)
 
 open Common.Identifiers
-open Types
+open Types.CoreBase
+open Types.CoreTypes
 
 let ( let* ) = Result.bind
 
@@ -23,8 +24,8 @@ type command =
 and term =
     Var of var
   | Lit of int
-  (* Constructors build data (are producers). *)
-  (* Parameters are type symbol, ctor symbol, types and terms. *)
+  (* Constructors build data (are producers) *)
+  (* Parameters are type symbol, ctor symbol, types and terms *)
   | Ctor of sym * sym * typ list * term list
   (* Destructors consume codata (are consumers) *)
   | Dtor of sym * sym * typ list * term list
@@ -36,6 +37,26 @@ and term =
   | MuPrd of typ * var * command
   (* μC binds producer var, forms consumer *)
   | MuCns of typ * var * command
+  (* We treat the Fun(t, u) type as a codata type:
+      NewFun ~ comatch { apply(x: prd t, k: cns u) => cmd } *)
+  | NewFun of typ * typ * var * var * command
+  | ApplyDtor of typ * typ * term * term
+  (* We treat the Forall(a, k, t) as a codata type:
+      NewForall ~ comatch { instantiate[a] => cmd }
+    The instantiate destructor works as an xtor with
+    an existentially bound type parameter `a` of kind `k`. *)
+  | NewForall of var * typ * typ * command
+  | InstantiateDtor of typ
+  (* We treat Raise(t) as a data type with a single constructor
+    "thunk" that packs a codata type.
+      MatchRaise ~ match { thunk(x: prd t) => cmd } *)
+  | MatchRaise of typ * var * command
+  | ThunkCtor of typ * term
+  (* We treat Lower(t) as a codata type with a single destructor
+    "return" that unpacks a data type.
+      NewLower ~ comatch { return(x: cns t) => cmd } *)
+  | NewLower of typ * var * command
+  | ReturnDtor of typ * term
 
 (* xtor{t0, .., tn}(x0, .., xm) => cmd *)
 and branch = sym * var list * var list * command
@@ -50,7 +71,7 @@ type definition =
 
 (* Context during type-checking *)
 type context =
-  { types: Types.context
+  { types: Types.CoreTypes.context
   ; defs: definition Path.tbl
   ; term_vars: chiral_typ Ident.tbl
   }
@@ -183,7 +204,7 @@ let freshen_xtor_types (xtor: xtor) (scrutinee_args: typ list)
   (* Freshen quantified variables *)
   let _, quant_subst = freshen_meta xtor.quantified in
   (* Freshen existential variables *)
-  let _, exist_subst = freshen_meta xtor.existential in
+  let _, exist_subst = freshen_meta xtor.existentials in
   (* Combine substitutions *)
   let combined_subst = Ident.join quant_subst exist_subst in
   (* Apply scrutinee args to quantified positions *)
@@ -211,7 +232,7 @@ let check_branch
     None -> Error (UnboundXtor (dec.name, xtor_name))
   | Some xtor ->
       (* Check type variable arity *)
-      let num_exist = List.length xtor.existential in
+      let num_exist = List.length xtor.existentials in
       if List.length type_vars <> num_exist then
         Error (TypeVarArityMismatch {
           xtor = xtor_name; expected = num_exist; got = List.length type_vars })
@@ -228,7 +249,7 @@ let check_branch
         let exist_subst =
           List.fold_left2 (fun s (old_v, _) new_v ->
             Ident.add old_v (TVar new_v) s
-          ) Ident.emptytbl xtor.existential type_vars
+          ) Ident.emptytbl xtor.existentials type_vars
         in
         let inst_args' =
           List.map (chiral_map (apply_fresh_subst exist_subst)) inst_args
@@ -236,7 +257,7 @@ let check_branch
         (* Extend context with existential type vars and term vars *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
-            ctx type_vars xtor.existential
+            ctx type_vars xtor.existentials
         in
         let ctx'' = bind_xtor_term_args ctx' inst_args' term_vars in
         check_cmd ctx'' subs cmd
@@ -304,7 +325,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
     : (chiral_typ * subst) check_result =
   match tm with
     Var x -> let* ct = lookup_var ctx x in Ok (ct, subs)
-  | Lit _ -> Ok (Prd Int, subs)
+  | Lit _ -> Ok (Prd (Ext Int), subs)
   | Ctor (dec_name, xtor_name, type_args, term_args) ->
       let* dec = lookup_dec ctx dec_name in
       (match find_xtor dec xtor_name with
@@ -375,6 +396,65 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       let ctx' = extend ctx k (Prd ty) in
       let* _ = check_command ctx' subs cmd in
       Ok (Cns ty, subs)
+  | NewFun (t, u, x, k, cmd) ->
+      (* NewFun ~ comatch { apply(x: prd t, k: cns u) => cmd }
+         Binds x : Prd t, k : Cns u, produces Prd (Fun t u) *)
+      let ctx' = extend (extend ctx x (Prd t)) k (Cns u) in
+      let* _ = check_command ctx' subs cmd in
+      Ok (Prd (Fun (t, u)), subs)
+  | ApplyDtor (t, u, arg, cont) ->
+      (* apply destructor: takes prd t and cns u, produces Cns (Fun t u) *)
+      let* (arg_ct, subs') = infer_typ ctx subs arg in
+      let* (cont_ct, subs'') = infer_typ ctx subs' cont in
+      let* arg_ty = expect_prd arg_ct in
+      let* cont_ty = expect_cns cont_ct in
+      (match unify arg_ty t subs'' with
+        None -> Error (UnificationFailed (arg_ty, t))
+      | Some subs''' ->
+          (match unify cont_ty u subs''' with
+            None -> Error (UnificationFailed (cont_ty, u))
+          | Some subs4 -> Ok (Cns (Fun (t, u)), subs4)))
+  | NewForall (a, k, body_ty, cmd) ->
+      (* NewForall ~ comatch { instantiate[a: k] => cmd }
+         Binds type var a : k, produces Prd (Forall a k body_ty) *)
+      let ctx' = extend_tyvar ctx a k in
+      let* _ = check_command ctx' subs cmd in
+      Ok (Prd (Forall (a, k, body_ty)), subs)
+  | InstantiateDtor ty_arg ->
+      (* instantiate destructor: given a type argument, consumes Forall
+         We need a fresh meta for the quantified kind and body *)
+      let a = Ident.fresh () in
+      let k = TMeta (Ident.fresh ()) in
+      let body = TMeta (Ident.fresh ()) in
+      (* Substitute ty_arg for a in body *)
+      let inst_body = apply_fresh_subst (Ident.add a ty_arg Ident.emptytbl) body in
+      Ok (Cns (Forall (a, k, inst_body)), subs)
+  | MatchRaise (t, x, cmd) ->
+      (* MatchRaise ~ match { thunk(x: prd t) => cmd }
+         Binds x : Prd t, produces Cns (Raise t) *)
+      let ctx' = extend ctx x (Prd t) in
+      let* _ = check_command ctx' subs cmd in
+      Ok (Cns (Raise t), subs)
+  | ThunkCtor (t, arg) ->
+      (* thunk constructor: takes prd t, produces Prd (Raise t) *)
+      let* (arg_ct, subs') = infer_typ ctx subs arg in
+      let* arg_ty = expect_prd arg_ct in
+      (match unify arg_ty t subs' with
+        None -> Error (UnificationFailed (arg_ty, t))
+      | Some subs'' -> Ok (Prd (Raise t), subs''))
+  | NewLower (t, x, cmd) ->
+      (* NewLower ~ comatch { return(x: cns t) => cmd }
+         Binds x : Cns t, produces Prd (Lower t) *)
+      let ctx' = extend ctx x (Cns t) in
+      let* _ = check_command ctx' subs cmd in
+      Ok (Prd (Lower t), subs)
+  | ReturnDtor (t, arg) ->
+      (* return destructor: takes cns t, produces Cns (Lower t) *)
+      let* (arg_ct, subs') = infer_typ ctx subs arg in
+      let* arg_ty = expect_cns arg_ct in
+      (match unify arg_ty t subs' with
+        None -> Error (UnificationFailed (arg_ty, t))
+      | Some subs'' -> Ok (Cns (Lower t), subs''))
 
 (** Check a command under context and substitution *)
 and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_result =
@@ -410,12 +490,12 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd Int in
-      let int_cns = Cns Int in
-      (match unify (strip_chirality t1_ct) Int subs''' with
+      let int_prd = Prd (Ext Int) in
+      let int_cns = Cns (Ext Int) in
+      (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
-          (match unify (strip_chirality t2_ct) Int subs4 with
+          (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
               (* t1, t2 should be Prd Int, t3 should be Cns Int *)
@@ -423,7 +503,7 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Ifz (t, cmd1, cmd2) ->
       let* (t_ct, subs') = infer_typ ctx subs t in
-      (match unify (strip_chirality t_ct) Int subs' with
+      (match unify (strip_chirality t_ct) (Ext Int) subs' with
         None -> Error (IfzConditionNotInt t_ct)
       | Some subs'' ->
           let* _ = expect_prd t_ct in
