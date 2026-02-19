@@ -39,6 +39,7 @@ module Ident = struct
     | [] -> None
     | (y, v) :: rest -> if equal x y then Some v else find_opt x rest
   let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
+  let remove x tbl = List.filter (fun (k, _) -> not (equal x k)) tbl
   let join tbl1 tbl2 = tbl1 @ tbl2
   let of_list lst = lst
   let to_list lst = lst
