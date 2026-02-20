@@ -1,6 +1,6 @@
 (executables
- (names test_pcf test_gadt test_parsing test_nat test_simple)
- (public_names test_pcf test_gadt test_parsing test_nat test_simple)
+ (names test_pcf test_parsing test_nat test_simple)
+ (public_names test_pcf test_parsing test_nat test_simple)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 

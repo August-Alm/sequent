@@ -10,7 +10,7 @@
 
 module Parse = Lang.Parse
 module Syntax = Lang.Syntax
-module MTy = Melcore.Types
+module MTy = Melcore.Types.MelcoreTypes
 module MTm = Melcore.Terms
 module MPrint = Melcore.Printing
 
@@ -68,6 +68,24 @@ let run_test ~name (source: string) =
           print_endline "FAIL: Desugar error\n"
       | Some result ->
           let melcore_defs = result.Sequent.Desugar.term_defs in
+          let type_defs = result.Sequent.Desugar.type_defs in
+          
+          (* Debug: show xtor arities *)
+          if List.length type_defs > 0 then begin
+            print_endline "Type defs (debug):";
+            List.iter (fun (dec: MTy.dec) ->
+              Printf.printf "  %s:\n" (Path.name dec.name);
+              List.iter (fun (xtor: MTy.xtor) ->
+                Printf.printf "    %s: quant=%d, args=%d, main=%s\n"
+                  (Path.name xtor.name)
+                  (List.length xtor.quantified)
+                  (List.length xtor.argument_types)
+                  (MPrint.typ_to_string xtor.main)
+              ) dec.xtors
+            ) type_defs;
+            print_newline ()
+          end;
+          
           (* 3. Pretty-print Melcore *)
           print_endline "Melcore (pretty-printed):";
           Path.to_list melcore_defs
@@ -81,31 +99,42 @@ let run_test ~name (source: string) =
           let show_error (e: MTm.check_error) = match e with
             | MTm.UnboundVariable v -> "Unbound variable: " ^ Ident.name v
             | MTm.UnboundSymbol p -> "Unbound symbol: " ^ Path.name p
+            | MTm.UnboundDeclaration p -> "Unbound declaration: " ^ Path.name p
+            | MTm.UnboundXtor (dec, xtor) -> 
+                Printf.sprintf "Unbound xtor %s in %s" (Path.name xtor) (Path.name dec)
             | MTm.TypeMismatch {expected; actual} ->
                 Printf.sprintf "Type mismatch: expected %s, got %s"
                   (MPrint.typ_to_string expected)
                   (MPrint.typ_to_string actual)
             | MTm.ExpectedData ty ->
                 "Expected data type, got: " ^ MPrint.typ_to_string ty
-            | MTm.ExpectedCode ty ->
-                "Expected code type, got: " ^ MPrint.typ_to_string ty
-            | MTm.SignatureMismatch _ -> "Signature mismatch"
-            | MTm.XtorNotInSignature _ -> "Xtor not in signature"
+            | MTm.ExpectedCodata ty ->
+                "Expected codata type, got: " ^ MPrint.typ_to_string ty
+            | MTm.ExpectedFun ty ->
+                "Expected function type, got: " ^ MPrint.typ_to_string ty
+            | MTm.ExpectedForall ty ->
+                "Expected forall type, got: " ^ MPrint.typ_to_string ty
             | MTm.NonExhaustive _ -> "Non-exhaustive"
-            | MTm.ArityMismatch {xtor=_; expected; actual} ->
-                Printf.sprintf "Arity mismatch: expected %d, got %d" expected actual
+            | MTm.XtorArityMismatch {xtor; expected; got} ->
+                Printf.sprintf "Arity mismatch for %s: expected %d, got %d" 
+                  (Path.name xtor) expected got
+            | MTm.TypeArgArityMismatch {xtor; expected; got} ->
+                Printf.sprintf "Type arg arity mismatch for %s: expected %d, got %d"
+                  (Path.name xtor) expected got
             | MTm.UnificationFailed (t1, t2) ->
                 Printf.sprintf "Unification failed: %s ≠ %s"
                   (MPrint.typ_to_string t1)
                   (MPrint.typ_to_string t2)
+            | MTm.KindError _ -> "Kind error"
           in
           
+          let tc_ctx = MTm.make_tc_context type_defs melcore_defs in
           Path.to_list melcore_defs
           |> List.iter (fun (_, (def: MTm.term_def)) ->
               Printf.printf "  Checking %s: %!" (Path.name def.name);
               
               try
-                match MTm.check_definition melcore_defs def with
+                match MTm.check_definition tc_ctx def with
                 | Ok _typed_def ->
                     print_endline "OK ✓"
                 | Error e ->
@@ -178,24 +207,28 @@ let run_expr_test ~name ~expected_type (source: string) =
           
           (* 4. Type-check *)
           print_endline "Type-checking:";
-          let empty_defs : MTm.definitions = Path.emptytbl in
-          let empty_ctx = { MTm.kinds = Ident.emptytbl; MTm.types = Ident.emptytbl } in
+          let tc_ctx = MTm.make_tc_context [] Path.emptytbl in
           
           let show_error (e: MTm.check_error) = match e with
             | MTm.UnboundVariable v -> "Unbound variable: " ^ Ident.name v
             | MTm.UnboundSymbol p -> "Unbound symbol: " ^ Path.name p
+            | MTm.UnboundDeclaration p -> "Unbound declaration: " ^ Path.name p
+            | MTm.UnboundXtor (dec, xtor) -> 
+                Printf.sprintf "Unbound xtor %s in %s" (Path.name xtor) (Path.name dec)
             | MTm.TypeMismatch _ -> "Type mismatch"
             | MTm.ExpectedData _ -> "Expected data type"
-            | MTm.ExpectedCode _ -> "Expected code type"
-            | MTm.SignatureMismatch _ -> "Signature mismatch"
-            | MTm.XtorNotInSignature _ -> "Xtor not in signature"
+            | MTm.ExpectedCodata _ -> "Expected codata type"
+            | MTm.ExpectedFun _ -> "Expected function type"
+            | MTm.ExpectedForall _ -> "Expected forall type"
             | MTm.NonExhaustive _ -> "Non-exhaustive"
-            | MTm.ArityMismatch _ -> "Arity mismatch"
+            | MTm.XtorArityMismatch _ -> "Arity mismatch"
+            | MTm.TypeArgArityMismatch _ -> "Type arg arity mismatch"
             | MTm.UnificationFailed _ -> "Unification failed"
+            | MTm.KindError _ -> "Kind error"
           in
           
           (try
-            match MTm.infer_term empty_defs empty_ctx melcore_term with
+            match MTm.infer_term tc_ctx melcore_term with
             | Ok (_typed_term, inferred_ty) ->
                 Printf.printf "  Inferred: %s\n" (MPrint.typ_to_string inferred_ty);
                 Printf.printf "  Expected: %s\n" expected_type;

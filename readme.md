@@ -238,3 +238,10 @@ This compiler is based on:
 [To be determined]
 
 
+
+TransmissionStatusAccepted
+TransmissionStatusPartiallyAccepted
+TransmissionStatusAllRejected
+TransmissionStatusPartiallyAccepted
+TransmissionStatusRejected
+TransmissionStatusFailed

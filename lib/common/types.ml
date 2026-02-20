@@ -202,10 +202,10 @@ module TypeSystem(Base: BASE) = struct
     let t2 = apply_subst sbs t2 in
     match t1, t2 with
       TVar v1, TVar v2 when Ident.equal v1 v2 -> Some sbs
-    | TVar _, _ | _, TVar _ -> None
     | TMeta v1, TMeta v2 when Ident.equal v1 v2 -> Some sbs
     | TMeta v, t | t, TMeta v ->
         if occurs v t then None else Some (Ident.add v t sbs)
+    | TVar _, _ | _, TVar _ -> None
     | Arrow (a1, b1), Arrow (a2, b2) ->
         Option.bind (unify a1 a2 sbs) (unify b1 b2)
     | Fun (a1, b1), Fun (a2, b2) ->
@@ -499,12 +499,12 @@ module TypeSystem(Base: BASE) = struct
     else Some temp_ctx
 
   (* Check if a constructor is reachable given scrutinee type arguments *)
-  let is_xtor_reachable (ctx: context) (dec: dec) (xtor: xtor) (scrutinee_args: typ list)
+  let is_xtor_reachable (_ctx: context) (dec: dec) (xtor: xtor) (scrutinee_args: typ list)
       : subst option =
     let _, fresh_subst = freshen_meta xtor.quantified in
     let fresh_result = apply_fresh_subst fresh_subst xtor.main in
     let scrutinee_type = Sgn (dec.name, scrutinee_args) in
-    unify fresh_result scrutinee_type ctx.subst
+    unify fresh_result scrutinee_type Ident.emptytbl
 
   (* Check exhaustivity: all reachable constructors must be covered *)
   let check_exhaustive
