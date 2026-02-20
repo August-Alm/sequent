@@ -329,15 +329,21 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
       in
       "new { " ^ branches_str ^ " }"
   
-  | TypedCtor (_, xtor, args, _) ->
+  | TypedCtor (_, xtor, ty_args, args, _) ->
       let name = pp_xtor_name xtor in
+      let ty_args_str = if ty_args = [] then ""
+        else "{" ^ String.concat ", " (List.map (pp_typ ~cfg) ty_args) ^ "}"
+      in
       let args_str = List.map (fun a -> parens (pp_typed_term ~cfg ~lvl a)) args in
-      name ^ String.concat "" args_str
+      name ^ ty_args_str ^ String.concat "" args_str
   
-  | TypedDtor (_, xtor, args, _) ->
+  | TypedDtor (_, xtor, ty_args, args, _) ->
       let name = pp_xtor_name xtor in
+      let ty_args_str = if ty_args = [] then ""
+        else "{" ^ String.concat ", " (List.map (pp_typ ~cfg) ty_args) ^ "}"
+      in
       let args_str = List.map (fun a -> parens (pp_typed_term ~cfg ~lvl a)) args in
-      name ^ String.concat "" args_str
+      name ^ ty_args_str ^ String.concat "" args_str
   
   | TypedIfz (c, t, e, _) ->
       "ifz " ^ pp_typed_term ~cfg ~lvl c ^ " then " ^

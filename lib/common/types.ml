@@ -524,7 +524,6 @@ module type BASE_TRANSLATION = sig
   module B2: BASE
 
   val translate_polarity: B1.polarity -> B2.polarity
-  val translate_chirality: TypeSystem(B1).chiral_typ -> TypeSystem(B2).chiral_typ
   val translate_xtor_arg_type: B1.polarity -> int -> TypeSystem(B1).chiral_typ -> TypeSystem(B2).chiral_typ
 end
 
@@ -550,7 +549,9 @@ module TypeTranslation(BaseTrans: BASE_TRANSLATION) = struct
     { name = x.name
     ; quantified = List.map (fun (v, k) -> (v, translate_type k)) x.quantified
     ; existentials = List.map (fun (v, k) -> (v, translate_type k)) x.existentials
-    ; argument_types = List.mapi (BaseTrans.translate_xtor_arg_type pol) x.argument_types
+    ; argument_types =
+        x.argument_types
+        |> List.mapi (BaseTrans.translate_xtor_arg_type pol)
     ; main = translate_type x.main
     }
   

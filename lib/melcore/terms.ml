@@ -61,8 +61,8 @@ type typed_term =
   | TypedLet of var * typed_term * typed_term * typ
   | TypedMatch of typed_term * typed_clause list * typ
   | TypedNew of typed_clause list * typ
-  | TypedCtor of sym * sym * typed_term list * typ
-  | TypedDtor of sym * sym * typed_term list * typ
+  | TypedCtor of sym * sym * typ list * typed_term list * typ
+  | TypedDtor of sym * sym * typ list * typed_term list * typ
   | TypedIfz of typed_term * typed_term * typed_term * typ
 
 and typed_clause =
@@ -81,8 +81,8 @@ let get_type (tm: typed_term) : typ =
   | TypedLet (_, _, _, ty) -> ty
   | TypedMatch (_, _, ty) -> ty
   | TypedNew (_, ty) -> ty
-  | TypedCtor (_, _, _, ty) -> ty
-  | TypedDtor (_, _, _, ty) -> ty
+  | TypedCtor (_, _, _, _, ty) -> ty
+  | TypedDtor (_, _, _, _, ty) -> ty
   | TypedIfz (_, _, _, ty) -> ty
 
 (** Substitute type variables (Unbound) in all type annotations of a typed term.
@@ -107,10 +107,10 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
       TypedMatch (go scrut, List.map go_clause branches, go_typ ty)
   | TypedNew (branches, ty) ->
       TypedNew (List.map go_clause branches, go_typ ty)
-  | TypedCtor (d, c, args, ty) ->
-      TypedCtor (d, c, List.map go args, go_typ ty)
-  | TypedDtor (d, c, args, ty) ->
-      TypedDtor (d, c, List.map go args, go_typ ty)
+  | TypedCtor (d, c, ty_args, args, ty) ->
+      TypedCtor (d, c, List.map go_typ ty_args, List.map go args, go_typ ty)
+  | TypedDtor (d, c, ty_args, args, ty) ->
+      TypedDtor (d, c, List.map go_typ ty_args, List.map go args, go_typ ty)
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (go cond, go then_br, go else_br, go_typ ty)
 
@@ -429,7 +429,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
           else
             let _, inst_args, inst_main = instantiate_xtor xtor type_args in
             let* (typed_args, sbs) = check_args ctx sbs inst_args term_args in
-            Ok (TypedCtor (dec_name, xtor_name, typed_args, inst_main), inst_main, sbs))
+            Ok (TypedCtor (dec_name, xtor_name, type_args, typed_args, inst_main), inst_main, sbs))
 
   | Dtor (dec_name, xtor_name, type_args, term_args) ->
       let* dec = lookup_dec ctx dec_name in
@@ -463,7 +463,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
                 ; got = List.length term_args })
             else
               let* (typed_args, sbs) = check_args ctx sbs expected_term_types term_args in
-              Ok (TypedDtor (dec_name, xtor_name, typed_args, result_ty), result_ty, sbs))
+              Ok (TypedDtor (dec_name, xtor_name, type_args, typed_args, result_ty), result_ty, sbs))
 
 (** Check a term against an expected type *)
 and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)

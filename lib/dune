@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules simple desugar pcf)
+ (modules simple desugar encode focus pcf)
  (libraries utility common lang melcore core focused cut))

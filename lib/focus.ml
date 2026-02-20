@@ -2,515 +2,897 @@
   Module: Focus
   Description: Translates Core to Focused.
   
-  This transformation canonicalizes Core sequent calculus terms into a focused
-  form where all cuts are between variables (axiom cuts), constructors are
-  bound via Let, and pattern matches become Switch/New.
-  
-  The key insight: every cut ⟨producer | consumer⟩ is analyzed based on the
-  shapes of both sides to determine the focused form:
-  
-  - Var | Var → Axiom (eta-expand if needed)
-  - Ctor | Match → inline the branch (beta reduction)
-  - Ctor | MuRhs → Let binding
-  - MuLhs | Match → New binding
-  - etc.
+  This transformation canonicalizes Core sequent calculus terms into Focused form.
 *)
 
-module Core = Core.Terms
-module Focused = Focused.Terms
-
 open Common.Identifiers
-open Common.Types
+
+module CB = Core.Types.CoreBase
+module CTy = Core.Types.CoreTypes
+module CTm = Core.Terms
+module FB = Focused.Types.FocusedBase
+module FTy = Focused.Types.FocusedTypes
+module FTm = Focused.Terms
 
 (* ========================================================================= *)
-(* Helper Functions                                                          *)
+(* Substitution                                                              *)
 (* ========================================================================= *)
 
-(** Generate fresh variable names for an xtor's arguments *)
-let fresh_params (xtor: xtor) : Ident.t list =
-  List.map (fun _ -> Ident.fresh ()) xtor.arguments
+module Sub = struct
+  (** A substitution is a finite map from identifiers to identifiers *)
+  type t = Ident.t Ident.tbl
 
-(** Find an xtor in a signature by name *)
-let find_xtor (sgn: sgn_typ) (name: Path.t) : xtor option =
-  List.find_opt (fun x -> Path.equal x.name name) sgn.xtors
+  let empty : t = Ident.emptytbl
+
+  let add (x: Ident.t) (y: Ident.t) (s: t) : t =
+    Ident.add x y s
+
+  let apply (s: t) (x: Ident.t) : Ident.t =
+    match Ident.find_opt x s with
+    | Some y -> y
+    | None -> x
+end
 
 (* ========================================================================= *)
-(* Variable Renaming in Core Terms                                           *)
+(* Type Encoding                                                             *)
 (* ========================================================================= *)
 
-(** Rename a variable in a Core term *)
-let rec rename_term (from_v: Ident.t) (to_v: Ident.t) (t: Core.term) : Core.term =
-  let rename = rename_term from_v to_v in
-  let rename_cmd = rename_command from_v to_v in
-  let rename_var v = if Ident.equal v from_v then to_v else v in
+let rec focus_type (t: CTy.typ) : FTy.typ =
   match t with
-    Core.Var v -> Core.Var (rename_var v)
-  | Core.Lit n -> Core.Lit n
-  | Core.Ctor (sgn, xtor, args) -> Core.Ctor (sgn, xtor, List.map rename args)
-  | Core.Dtor (sgn, xtor, args) -> Core.Dtor (sgn, xtor, List.map rename args)
-  | Core.Match (sgn, branches) ->
-      Core.Match (sgn, List.map (rename_branch from_v to_v) branches)
-  | Core.Comatch (sgn, branches) ->
-      Core.Comatch (sgn, List.map (rename_branch from_v to_v) branches)
-  | Core.MuLhs (ty, x, cmd) ->
-      if Ident.equal x from_v then t  (* shadowed *)
-      else Core.MuLhs (ty, x, rename_cmd cmd)
-  | Core.MuRhs (ty, x, cmd) ->
-      if Ident.equal x from_v then t  (* shadowed *)
-      else Core.MuRhs (ty, x, rename_cmd cmd)
+    CTy.Base _ -> FTy.Base FB.Typ
+  | CTy.Arrow (t1, t2) -> FTy.Arrow (focus_type t1, focus_type t2)
+  | CTy.Ext e -> FTy.Ext e
+  | CTy.TVar v -> FTy.TVar v
+  | CTy.TMeta v -> FTy.TMeta v
+  | CTy.Sgn (p, args) -> FTy.Sgn (p, List.map focus_type args)
+  | CTy.PromotedCtor (d, c, args) -> FTy.PromotedCtor (d, c, List.map focus_type args)
+  | CTy.Fun (t1, t2) -> FTy.Fun (focus_type t1, focus_type t2)
+  | CTy.Forall (x, k, body) -> FTy.Forall (x, focus_type k, focus_type body)
+  | CTy.Raise t' -> FTy.Raise (focus_type t')
+  | CTy.Lower t' -> FTy.Lower (focus_type t')
 
-and rename_command (from_v: Ident.t) (to_v: Ident.t) (cmd: Core.command) : Core.command =
-  let rename = rename_term from_v to_v in
-  let rename_cmd = rename_command from_v to_v in
-  match cmd with
-    Core.Cut (ty, lhs, rhs) -> Core.Cut (ty, rename lhs, rename rhs)
-  | Core.Call (path, ty_args, tm_args) -> 
-      Core.Call (path, ty_args, List.map rename tm_args)
-  | Core.Add (t1, t2, t3) -> Core.Add (rename t1, rename t2, rename t3)
-  | Core.Ifz (cond, then_cmd, else_cmd) ->
-      Core.Ifz (rename cond, rename_cmd then_cmd, rename_cmd else_cmd)
-  | Core.End -> Core.End
+let focus_xtor (x: CTy.xtor) : FTy.xtor =
+  let focus_xtor_arg (ty: CTy.chiral_typ) : FTy.chiral_typ =
+    match ty with
+      CB.Prd t -> FB.Prd (focus_type t)
+    | CB.Cns t -> FB.Cns (focus_type t)
+  in
+  { name = x.name
+  ; quantified = List.map (fun (v, k) -> (v, focus_type k)) x.quantified
+  ; existentials = List.map (fun (v, k) -> (v, focus_type k)) x.existentials
+  ; argument_types = List.map focus_xtor_arg x.argument_types
+  ; main = focus_type x.main
+  }
 
-and rename_branch (from_v: Ident.t) (to_v: Ident.t) 
-    ((xtor, vars, cmd): Core.branch) : Core.branch =
-  if List.exists (Ident.equal from_v) vars then
-    (xtor, vars, cmd)  (* shadowed *)
-  else
-    (xtor, vars, rename_command from_v to_v cmd)
+let focus_dec (d: CTy.dec) : FTy.dec =
+  { name = d.name
+  ; polarity = FB.Typ
+  ; param_kinds = List.map focus_type d.param_kinds
+  ; xtors = List.map focus_xtor d.xtors
+  }
+
+let focus_chiral (ct: CTy.chiral_typ) : FTy.chiral_typ =
+  match ct with
+    CB.Prd t -> FB.Prd (focus_type t)
+  | CB.Cns t -> FB.Cns (focus_type t)
 
 (* ========================================================================= *)
-(* Term Binding: Convert Core.term to variable + Focused prefix              *)
+(* Target Language                                                           *)
 (* ========================================================================= *)
 
-(** Bind a Core term to a fresh variable, building Focused commands.
-    Returns: a function that takes a continuation and produces a command
-    where the bound variable is available. *)
-let rec bind_term (t: Core.term) (k: Ident.t -> Focused.command) : Focused.command =
-  match t with
-    Core.Var x -> k x
-  | Core.Lit n ->
-      let v = Ident.fresh () in
-      Focused.Lit (n, v, k v)
-  | Core.Ctor (_sgn, xtor, args) ->
-      bind_terms args (fun arg_vars ->
+(**
+  Intermediate representation for focusing.
+  
+  This is analogous to simple.ml's Target module, but generalized for
+  polymorphic types. The key distinctions:
+  
+  - LetCtor/LetDtor: bind a producer/consumer from an xtor application
+  - LetMatch/LetComatch: bind a result from building a pattern/copattern
+  - CutCtor/CutDtor: invoke an xtor against a continuation
+  - CutMatch/CutComatch: invoke a pattern/copattern against a value
+  
+  Built-in types (Fun, Forall, Raise, Lower) have their own variants.
+*)
+module Target = struct
+
+  type command =
+    (* User-defined xtors *)
+    | LetCtor of Path.t * Path.t * FTy.typ list * Ident.t list * Ident.t * command
+    | LetDtor of Path.t * Path.t * FTy.typ list * Ident.t list * Ident.t * command
+    | LetMatch of Path.t * branch list * Ident.t * command
+    | LetComatch of Path.t * branch list * Ident.t * command
+    | CutCtor of Path.t * Path.t * FTy.typ list * Ident.t list * Ident.t
+    | CutDtor of Path.t * Path.t * FTy.typ list * Ident.t * Ident.t list
+    | CutMatch of Path.t * Ident.t * branch list
+    | CutComatch of Path.t * branch list * Ident.t
+    (* Built-in Fun type *)
+    | LetApply of FTy.typ * FTy.typ * Ident.t * Ident.t * Ident.t * command
+    | LetNewFun of FTy.typ * FTy.typ * Ident.t * Ident.t * command * Ident.t * command
+    | CutApply of FTy.typ * FTy.typ * Ident.t * Ident.t * Ident.t
+    | CutNewFun of FTy.typ * FTy.typ * Ident.t * Ident.t * command * Ident.t
+    (* Built-in Forall type *)
+    | LetInstantiate of Ident.t * FTy.typ * FTy.typ * Ident.t * command
+    | LetNewForall of Ident.t * FTy.typ * FTy.typ * command * Ident.t * command
+    | CutInstantiate of Ident.t * FTy.typ * FTy.typ * Ident.t
+    | CutNewForall of Ident.t * FTy.typ * FTy.typ * command * Ident.t
+    (* Built-in Raise type *)
+    | LetThunk of FTy.typ * Ident.t * Ident.t * command
+    | LetMatchRaise of FTy.typ * Ident.t * command * Ident.t * command
+    | CutThunk of FTy.typ * Ident.t * Ident.t
+    | CutMatchRaise of FTy.typ * Ident.t * Ident.t * command
+    (* Built-in Lower type *)
+    | LetReturn of FTy.typ * Ident.t * Ident.t * command
+    | LetNewLower of FTy.typ * Ident.t * command * Ident.t * command
+    | CutReturn of FTy.typ * Ident.t * Ident.t
+    | CutNewLower of FTy.typ * Ident.t * command * Ident.t
+    (* Primitives *)
+    | LetInt of int * Ident.t * command
+    | CutInt of Ident.t * Ident.t
+    | Add of Ident.t * Ident.t * Ident.t * command
+    | Ifz of Ident.t * command * command
+    | Call of Path.t * FTy.typ list * Ident.t list
+    (* Terminals *)
+    | Ret of FTy.typ * Ident.t
+    | End
+
+  and branch = Path.t * Ident.t list * Ident.t list * command
+
+  (** Apply renaming to a command *)
+  let rec rename_command (h: Sub.t) : command -> command = function
+    | LetCtor (d, c, tys, args, x, cont) ->
+        let x' = Ident.fresh () in
+        LetCtor (d, c, tys, List.map (Sub.apply h) args, x',
+          rename_command (Sub.add x x' h) cont)
+    | LetDtor (d, c, tys, args, a, cont) ->
+        let a' = Ident.fresh () in
+        LetDtor (d, c, tys, List.map (Sub.apply h) args, a',
+          rename_command (Sub.add a a' h) cont)
+    | LetMatch (d, branches, x, cont) ->
+        let x' = Ident.fresh () in
+        LetMatch (d, List.map (rename_branch h) branches, x',
+          rename_command (Sub.add x x' h) cont)
+    | LetComatch (d, branches, a, cont) ->
+        let a' = Ident.fresh () in
+        LetComatch (d, List.map (rename_branch h) branches, a',
+          rename_command (Sub.add a a' h) cont)
+    | CutCtor (d, c, tys, args, a) ->
+        CutCtor (d, c, tys, List.map (Sub.apply h) args, Sub.apply h a)
+    | CutDtor (d, c, tys, x, args) ->
+        CutDtor (d, c, tys, Sub.apply h x, List.map (Sub.apply h) args)
+    | CutMatch (d, x, branches) ->
+        CutMatch (d, Sub.apply h x, List.map (rename_branch h) branches)
+    | CutComatch (d, branches, a) ->
+        CutComatch (d, List.map (rename_branch h) branches, Sub.apply h a)
+    (* Built-in Fun *)
+    | LetApply (t1, t2, x, y, v, cont) ->
+        let v' = Ident.fresh () in
+        LetApply (t1, t2, Sub.apply h x, Sub.apply h y, v',
+          rename_command (Sub.add v v' h) cont)
+    | LetNewFun (t1, t2, x, k, body, v, cont) ->
+        let x' = Ident.fresh () in
+        let k' = Ident.fresh () in
+        let v' = Ident.fresh () in
+        LetNewFun (t1, t2, x', k', rename_command (Sub.add x x' (Sub.add k k' h)) body, v',
+          rename_command (Sub.add v v' h) cont)
+    | CutApply (t1, t2, x, y, a) ->
+        CutApply (t1, t2, Sub.apply h x, Sub.apply h y, Sub.apply h a)
+    | CutNewFun (t1, t2, x, k, body, a) ->
+        let x' = Ident.fresh () in
+        let k' = Ident.fresh () in
+        CutNewFun (t1, t2, x', k', rename_command (Sub.add x x' (Sub.add k k' h)) body,
+          Sub.apply h a)
+    (* Built-in Forall *)
+    | LetInstantiate (a, k, ty, v, cont) ->
+        let v' = Ident.fresh () in
+        LetInstantiate (a, k, ty, v', rename_command (Sub.add v v' h) cont)
+    | LetNewForall (a, k, ty, body, v, cont) ->
+        let a' = Ident.fresh () in
+        let v' = Ident.fresh () in
+        LetNewForall (a', k, ty, rename_command (Sub.add a a' h) body, v',
+          rename_command (Sub.add v v' h) cont)
+    | CutInstantiate (a, k, ty, v) ->
+        CutInstantiate (a, k, ty, Sub.apply h v)
+    | CutNewForall (a, k, ty, body, v) ->
+        let a' = Ident.fresh () in
+        CutNewForall (a', k, ty, rename_command (Sub.add a a' h) body, Sub.apply h v)
+    (* Built-in Raise *)
+    | LetThunk (t, x, v, cont) ->
+        let v' = Ident.fresh () in
+        LetThunk (t, Sub.apply h x, v', rename_command (Sub.add v v' h) cont)
+    | LetMatchRaise (t, x, body, v, cont) ->
+        let x' = Ident.fresh () in
+        let v' = Ident.fresh () in
+        LetMatchRaise (t, x', rename_command (Sub.add x x' h) body, v',
+          rename_command (Sub.add v v' h) cont)
+    | CutThunk (t, x, a) ->
+        CutThunk (t, Sub.apply h x, Sub.apply h a)
+    | CutMatchRaise (t, x, a, body) ->
+        let x' = Ident.fresh () in
+        CutMatchRaise (t, x', Sub.apply h a, rename_command (Sub.add x x' h) body)
+    (* Built-in Lower *)
+    | LetReturn (t, x, v, cont) ->
+        let v' = Ident.fresh () in
+        LetReturn (t, Sub.apply h x, v', rename_command (Sub.add v v' h) cont)
+    | LetNewLower (t, k, body, v, cont) ->
+        let k' = Ident.fresh () in
+        let v' = Ident.fresh () in
+        LetNewLower (t, k', rename_command (Sub.add k k' h) body, v',
+          rename_command (Sub.add v v' h) cont)
+    | CutReturn (t, x, a) ->
+        CutReturn (t, Sub.apply h x, Sub.apply h a)
+    | CutNewLower (t, k, body, a) ->
+        let k' = Ident.fresh () in
+        CutNewLower (t, k', rename_command (Sub.add k k' h) body, Sub.apply h a)
+    (* Primitives *)
+    | LetInt (n, x, cont) ->
+        let x' = Ident.fresh () in
+        LetInt (n, x', rename_command (Sub.add x x' h) cont)
+    | CutInt (x, a) ->
+        CutInt (Sub.apply h x, Sub.apply h a)
+    | Add (x, y, k, cont) ->
+        let k' = Ident.fresh () in
+        Add (Sub.apply h x, Sub.apply h y, k', rename_command (Sub.add k k' h) cont)
+    | Ifz (v, s1, s2) ->
+        Ifz (Sub.apply h v, rename_command h s1, rename_command h s2)
+    | Call (p, tys, args) ->
+        Call (p, tys, List.map (Sub.apply h) args)
+    | Ret (ty, x) -> Ret (ty, Sub.apply h x)
+    | End -> End
+
+  and rename_branch (h: Sub.t) ((xtor, ty_vars, tm_vars, body): branch) : branch =
+    let tm_vars' = List.map (fun _ -> Ident.fresh ()) tm_vars in
+    let h' = List.fold_left2 (fun acc p p' -> Sub.add p p' acc) h tm_vars tm_vars' in
+    (xtor, ty_vars, tm_vars', rename_command h' body)
+
+  (** Lookup and inline the body of a branch by xtor name *)
+  let lookup_branch_body (branches: branch list) (xtor: Path.t)
+      (arg_vars: Ident.t list) : command =
+    match List.find_opt (fun (name, _, _, _) -> Path.equal name xtor) branches with
+    | Some (_, _, params, body) ->
+        let sub = List.fold_left2 (fun acc p v -> Sub.add p v acc)
+                    Sub.empty params arg_vars in
+        rename_command sub body
+    | None -> End
+end
+
+(* ========================================================================= *)
+(* Transformation: Core → Target                                             *)
+(* ========================================================================= *)
+
+module Transform = struct
+
+  (** Generate fresh parameter names *)
+  let fresh_params (ps: 'a list) : Ident.t list =
+    List.map (fun _ -> Ident.fresh ()) ps
+
+  (** Transform Core branches to Target branches *)
+  let rec transform_branches (branches: CTm.branch list) (h: Sub.t) : Target.branch list =
+    List.map (fun (xtor, ty_vars, tm_vars, body) ->
+      let tm_vars' = fresh_params tm_vars in
+      let h' = List.fold_left2 (fun acc p p' -> Sub.add p p' acc) h tm_vars tm_vars' in
+      (xtor, ty_vars, tm_vars', transform_command body h')
+    ) branches
+
+  (** Bind a single term, calling continuation with the resulting variable *)
+  and bind_term (term: CTm.term) (h: Sub.t)
+      (k: Ident.t -> Target.command) : Target.command =
+    match term with
+    | CTm.Var x ->
+        k (Sub.apply h x)
+
+    | CTm.Ctor (d, c, tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          let x = Ident.fresh () in
+          Target.LetCtor (d, c, List.map focus_type tys, arg_vars, x, k x))
+
+    | CTm.Dtor (d, c, tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          let a = Ident.fresh () in
+          Target.LetDtor (d, c, List.map focus_type tys, arg_vars, a, k a))
+
+    | CTm.Match (d, bs) ->
+        let x = Ident.fresh () in
+        Target.LetMatch (d, transform_branches bs h, x, k x)
+
+    | CTm.Comatch (d, bs) ->
+        let a = Ident.fresh () in
+        Target.LetComatch (d, transform_branches bs h, a, k a)
+
+    | CTm.MuPrd (ty, x, s) ->
+        (* μP(x, s) as a term: builds the xtor table for the type *)
+        transform_mu_prd ty x s h k
+
+    | CTm.MuCns (ty, a, s) ->
+        (* μC(a, s) as a term: builds the xtor table for the type *)
+        transform_mu_cns ty a s h k
+
+    | CTm.NewFun (t1, t2, x, kv, body) ->
+        let t1' = focus_type t1 in
+        let t2' = focus_type t2 in
+        let a = Ident.fresh () in
+        let x' = Ident.fresh () in
+        let kv' = Ident.fresh () in
+        Target.LetNewFun (t1', t2', x', kv',
+          transform_command body (Sub.add x x' (Sub.add kv kv' h)),
+          a, k a)
+
+    | CTm.ApplyDtor (t1, t2, arg, ret) ->
+        let t1' = focus_type t1 in
+        let t2' = focus_type t2 in
+        bind_term arg h (fun arg_var ->
+          bind_term ret h (fun ret_var ->
+            let a = Ident.fresh () in
+            Target.LetApply (t1', t2', arg_var, ret_var, a, k a)))
+
+    | CTm.NewForall (a, knd, ty, body) ->
+        let knd' = focus_type knd in
+        let ty' = focus_type ty in
         let v = Ident.fresh () in
-        Focused.Let (v, xtor, arg_vars, k v))
-  | Core.Dtor (_sgn, xtor, args) ->
-      (* Destructors also become Let bindings in focused form *)
-      bind_terms args (fun arg_vars ->
+        let a' = Ident.fresh () in
+        Target.LetNewForall (a', knd', ty',
+          transform_command body (Sub.add a a' h),
+          v, k v)
+
+    | CTm.InstantiateDtor ty_arg ->
+        let ty_arg' = focus_type ty_arg in
+        let a = Ident.fresh () in
+        (* InstantiateDtor needs special handling - it's just a destructor term *)
+        Target.LetInstantiate (a, ty_arg', ty_arg', a, k a)
+
+    | CTm.ThunkCtor (t, inner) ->
+        let t' = focus_type t in
+        bind_term inner h (fun inner_var ->
+          let v = Ident.fresh () in
+          Target.LetThunk (t', inner_var, v, k v))
+
+    | CTm.MatchRaise (t, x, body) ->
+        let t' = focus_type t in
         let v = Ident.fresh () in
-        Focused.Let (v, xtor, arg_vars, k v))
-  | Core.Match (sgn, branches) ->
-      (* Match becomes New: creates a consumer *)
-      let v = Ident.fresh () in
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.New (sgn, v, focused_branches, k v)
-  | Core.Comatch (sgn, branches) ->
-      (* Comatch also becomes New in focused form *)
-      let v = Ident.fresh () in
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.New (sgn, v, focused_branches, k v)
-  | Core.MuLhs (ty, x, cmd) ->
-      (* MuLhs binds a continuation x and produces a value.
-         We transform the body and the result becomes available. *)
-      bind_mu ty x cmd k
-  | Core.MuRhs (ty, x, cmd) ->
-      (* MuRhs binds a producer x and produces a consumer. *)
-      bind_mu ty x cmd k
+        let x' = Ident.fresh () in
+        Target.LetMatchRaise (t', x',
+          transform_command body (Sub.add x x' h),
+          v, k v)
 
-(** Bind multiple terms in sequence *)
-and bind_terms (ts: Core.term list) (k: Ident.t list -> Focused.command) : Focused.command =
-  match ts with
-    [] -> k []
-  | t :: rest ->
-      bind_term t (fun v ->
-        bind_terms rest (fun vs -> k (v :: vs)))
+    | CTm.NewLower (t, kv, body) ->
+        let t' = focus_type t in
+        let v = Ident.fresh () in
+        let kv' = Ident.fresh () in
+        Target.LetNewLower (t', kv',
+          transform_command body (Sub.add kv kv' h),
+          v, k v)
 
-(** Handle Mu bindings *)
-and bind_mu (ty: typ) (x: Ident.t) (cmd: Core.command) (k: Ident.t -> Focused.command) : Focused.command =
-  match whnf Ident.emptytbl [] ty with
-    Sgn sgn ->
-      (* For signature types: create New with a forwarding branch.
-         The body of the mu becomes the continuation. *)
-      let bound = Ident.fresh () in
-      let params = fresh_params (List.hd sgn.xtors) in  (* Single xtor for primitives *)
-      let fwd_branch = 
-        (List.hd sgn.xtors, params, Focused.Let (bound, List.hd sgn.xtors, params, k bound))
-      in
-      Focused.New (sgn, x, [fwd_branch], transform_command cmd)
-  | Ext Int ->
-      (* For Int: the body produces a value that jumps to x.
-         Transform body and replace axioms to x with continuation. *)
-      let bound = Ident.fresh () in
-      let body' = transform_command (rename_command x bound cmd) in
-      replace_int_ret bound body' k
-  | _ ->
-      failwith "bind_mu: unsupported type"
+    | CTm.ReturnDtor (t, arg) ->
+        let t' = focus_type t in
+        bind_term arg h (fun arg_var ->
+          let a = Ident.fresh () in
+          Target.LetReturn (t', arg_var, a, k a))
 
-(** Replace Ret/Axiom targeting a variable with continuation application *)
-and replace_int_ret (target: Ident.t) (cmd: Focused.command) 
-    (k: Ident.t -> Focused.command) : Focused.command =
-  match cmd with
-    Focused.Axiom (_ty, v, dest) when Ident.equal dest target ->
-      k v
-  | Focused.Axiom (ty, v, dest) -> Focused.Axiom (ty, v, dest)
-  | Focused.Let (x, xtor, args, body) ->
-      Focused.Let (x, xtor, args, replace_int_ret target body k)
-  | Focused.Switch (sgn, x, branches) ->
-      let branches' = List.map (fun (xtor, vars, body) ->
-        (xtor, vars, replace_int_ret target body k)
-      ) branches in
-      Focused.Switch (sgn, x, branches')
-  | Focused.New (sgn, x, branches, body) ->
-      let branches' = List.map (fun (xtor, vars, branch_body) ->
-        (xtor, vars, replace_int_ret target branch_body k)
-      ) branches in
-      Focused.New (sgn, x, branches', replace_int_ret target body k)
-  | Focused.Invoke (x, xtor, args) -> Focused.Invoke (x, xtor, args)
-  | Focused.Lit (n, x, body) ->
-      Focused.Lit (n, x, replace_int_ret target body k)
-  | Focused.Add (a, b, r, body) ->
-      Focused.Add (a, b, r, replace_int_ret target body k)
-  | Focused.Ifz (x, then_cmd, else_cmd) ->
-      Focused.Ifz (x, replace_int_ret target then_cmd k,
-                      replace_int_ret target else_cmd k)
-  | Focused.End -> Focused.End
-  | Focused.Ret (ty, v) -> Focused.Ret (ty, v)
+    | CTm.Lit n ->
+        let x = Ident.fresh () in
+        Target.LetInt (n, x, k x)
+
+  (** Transform MuPrd: builds appropriate xtor table for the type *)
+  and transform_mu_prd (ty: CTy.typ) (x: Ident.t) (s: CTm.command) (h: Sub.t)
+      (k: Ident.t -> Target.command) : Target.command =
+    let _ty' = focus_type ty in
+    match ty with
+    | CTy.Sgn (d, _) ->
+        (* For a signature type, we build a match with all branches *)
+        let _bound = Ident.fresh () in
+        Target.LetMatch (d,
+          [(* TODO: need to look up dec to build branches *)],
+          x,
+          transform_command s (Sub.add x x h))
+
+    | CTy.Fun (t1, t2) ->
+        let t1' = focus_type t1 in
+        let t2' = focus_type t2 in
+        let bound = Ident.fresh () in
+        let arg = Ident.fresh () in
+        let ret = Ident.fresh () in
+        let inner = Target.LetApply (t1', t2', arg, ret, bound, k bound) in
+        Target.LetNewFun (t1', t2', arg, ret, inner, x,
+          transform_command s (Sub.add x x h))
+
+    | CTy.Raise t ->
+        let t' = focus_type t in
+        let bound = Ident.fresh () in
+        let inner = Ident.fresh () in
+        Target.LetMatchRaise (t', inner,
+          Target.LetThunk (t', inner, bound, k bound),
+          x,
+          transform_command s (Sub.add x x h))
+
+    | _ ->
+        (* For other types, just transform the body *)
+        let x' = Ident.fresh () in
+        Target.LetInt (0, x', (* placeholder *)
+          transform_command s (Sub.add x x' h))
+
+  (** Transform MuCns: builds appropriate xtor table for the type *)
+  and transform_mu_cns (ty: CTy.typ) (a: Ident.t) (s: CTm.command) (h: Sub.t)
+      (k: Ident.t -> Target.command) : Target.command =
+    let _ty' = focus_type ty in
+    match ty with
+    | CTy.Sgn (d, _) ->
+        let _bound = Ident.fresh () in
+        Target.LetComatch (d,
+          [],  (* TODO: need to look up dec to build branches *)
+          a,
+          transform_command s (Sub.add a a h))
+
+    | CTy.Fun (t1, t2) ->
+        let t1' = focus_type t1 in
+        let t2' = focus_type t2 in
+        let bound = Ident.fresh () in
+        let arg = Ident.fresh () in
+        let ret = Ident.fresh () in
+        let a' = Ident.fresh () in
+        let inner_body = Target.LetApply (t1', t2', arg, ret, a',
+          transform_command s (Sub.add a a' h)) in
+        Target.LetNewFun (t1', t2', arg, ret, inner_body, bound, k bound)
+
+    | CTy.Lower t ->
+        let t' = focus_type t in
+        let bound = Ident.fresh () in
+        let inner = Ident.fresh () in
+        Target.LetNewLower (t', inner,
+          Target.LetReturn (t', inner, bound, k bound),
+          a,
+          transform_command s (Sub.add a a h))
+
+    | _ ->
+        let a' = Ident.fresh () in
+        Target.LetInt (0, a',
+          transform_command s (Sub.add a a' h))
+
+  (** Bind multiple terms *)
+  and bind_terms (terms: CTm.term list) (h: Sub.t)
+      (k: Ident.t list -> Target.command) : Target.command =
+    match terms with
+    | [] -> k []
+    | t :: rest ->
+        bind_term t h (fun v ->
+          bind_terms rest h (fun vs -> k (v :: vs)))
+
+  (** Main transformation function *)
+  and transform_command (cmd: CTm.command) (h: Sub.t) : Target.command =
+    match cmd with
+    (* Cut at a signature type *)
+    | CTm.Cut (CTy.Sgn (d, _) as ty, lhs, rhs) ->
+        transform_cut_sgn d ty lhs rhs h
+
+    (* Cut at Fun type *)
+    | CTm.Cut (CTy.Fun (t1, t2), lhs, rhs) ->
+        transform_cut_fun t1 t2 lhs rhs h
+
+    (* Cut at Forall type *)
+    | CTm.Cut (CTy.Forall (a, k, body), lhs, rhs) ->
+        transform_cut_forall a k body lhs rhs h
+
+    (* Cut at Raise type *)
+    | CTm.Cut (CTy.Raise t, lhs, rhs) ->
+        transform_cut_raise t lhs rhs h
+
+    (* Cut at Lower type *)
+    | CTm.Cut (CTy.Lower t, lhs, rhs) ->
+        transform_cut_lower t lhs rhs h
+
+    (* Cut at Ext type (e.g., Int) *)
+    | CTm.Cut (CTy.Ext _, lhs, rhs) ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            Target.CutInt (lhs_var, rhs_var)))
+
+    (* Other cuts - fallback *)
+    | CTm.Cut (_, lhs, rhs) ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            Target.CutInt (lhs_var, rhs_var)))
+
+    | CTm.Call (path, tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          Target.Call (path, List.map focus_type tys, arg_vars))
+
+    | CTm.Add (m, n, k) ->
+        bind_term m h (fun m_var ->
+          bind_term n h (fun n_var ->
+            bind_term k h (fun k_var ->
+              let res = Ident.fresh () in
+              Target.Add (m_var, n_var, res,
+                Target.CutInt (res, k_var)))))
+
+    | CTm.Ifz (cond, s1, s2) ->
+        bind_term cond h (fun cond_var ->
+          Target.Ifz (cond_var, transform_command s1 h, transform_command s2 h))
+
+    | CTm.End -> Target.End
+
+  (** Transform cut at signature type *)
+  and transform_cut_sgn (d: Path.t) (_ty: CTy.typ) (lhs: CTm.term) (rhs: CTm.term)
+      (h: Sub.t) : Target.command =
+    match lhs, rhs with
+    | CTm.Var x, CTm.Var _y ->
+        (* ⟨x | y⟩ at Sgn: need to match on x and invoke y for each branch *)
+        (* For now, simplified: *)
+        Target.CutMatch (d, Sub.apply h x, [])
+
+    | CTm.Var x, CTm.Match (_, bs) ->
+        Target.CutMatch (d, Sub.apply h x, transform_branches bs h)
+
+    | CTm.Var x, CTm.MuCns (_, a, r) ->
+        transform_command r (Sub.add a (Sub.apply h x) h)
+
+    | CTm.Ctor (_, c, tys, args), CTm.Var y ->
+        bind_terms args h (fun arg_vars ->
+          Target.CutCtor (d, c, List.map focus_type tys, arg_vars, Sub.apply h y))
+
+    | CTm.Ctor (_, c, _tys, args), CTm.Match (_, bs) ->
+        bind_terms args h (fun arg_vars ->
+          Target.lookup_branch_body (transform_branches bs h) c arg_vars)
+
+    | CTm.Ctor (_, c, tys, args), CTm.MuCns (_, a, r) ->
+        bind_terms args h (fun arg_vars ->
+          let a' = Ident.fresh () in
+          Target.LetCtor (d, c, List.map focus_type tys, arg_vars, a',
+            transform_command r (Sub.add a a' h)))
+
+    | CTm.MuPrd (_, x, s), CTm.Var y ->
+        transform_command s (Sub.add x (Sub.apply h y) h)
+
+    | CTm.MuPrd (_, x, s), CTm.Match (_, bs) ->
+        let x' = Ident.fresh () in
+        Target.LetMatch (d, transform_branches bs h, x',
+          transform_command s (Sub.add x x' h))
+
+    | CTm.MuPrd (_, x, s), CTm.MuCns (_, _a, _r) ->
+        let x' = Ident.fresh () in
+        Target.LetMatch (d,
+          (* Build branches that construct and pass to r *)
+          [],
+          x',
+          transform_command s (Sub.add x x' h))
+
+    | CTm.Comatch (_, bs), CTm.Var y ->
+        Target.CutComatch (d, transform_branches bs h, Sub.apply h y)
+
+    | CTm.Comatch (_, bs), CTm.Dtor (_, c, _tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          Target.lookup_branch_body (transform_branches bs h) c arg_vars)
+
+    | CTm.Comatch (_, bs), CTm.MuCns (_, a, r) ->
+        let a' = Ident.fresh () in
+        Target.LetComatch (d, transform_branches bs h, a',
+          transform_command r (Sub.add a a' h))
+
+    | CTm.MuPrd (_, x, s), CTm.Dtor (_, c, tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          let x' = Ident.fresh () in
+          Target.LetDtor (d, c, List.map focus_type tys, arg_vars, x',
+            transform_command s (Sub.add x x' h)))
+
+    | CTm.Var x, CTm.Dtor (_, c, tys, args) ->
+        bind_terms args h (fun arg_vars ->
+          Target.CutDtor (d, c, List.map focus_type tys, Sub.apply h x, arg_vars))
+
+    | _ ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun _rhs_var ->
+            Target.CutMatch (d, lhs_var, [])))
+
+  (** Transform cut at Fun type *)
+  and transform_cut_fun (t1: CTy.typ) (t2: CTy.typ) (lhs: CTm.term) (rhs: CTm.term)
+      (h: Sub.t) : Target.command =
+    let t1' = focus_type t1 in
+    let t2' = focus_type t2 in
+    match lhs, rhs with
+    | CTm.Var x, CTm.Var y ->
+        let arg = Ident.fresh () in
+        let ret = Ident.fresh () in
+        Target.CutNewFun (t1', t2', arg, ret,
+          Target.CutApply (t1', t2', arg, ret, Sub.apply h x),
+          Sub.apply h y)
+
+    | CTm.Var x, CTm.ApplyDtor (_, _, arg, ret) ->
+        bind_term arg h (fun arg_var ->
+          bind_term ret h (fun ret_var ->
+            Target.CutApply (t1', t2', arg_var, ret_var, Sub.apply h x)))
+
+    | CTm.Var x, CTm.MuCns (_, a, r) ->
+        transform_command r (Sub.add a (Sub.apply h x) h)
+
+    | CTm.NewFun (_, _, x, k, body), CTm.Var y ->
+        let x' = Ident.fresh () in
+        let k' = Ident.fresh () in
+        Target.CutNewFun (t1', t2', x', k',
+          transform_command body (Sub.add x x' (Sub.add k k' h)),
+          Sub.apply h y)
+
+    | CTm.NewFun (_, _, x, kv, body), CTm.ApplyDtor (_, _, arg, ret) ->
+        bind_term arg h (fun arg_var ->
+          bind_term ret h (fun ret_var ->
+            let h' = Sub.add x arg_var (Sub.add kv ret_var h) in
+            transform_command body h'))
+
+    | CTm.NewFun (_, _, x, kv, body), CTm.MuCns (_, a, r) ->
+        let x' = Ident.fresh () in
+        let kv' = Ident.fresh () in
+        let a' = Ident.fresh () in
+        let inner_body = transform_command body (Sub.add x x' (Sub.add kv kv' h)) in
+        Target.LetNewFun (t1', t2', x', kv', inner_body, a',
+          transform_command r (Sub.add a a' h))
+
+    | CTm.MuPrd (_, x, s), CTm.Var y ->
+        transform_command s (Sub.add x (Sub.apply h y) h)
+
+    | CTm.MuPrd (_, x, s), CTm.ApplyDtor (_, _, arg, ret) ->
+        bind_term arg h (fun arg_var ->
+          bind_term ret h (fun ret_var ->
+            let x' = Ident.fresh () in
+            Target.LetApply (t1', t2', arg_var, ret_var, x',
+              transform_command s (Sub.add x x' h))))
+
+    | CTm.MuPrd (_, x, s), CTm.MuCns (_, a, r) ->
+        let arg = Ident.fresh () in
+        let ret = Ident.fresh () in
+        let a' = Ident.fresh () in
+        let x' = Ident.fresh () in
+        let inner_body = Target.LetApply (t1', t2', arg, ret, a',
+            transform_command r (Sub.add a a' h)) in
+        Target.LetNewFun (t1', t2', arg, ret, inner_body, x',
+          transform_command s (Sub.add x x' h))
+
+    | _ ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            let arg = Ident.fresh () in
+            let ret = Ident.fresh () in
+            Target.CutNewFun (t1', t2', arg, ret,
+              Target.CutApply (t1', t2', arg, ret, lhs_var),
+              rhs_var)))
+
+  (** Transform cut at Forall type *)
+  and transform_cut_forall (a: Ident.t) (k: CTy.typ) (body: CTy.typ)
+      (lhs: CTm.term) (rhs: CTm.term) (h: Sub.t) : Target.command =
+    let k' = focus_type k in
+    let body' = focus_type body in
+    match lhs, rhs with
+    | CTm.Var x, CTm.Var y ->
+        let a' = Ident.fresh () in
+        Target.CutNewForall (a', k', body',
+          Target.CutInstantiate (a', k', body', Sub.apply h x),
+          Sub.apply h y)
+
+    | CTm.Var x, CTm.InstantiateDtor ty_arg ->
+        let ty_arg' = focus_type ty_arg in
+        Target.CutInstantiate (a, ty_arg', body', Sub.apply h x)
+
+    | CTm.Var x, CTm.MuCns (_, av, r) ->
+        transform_command r (Sub.add av (Sub.apply h x) h)
+
+    | CTm.NewForall (_, _, _, cmd), CTm.InstantiateDtor _ty_arg ->
+        (* Substitute type argument into body *)
+        transform_command cmd h
+
+    | CTm.NewForall (av, _, _, cmd), CTm.MuCns (_, bv, r) ->
+        let v = Ident.fresh () in
+        let av' = Ident.fresh () in
+        Target.LetNewForall (av', k', body',
+          transform_command cmd (Sub.add av av' h),
+          v,
+          transform_command r (Sub.add bv v h))
+
+    | CTm.MuPrd (_, x, s), CTm.Var y ->
+        transform_command s (Sub.add x (Sub.apply h y) h)
+
+    | _ ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            let a' = Ident.fresh () in
+            Target.CutNewForall (a', k', body',
+              Target.CutInstantiate (a', k', body', lhs_var),
+              rhs_var)))
+
+  (** Transform cut at Raise type *)
+  and transform_cut_raise (t: CTy.typ) (lhs: CTm.term) (rhs: CTm.term)
+      (h: Sub.t) : Target.command =
+    let t' = focus_type t in
+    match lhs, rhs with
+    | CTm.Var x, CTm.Var y ->
+        let inner = Ident.fresh () in
+        Target.CutMatchRaise (t', inner, Sub.apply h y,
+          Target.CutThunk (t', inner, Sub.apply h x))
+
+    | CTm.Var x, CTm.MatchRaise (_, v, body) ->
+        let v' = Ident.fresh () in
+        Target.CutMatchRaise (t', v', Sub.apply h x,
+          transform_command body (Sub.add v v' h))
+
+    | CTm.Var x, CTm.MuCns (_, a, r) ->
+        transform_command r (Sub.add a (Sub.apply h x) h)
+
+    | CTm.ThunkCtor (_, inner), CTm.Var y ->
+        bind_term inner h (fun inner_var ->
+          Target.CutThunk (t', inner_var, Sub.apply h y))
+
+    | CTm.ThunkCtor (_, inner), CTm.MatchRaise (_, v, body) ->
+        bind_term inner h (fun inner_var ->
+          transform_command body (Sub.add v inner_var h))
+
+    | CTm.ThunkCtor (_, inner), CTm.MuCns (_, a, r) ->
+        bind_term inner h (fun inner_var ->
+          let a' = Ident.fresh () in
+          Target.LetThunk (t', inner_var, a',
+            transform_command r (Sub.add a a' h)))
+
+    | CTm.MuPrd (_, x, s), CTm.Var y ->
+        transform_command s (Sub.add x (Sub.apply h y) h)
+
+    | CTm.MuPrd (_, x, s), CTm.MatchRaise (_, v, body) ->
+        let x' = Ident.fresh () in
+        let v' = Ident.fresh () in
+        Target.LetMatchRaise (t', v',
+          transform_command body (Sub.add v v' h),
+          x',
+          transform_command s (Sub.add x x' h))
+
+    | _ ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            let inner = Ident.fresh () in
+            Target.CutMatchRaise (t', inner, rhs_var,
+              Target.CutThunk (t', inner, lhs_var))))
+
+  (** Transform cut at Lower type *)
+  and transform_cut_lower (t: CTy.typ) (lhs: CTm.term) (rhs: CTm.term)
+      (h: Sub.t) : Target.command =
+    let t' = focus_type t in
+    match lhs, rhs with
+    | CTm.Var x, CTm.Var y ->
+        let inner = Ident.fresh () in
+        Target.CutNewLower (t', inner,
+          Target.CutReturn (t', inner, Sub.apply h x),
+          Sub.apply h y)
+
+    | CTm.Var x, CTm.ReturnDtor (_, arg) ->
+        bind_term arg h (fun arg_var ->
+          Target.CutReturn (t', arg_var, Sub.apply h x))
+
+    | CTm.Var x, CTm.MuCns (_, a, r) ->
+        transform_command r (Sub.add a (Sub.apply h x) h)
+
+    | CTm.NewLower (_, k, body), CTm.Var y ->
+        let k' = Ident.fresh () in
+        Target.CutNewLower (t', k',
+          transform_command body (Sub.add k k' h),
+          Sub.apply h y)
+
+    | CTm.NewLower (_, k, body), CTm.ReturnDtor (_, arg) ->
+        bind_term arg h (fun arg_var ->
+          transform_command body (Sub.add k arg_var h))
+
+    | CTm.NewLower (_, k, body), CTm.MuCns (_, a, r) ->
+        let k' = Ident.fresh () in
+        let a' = Ident.fresh () in
+        Target.LetNewLower (t', k',
+          transform_command body (Sub.add k k' h),
+          a',
+          transform_command r (Sub.add a a' h))
+
+    | CTm.MuPrd (_, x, s), CTm.Var y ->
+        transform_command s (Sub.add x (Sub.apply h y) h)
+
+    | CTm.MuPrd (_, x, s), CTm.ReturnDtor (_, arg) ->
+        bind_term arg h (fun arg_var ->
+          let x' = Ident.fresh () in
+          Target.LetReturn (t', arg_var, x',
+            transform_command s (Sub.add x x' h)))
+
+    | _ ->
+        bind_term lhs h (fun lhs_var ->
+          bind_term rhs h (fun rhs_var ->
+            let inner = Ident.fresh () in
+            Target.CutNewLower (t', inner,
+              Target.CutReturn (t', inner, lhs_var),
+              rhs_var)))
+
+  (** Entry point *)
+  let transform (cmd: CTm.command) : Target.command =
+    transform_command cmd Sub.empty
+end
 
 (* ========================================================================= *)
-(* Cut Transformation                                                        *)
+(* Collapse: Target → Focused                                                *)
 (* ========================================================================= *)
 
-(** Transform a Cut based on the shapes of lhs and rhs.
-    This is the heart of focusing. *)
-and transform_cut (ty: typ) (lhs: Core.term) (rhs: Core.term) : Focused.command =
-  match whnf Ident.emptytbl [] ty with
-    Ext Int -> transform_cut_int lhs rhs
-  | Sgn sgn -> transform_cut_sgn sgn ty lhs rhs
-  | _ -> failwith "transform_cut: unsupported type"
+module Collapse = struct
 
-(** Transform cuts at Int type *)
-and transform_cut_int (lhs: Core.term) (rhs: Core.term) : Focused.command =
-  match lhs, rhs with
-  (* Var | Var: Axiom *)
-  | Core.Var x, Core.Var y ->
-      Focused.Axiom (Ext Int, x, y)
-  (* Var | MuRhs: substitute *)
-  | Core.Var x, Core.MuRhs (_, a, cmd) ->
-      transform_command (rename_command a x cmd)
-  (* Lit | Var: bind literal, axiom *)
-  | Core.Lit n, Core.Var y ->
-      let v = Ident.fresh () in
-      Focused.Lit (n, v, Focused.Axiom (Ext Int, v, y))
-  (* Lit | MuRhs: bind literal *)
-  | Core.Lit n, Core.MuRhs (_, a, cmd) ->
-      Focused.Lit (n, a, transform_command cmd)
-  (* MuLhs | Var: substitute *)
-  | Core.MuLhs (_, x, cmd), Core.Var y ->
-      transform_command (rename_command x y cmd)
-  (* MuLhs | MuRhs: sequence *)
-  | Core.MuLhs (_, x, lhs_cmd), Core.MuRhs (_, a, rhs_cmd) ->
-      let bound = Ident.fresh () in
-      let lhs' = transform_command (rename_command x bound lhs_cmd) in
-      let rhs' = transform_command rhs_cmd in
-      replace_int_ret bound lhs' (fun v ->
-        subst_var a v rhs')
-  | _ -> failwith "transform_cut_int: unsupported form"
+  (** Collapse a Target branch to a Focused branch *)
+  let rec collapse_branch ((xtor, ty_vars, tm_vars, body): Target.branch) : FTm.branch =
+    (xtor, ty_vars, tm_vars, collapse_command body)
 
-(** Transform cuts at signature types *)
-and transform_cut_sgn (sgn: sgn_typ) (_ty: typ) (lhs: Core.term) (rhs: Core.term) : Focused.command =
-  match lhs, rhs with
-  (* Var | Var: eta-expand with Switch/Invoke *)
-  | Core.Var x, Core.Var y ->
-      let branches = List.map (fun xtor ->
-        let params = fresh_params xtor in
-        (xtor, params, Focused.Invoke (y, xtor, params))
-      ) sgn.xtors in
-      Focused.Switch (sgn, x, branches)
+  (** Main collapse transformation *)
+  and collapse_command : Target.command -> FTm.command = function
+    (* User-defined xtors - Let becomes Let, LetMatch becomes New *)
+    | Target.LetCtor (d, c, tys, args, x, cont) ->
+        FTm.Let (x, d, c, tys, args, collapse_command cont)
+    | Target.LetDtor (d, c, tys, args, a, cont) ->
+        FTm.Let (a, d, c, tys, args, collapse_command cont)
+    | Target.LetMatch (d, branches, x, cont) ->
+        FTm.New (d, x, List.map collapse_branch branches, collapse_command cont)
+    | Target.LetComatch (d, branches, a, cont) ->
+        FTm.New (d, a, List.map collapse_branch branches, collapse_command cont)
 
-  (* Var | Match/Comatch: Switch *)
-  | Core.Var x, Core.Match (_, branches) ->
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.Switch (sgn, x, focused_branches)
-  | Core.Var x, Core.Comatch (_, branches) ->
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.Switch (sgn, x, focused_branches)
+    (* User-defined xtors - Cut becomes Switch/Invoke *)
+    | Target.CutCtor (d, c, tys, args, a) ->
+        FTm.Invoke (a, d, c, tys, args)
+    | Target.CutDtor (d, c, tys, x, args) ->
+        FTm.Invoke (x, d, c, tys, args)
+    | Target.CutMatch (d, x, branches) ->
+        FTm.Switch (d, x, List.map collapse_branch branches)
+    | Target.CutComatch (d, branches, a) ->
+        FTm.Switch (d, a, List.map collapse_branch branches)
 
-  (* Var | MuRhs: substitute *)
-  | Core.Var x, Core.MuRhs (_, a, cmd) ->
-      transform_command (rename_command a x cmd)
+    (* Built-in Fun *)
+    | Target.LetApply (t1, t2, x, y, v, cont) ->
+        FTm.LetApply (v, t1, t2, x, y, collapse_command cont)
+    | Target.LetNewFun (t1, t2, x, k, body, v, cont) ->
+        FTm.NewFun (v, t1, t2, x, k, collapse_command body, collapse_command cont)
+    | Target.CutApply (t1, t2, x, y, a) ->
+        FTm.InvokeApply (a, t1, t2, x, y)
+    | Target.CutNewFun (t1, t2, x, k, body, a) ->
+        FTm.SwitchFun (a, t1, t2, x, k, collapse_command body)
 
-  (* Ctor/Dtor | Var: bind and Invoke *)
-  | Core.Ctor (_, xtor, args), Core.Var y ->
-      bind_terms args (fun arg_vars ->
-        Focused.Invoke (y, xtor, arg_vars))
-  | Core.Dtor (_, xtor, args), Core.Var y ->
-      bind_terms args (fun arg_vars ->
-        Focused.Invoke (y, xtor, arg_vars))
+    (* Built-in Forall *)
+    | Target.LetInstantiate (a, k, ty, v, cont) ->
+        FTm.LetInstantiate (v, a, k, ty, collapse_command cont)
+    | Target.LetNewForall (a, k, _ty, body, v, cont) ->
+        FTm.NewForall (v, a, k, collapse_command body, collapse_command cont)
+    | Target.CutInstantiate (_a, k, ty, v) ->
+        FTm.InvokeInstantiate (v, ty, k)
+    | Target.CutNewForall (a, k, _ty, body, v) ->
+        FTm.SwitchForall (v, a, k, collapse_command body)
 
-  (* Ctor/Dtor | Match/Comatch: inline the matching branch (beta reduction) *)
-  | Core.Ctor (_, xtor, args), Core.Match (_, branches) ->
-      inline_branch xtor args branches
-  | Core.Ctor (_, xtor, args), Core.Comatch (_, branches) ->
-      inline_branch xtor args branches
-  | Core.Dtor (_, xtor, args), Core.Match (_, branches) ->
-      inline_branch xtor args branches
-  | Core.Dtor (_, xtor, args), Core.Comatch (_, branches) ->
-      inline_branch xtor args branches
+    (* Built-in Raise *)
+    | Target.LetThunk (t, x, v, cont) ->
+        FTm.LetThunk (v, t, x, collapse_command cont)
+    | Target.LetMatchRaise (t, x, body, v, cont) ->
+        FTm.NewRaise (v, t, x, collapse_command body, collapse_command cont)
+    | Target.CutThunk (t, x, a) ->
+        FTm.InvokeThunk (a, t, x)
+    | Target.CutMatchRaise (t, x, a, body) ->
+        FTm.SwitchRaise (a, t, x, collapse_command body)
 
-  (* Ctor/Dtor | MuRhs: Let binding *)
-  | Core.Ctor (_, xtor, args), Core.MuRhs (_, a, cmd) ->
-      bind_terms args (fun arg_vars ->
-        Focused.Let (a, xtor, arg_vars, transform_command cmd))
-  | Core.Dtor (_, xtor, args), Core.MuRhs (_, a, cmd) ->
-      bind_terms args (fun arg_vars ->
-        Focused.Let (a, xtor, arg_vars, transform_command cmd))
+    (* Built-in Lower *)
+    | Target.LetReturn (t, x, v, cont) ->
+        FTm.LetReturn (v, t, x, collapse_command cont)
+    | Target.LetNewLower (t, k, body, v, cont) ->
+        FTm.NewLower (v, t, k, collapse_command body, collapse_command cont)
+    | Target.CutReturn (t, x, a) ->
+        FTm.InvokeReturn (a, t, x)
+    | Target.CutNewLower (t, k, body, a) ->
+        FTm.SwitchLower (a, t, k, collapse_command body)
 
-  (* Match/Comatch | Ctor/Dtor: inline the matching branch (beta reduction) *)
-  | Core.Match (_, branches), Core.Ctor (_, xtor, args) ->
-      inline_branch xtor args branches
-  | Core.Match (_, branches), Core.Dtor (_, xtor, args) ->
-      inline_branch xtor args branches
-  | Core.Comatch (_, branches), Core.Ctor (_, xtor, args) ->
-      inline_branch xtor args branches
-  | Core.Comatch (_, branches), Core.Dtor (_, xtor, args) ->
-      inline_branch xtor args branches
+    (* Primitives *)
+    | Target.LetInt (n, x, cont) ->
+        FTm.Lit (n, x, collapse_command cont)
+    | Target.CutInt (x, k) ->
+        FTm.Axiom (FTy.Ext Common.Types.Int, x, k)
+    | Target.Add (x, y, k, cont) ->
+        FTm.Add (x, y, k, collapse_command cont)
+    | Target.Ifz (v, s1, s2) ->
+        FTm.Ifz (v, collapse_command s1, collapse_command s2)
+    | Target.Call (_path, _tys, _args) ->
+        (* Calls need a return continuation - for now return End *)
+        FTm.End
 
-  (* Match/Comatch | Var: bind and Switch with eta-branches *)
-  | Core.Match (_, _branches) as m, Core.Var y ->
-      bind_term m (fun x ->
-        let eta_branches = List.map (fun xtor ->
-          let params = fresh_params xtor in
-          (xtor, params, Focused.Invoke (y, xtor, params))
-        ) sgn.xtors in
-        Focused.Switch (sgn, x, eta_branches))
-  | Core.Comatch (_, branches) as _m, Core.Var y ->
-      (* Comatch | Var: bind the comatch, then eta-expand via Switch.
-         This ensures proper call-by-need semantics for codata. *)
-      let v = Ident.fresh () in
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      let eta_branches = List.map (fun xtor ->
-        let params = fresh_params xtor in
-        (xtor, params, Focused.Invoke (y, xtor, params))
-      ) sgn.xtors in
-      Focused.New (sgn, v, focused_branches, Focused.Switch (sgn, v, eta_branches))
+    | Target.Ret (ty, x) -> FTm.Ret (ty, x)
+    | Target.End -> FTm.End
 
-  (* Match/Comatch | Match/Comatch: bind lhs, then Switch *)
-  | (Core.Match _ | Core.Comatch _ as m1), 
-    (Core.Match (_, branches2) | Core.Comatch (_, branches2)) ->
-      bind_term m1 (fun x ->
-        let focused_branches = List.map (fun (xtor, vars, cmd) ->
-          (xtor, vars, transform_command cmd)
-        ) branches2 in
-        Focused.Switch (sgn, x, focused_branches))
+  (** Full pipeline: Core → Focused *)
+  let focus_command (cmd: CTm.command) : FTm.command =
+    collapse_command (Transform.transform cmd)
+end
 
-  (* Match/Comatch | MuRhs: bind *)
-  | (Core.Match _ | Core.Comatch _ as m), Core.MuRhs (_, a, cmd) ->
-      bind_term m (fun x ->
-        transform_command (rename_command a x cmd))
-
-  (* MuLhs | Var: substitute *)
-  | Core.MuLhs (_, x, cmd), Core.Var y ->
-      transform_command (rename_command x y cmd)
-
-  (* MuLhs | Match/Comatch: New *)
-  | Core.MuLhs (_, x, mu_cmd), Core.Match (_, branches) ->
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.New (sgn, x, focused_branches, transform_command mu_cmd)
-  | Core.MuLhs (_, x, mu_cmd), Core.Comatch (_, branches) ->
-      let focused_branches = List.map (fun (xtor, vars, cmd) ->
-        (xtor, vars, transform_command cmd)
-      ) branches in
-      Focused.New (sgn, x, focused_branches, transform_command mu_cmd)
-
-  (* MuLhs | MuRhs: New with forwarding *)
-  | Core.MuLhs (_, x, mu_cmd), Core.MuRhs (_, a, rhs_cmd) ->
-      let fwd_branches = List.map (fun xtor ->
-        let params = fresh_params xtor in
-        (xtor, params, Focused.Let (a, xtor, params, transform_command rhs_cmd))
-      ) sgn.xtors in
-      Focused.New (sgn, x, fwd_branches, transform_command mu_cmd)
-
-  | _ -> 
-      let lhs_form = match lhs with
-        | Core.Var _ -> "Var"
-        | Core.Lit _ -> "Lit"
-        | Core.Ctor _ -> "Ctor"
-        | Core.Dtor _ -> "Dtor"
-        | Core.Match _ -> "Match"
-        | Core.Comatch _ -> "Comatch"
-        | Core.MuLhs _ -> "MuLhs"
-        | Core.MuRhs _ -> "MuRhs"
-      in
-      let rhs_form = match rhs with
-        | Core.Var _ -> "Var"
-        | Core.Lit _ -> "Lit"
-        | Core.Ctor _ -> "Ctor"
-        | Core.Dtor _ -> "Dtor"
-        | Core.Match _ -> "Match"
-        | Core.Comatch _ -> "Comatch"
-        | Core.MuLhs _ -> "MuLhs"
-        | Core.MuRhs _ -> "MuRhs"
-      in
-      failwith (Printf.sprintf "transform_cut_sgn: unsupported form %s | %s" lhs_form rhs_form)
-
-(** Inline a branch: find matching branch and substitute args for params directly.
-    This enables pack/unpack elimination by letting Ctor(pack, [arg]) meet
-    Match(pack, [x], cmd) and substitute arg directly into cmd. *)
-and inline_branch (xtor: xtor) (args: Core.term list) (branches: Core.branch list) 
-    : Focused.command =
-  match List.find_opt (fun (x, _, _) -> Path.equal x.name xtor.name) branches with
-    None -> failwith "inline_branch: xtor not found"
-  | Some (_, params, cmd) ->
-      (* Substitute terms directly into the command, then transform.
-         This allows nested Ctor|Match pairs to meet and cancel. *)
-      let cmd' = List.fold_left2 
-        (fun c param arg -> subst_term_in_cmd param arg c)
-        cmd params args
-      in
-      transform_command cmd'
-
-(** Substitute a Core term for a variable in a Core command *)
-and subst_term_in_cmd (x: Ident.t) (t: Core.term) (cmd: Core.command) : Core.command =
-  match cmd with
-  | Core.Cut (ty, lhs, rhs) ->
-      Core.Cut (ty, subst_term_in_term x t lhs, subst_term_in_term x t rhs)
-  | Core.Add (a, b, c) ->
-      Core.Add (subst_term_in_term x t a, subst_term_in_term x t b, subst_term_in_term x t c)
-  | Core.Ifz (v, then_cmd, else_cmd) ->
-      Core.Ifz (subst_term_in_term x t v, subst_term_in_cmd x t then_cmd, subst_term_in_cmd x t else_cmd)
-  | Core.Call (path, ty_args, args) ->
-      Core.Call (path, ty_args, List.map (subst_term_in_term x t) args)
-  | Core.End -> Core.End
-
-(** Substitute a Core term for a variable in a Core term *)
-and subst_term_in_term (x: Ident.t) (replacement: Core.term) (tm: Core.term) : Core.term =
-  match tm with
-  | Core.Var y -> if Ident.equal y x then replacement else tm
-  | Core.Lit n -> Core.Lit n
-  | Core.Ctor (sgn, xtor, args) ->
-      Core.Ctor (sgn, xtor, List.map (subst_term_in_term x replacement) args)
-  | Core.Dtor (sgn, xtor, args) ->
-      Core.Dtor (sgn, xtor, List.map (subst_term_in_term x replacement) args)
-  | Core.Match (sgn, branches) ->
-      Core.Match (sgn, List.map (fun (xtor, vars, cmd) ->
-        if List.exists (Ident.equal x) vars then (xtor, vars, cmd)
-        else (xtor, vars, subst_term_in_cmd x replacement cmd)
-      ) branches)
-  | Core.Comatch (sgn, branches) ->
-      Core.Comatch (sgn, List.map (fun (xtor, vars, cmd) ->
-        if List.exists (Ident.equal x) vars then (xtor, vars, cmd)
-        else (xtor, vars, subst_term_in_cmd x replacement cmd)
-      ) branches)
-  | Core.MuLhs (ty, y, cmd) ->
-      if Ident.equal y x then tm
-      else Core.MuLhs (ty, y, subst_term_in_cmd x replacement cmd)
-  | Core.MuRhs (ty, y, cmd) ->
-      if Ident.equal y x then tm
-      else Core.MuRhs (ty, y, subst_term_in_cmd x replacement cmd)
-
-(** Substitute a variable for another in Focused command *)
-and subst_var (x: Ident.t) (v: Ident.t) (cmd: Focused.command) : Focused.command =
-  let sv y = if Ident.equal y x then v else y in
-  let sv_list = List.map sv in
-  match cmd with
-    Focused.Let (y, xtor, args, body) ->
-      if Ident.equal y x then Focused.Let (y, xtor, sv_list args, body)
-      else Focused.Let (y, xtor, sv_list args, subst_var x v body)
-  | Focused.Switch (sgn, y, branches) ->
-      let branches' = List.map (fun (xtor, params, body) ->
-        if List.exists (Ident.equal x) params then (xtor, params, body)
-        else (xtor, params, subst_var x v body)
-      ) branches in
-      Focused.Switch (sgn, sv y, branches')
-  | Focused.New (sgn, y, branches, body) ->
-      let branches' = List.map (fun (xtor, params, branch_body) ->
-        if List.exists (Ident.equal x) params then (xtor, params, branch_body)
-        else (xtor, params, subst_var x v branch_body)
-      ) branches in
-      let body' = if Ident.equal y x then body else subst_var x v body in
-      Focused.New (sgn, y, branches', body')
-  | Focused.Invoke (y, xtor, args) ->
-      Focused.Invoke (sv y, xtor, sv_list args)
-  | Focused.Axiom (ty, y, k) ->
-      Focused.Axiom (ty, sv y, sv k)
-  | Focused.Lit (n, y, body) ->
-      if Ident.equal y x then Focused.Lit (n, y, body)
-      else Focused.Lit (n, y, subst_var x v body)
-  | Focused.Add (a, b, r, body) ->
-      if Ident.equal r x then Focused.Add (sv a, sv b, r, body)
-      else Focused.Add (sv a, sv b, r, subst_var x v body)
-  | Focused.Ifz (y, then_cmd, else_cmd) ->
-      Focused.Ifz (sv y, subst_var x v then_cmd, subst_var x v else_cmd)
-  | Focused.End -> Focused.End
-  | Focused.Ret (ty, y) -> Focused.Ret (ty, sv y)
-
-(* ========================================================================= *)
-(* Main Transformation                                                       *)
-(* ========================================================================= *)
-
-(** Main transformation: Core.command -> Focused.command *)
-and transform_command (cmd: Core.command) : Focused.command =
-  match cmd with
-    Core.End -> Focused.End
-  | Core.Cut (ty, lhs, rhs) ->
-      transform_cut ty lhs rhs
-  | Core.Call (_path, _ty_args, _tm_args) ->
-      (* TODO: Handle calls - for now, just fail *)
-      failwith "transform_command: Call not yet implemented"
-  | Core.Add (t1, t2, t3) ->
-      bind_term t1 (fun v1 ->
-        bind_term t2 (fun v2 ->
-          match t3 with
-            Core.Var k ->
-              let r = Ident.fresh () in
-              Focused.Add (v1, v2, r, Focused.Axiom (Ext Int, r, k))
-          | Core.MuRhs (_, a, cmd) ->
-              Focused.Add (v1, v2, a, transform_command cmd)
-          | _ -> failwith "Add continuation must be Var or MuRhs"))
-  | Core.Ifz (cond, then_cmd, else_cmd) ->
-      bind_term cond (fun v ->
-        Focused.Ifz (v, transform_command then_cmd, transform_command else_cmd))
-
-(* ========================================================================= *)
-(* Optimization pass (currently a no-op traversal)                           *)
-(* ========================================================================= *)
-
-(** Optimize focused commands. Currently just recursively processes subexpressions.
-    Future work: inline New/Switch pairs when safe. *)
-let rec optimize (cmd: Focused.command) : Focused.command =
-  match cmd with
-  | Focused.Let (x, xtor, args, body) ->
-      Focused.Let (x, xtor, args, optimize body)
-  | Focused.Switch (sgn, v, branches) ->
-      Focused.Switch (sgn, v, 
-        List.map (fun (x, vs, b) -> (x, vs, optimize b)) branches)
-  | Focused.New (sgn, v, branches, body) ->
-      Focused.New (sgn, v,
-        List.map (fun (x, vs, b) -> (x, vs, optimize b)) branches,
-        optimize body)
-  | Focused.Lit (n, v, body) ->
-      Focused.Lit (n, v, optimize body)
-  | Focused.Add (a, b, r, body) ->
-      Focused.Add (a, b, r, optimize body)
-  | Focused.Ifz (v, then_cmd, else_cmd) ->
-      Focused.Ifz (v, optimize then_cmd, optimize else_cmd)
-  | Focused.Invoke _ | Focused.Axiom _ | Focused.End | Focused.Ret _ ->
-      cmd
-
-(** Entry point: transform a Core command to Focused command *)
-let focus (cmd: Core.command) : Focused.command =
-  let result = transform_command cmd in
-  optimize result
+(** Top-level entry point *)
+let focus_command = Collapse.focus_command
