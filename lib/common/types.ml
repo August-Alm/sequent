@@ -27,14 +27,14 @@ module type BASE = sig
   val is_consumer: 'a chiral -> bool
 end
 
+(* External types are always positive *)
+type ext_type = Int
+
 module TypeSystem(Base: BASE) = struct
 
   open Identifiers
 
   let ( let* ) = Result.bind
-
-  (* External types are always positive *)
-  type ext_type = Int
 
   (* Types *)
   type typ =
@@ -517,4 +517,48 @@ module TypeSystem(Base: BASE) = struct
       else None
     ) d.xtors
 
+end
+
+module type BASE_TRANSLATION = sig
+  module B1: BASE
+  module B2: BASE
+
+  val translate_polarity: B1.polarity -> B2.polarity
+  val translate_chirality: TypeSystem(B1).chiral_typ -> TypeSystem(B2).chiral_typ
+  val translate_xtor_arg_type: B1.polarity -> int -> TypeSystem(B1).chiral_typ -> TypeSystem(B2).chiral_typ
+end
+
+module TypeTranslation(BaseTrans: BASE_TRANSLATION) = struct
+  module T1 = TypeSystem(BaseTrans.B1)
+  module T2 = TypeSystem(BaseTrans.B2)
+
+  let rec translate_type (t: T1.typ) : T2.typ =
+    match t with
+      T1.Base pol -> T2.Base (BaseTrans.translate_polarity pol)
+    | T1.Arrow (t1, t2) -> T2.Arrow (translate_type t1, translate_type t2)
+    | T1.Ext e -> T2.Ext e
+    | T1.TVar v -> T2.TVar v
+    | T1.TMeta v -> T2.TMeta v
+    | T1.Sgn (p, args) -> T2.Sgn (p, List.map translate_type args)
+    | T1.PromotedCtor (d, c, args) -> T2.PromotedCtor (d, c, List.map translate_type args)
+    | T1.Fun (t1, t2) -> T2.Fun (translate_type t1, translate_type t2)
+    | T1.Forall (x, k, body) -> T2.Forall (x, translate_type k, translate_type body)
+    | T1.Raise t' -> T2.Raise (translate_type t')
+    | T1.Lower t' -> T2.Lower (translate_type t')
+  
+  let translate_xtor (pol: BaseTrans.B1.polarity) (x: T1.xtor) : T2.xtor =
+    { name = x.name
+    ; quantified = List.map (fun (v, k) -> (v, translate_type k)) x.quantified
+    ; existentials = List.map (fun (v, k) -> (v, translate_type k)) x.existentials
+    ; argument_types = List.mapi (BaseTrans.translate_xtor_arg_type pol) x.argument_types
+    ; main = translate_type x.main
+    }
+  
+  let translate_dec (d: T1.dec) : T2.dec =
+    { name = d.name
+    ; polarity = BaseTrans.translate_polarity d.polarity
+    ; param_kinds = List.map translate_type d.param_kinds
+    ; xtors = List.map (translate_xtor d.polarity) d.xtors
+    }
+  
 end

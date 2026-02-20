@@ -429,16 +429,29 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
               { xtor = xtor_name
               ; expected = List.length xtor.quantified
               ; got = List.length type_args })
-          else if List.length term_args <> List.length xtor.argument_types then
-            Error (XtorArityMismatch
-              { xtor = xtor_name
-              ; expected = List.length xtor.argument_types
-              ; got = List.length term_args })
           else
+            (* For destructors:
+               Surface: dtor: {qi's} main -> argN -> ... -> arg0
+               Domain:  argument_types = [arg0; ...; argN], main = "this" type
+               AST:     Dtor(_, _, [qi's], [this; tN; ...; t1]) : arg0
+               
+               So term_args = [this; tN; ...; t1]
+               Expected types = [main; argN; ...; arg1] = main :: (reverse (tail argument_types))
+               Result type = arg0 = head of argument_types *)
             let _, inst_args, inst_main = instantiate_xtor xtor type_args in
-            let* (typed_args, sbs) = check_args ctx sbs inst_args term_args in
-            (* For codata destructors, the result is the "main" type (self type) *)
-            Ok (TypedDtor (dec_name, xtor_name, typed_args, inst_main), inst_main, sbs))
+            let (result_ty, regular_args) = match inst_args with
+              | [] -> (inst_main, [])  (* No arguments - result is main *)
+              | arg0 :: rest -> (arg0, List.rev rest)
+            in
+            let expected_term_types = inst_main :: regular_args in
+            if List.length term_args <> List.length expected_term_types then
+              Error (XtorArityMismatch
+                { xtor = xtor_name
+                ; expected = List.length expected_term_types
+                ; got = List.length term_args })
+            else
+              let* (typed_args, sbs) = check_args ctx sbs expected_term_types term_args in
+              Ok (TypedDtor (dec_name, xtor_name, typed_args, result_ty), result_ty, sbs))
 
 (** Check a term against an expected type *)
 and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
@@ -561,13 +574,18 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 { xtor = xtor_name
                 ; expected = List.length xtor.existentials
                 ; got = List.length ty_vars })
-            else if List.length tm_vars <> List.length xtor.argument_types then
-              Error (XtorArityMismatch
-                { xtor = xtor_name
-                ; expected = List.length xtor.argument_types
-                ; got = List.length tm_vars })
             else
-              let fresh_exist, inst_args, inst_main =
+              (* For destructors:
+                 Surface: dtor: {qi's} main -> argN -> ... -> arg0
+                 Domain:  argument_types = [arg0; arg1; ...; argN]
+                 
+                 In a branch dtor(x1, ..., xN) => body:
+                 - Binds [x1; ...; xN] to [arg1; ...; argN]
+                 - Body should have type arg0
+                 
+                 This is consistent with Dtor(_, _, _, [this; tN; ...; t1])
+                 where [tN; ...; t1] have types [argN; ...; arg1] (reversed) *)
+              let fresh_exist, inst_args, _inst_main =
                 instantiate_xtor xtor type_args in
               let exist_rename =
                 List.fold_left2 (fun s (old_v, _) new_v ->
@@ -576,17 +594,23 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
               in
               let inst_args' =
                 List.map (apply_fresh_subst exist_rename) inst_args in
-              let inst_main' = apply_fresh_subst exist_rename inst_main in
-              let ctx' = extend_tyvars ctx
-                (List.map2 (fun v (_, k) -> (v, k)) ty_vars xtor.existentials)
+              let (result_ty, param_types) = match inst_args' with
+                | [] -> (_inst_main, [])  (* No arguments - unusual *)
+                | arg0 :: rest -> (arg0, rest)  (* [arg1; ...; argN] - no reverse *)
               in
-              let ctx' = extend_vars ctx'
-                (List.combine tm_vars inst_args')
-              in
-              (* For codata, the body should produce the result type (inst_main') *)
-              let* (body', _, sbs) = check ctx' sbs body inst_main' in
-              let clause = (xtor_name, ty_vars, tm_vars, body') in
-              go sbs (clause :: acc) rest)
+              if List.length tm_vars <> List.length param_types then
+                Error (XtorArityMismatch
+                  { xtor = xtor_name
+                  ; expected = List.length param_types
+                  ; got = List.length tm_vars })
+              else
+                let ctx' = extend_tyvars ctx
+                  (List.map2 (fun v (_, k) -> (v, k)) ty_vars xtor.existentials)
+                in
+                let ctx' = extend_vars ctx' (List.combine tm_vars param_types) in
+                let* (body', _, sbs) = check ctx' sbs body result_ty in
+                let clause = (xtor_name, ty_vars, tm_vars, body') in
+                go sbs (clause :: acc) rest)
   in
   go sbs [] branches
 

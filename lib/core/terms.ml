@@ -26,13 +26,13 @@ and term =
   | Lit of int
   (* Constructors build data (are producers) *)
   (* Parameters are type symbol, ctor symbol, types and terms *)
-  | Ctor of sym * sym * typ list * term list
+  | Ctor of sym * sym * (typ list) * (term list)
   (* Destructors consume codata (are consumers) *)
-  | Dtor of sym * sym * typ list * term list
+  | Dtor of sym * sym * (typ list) * (term list)
   (* Match consumes data (consumer) *)
-  | Match of sym * branch list
+  | Match of sym * (branch list)
   (* Comatch produces codata (producer) *)
-  | Comatch of sym * branch list
+  | Comatch of sym * (branch list)
   (* μP binds consumer var, forms producer *)
   | MuPrd of typ * var * command
   (* μC binds producer var, forms consumer *)
@@ -59,7 +59,7 @@ and term =
   | ReturnDtor of typ * term
 
 (* xtor{t0, .., tn}(x0, .., xm) => cmd *)
-and branch = sym * var list * var list * command
+and branch = sym * (var list) * (var list) * command
 
 (* A top-level definition *)
 type definition =
@@ -310,7 +310,7 @@ let check_call_args
             None -> Error (UnificationFailed (exp_typ, got_typ))
           | Some subs'' ->
               (match exp_ct, got_ct with
-              | Prd _, Prd _ | Cns _, Cns _ ->
+                Prd _, Prd _ | Cns _, Cns _ ->
                   check_args (idx + 1) subs'' args' params'
               | _ -> Error (CallArgTypeMismatch
                   { defn = defn_path; index = idx
@@ -336,7 +336,8 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
             Error (TypeVarArityMismatch
               { xtor = xtor_name
               ; expected = List.length xtor.quantified
-              ; got = List.length type_args })
+              ; got = List.length type_args
+              })
           else
             (* Instantiate xtor argument types *)
             let inst_args =
@@ -374,16 +375,16 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       (* For Match, use fresh metas for the type args *)
       let fresh_vars = freshen_kinds dec.param_kinds in
       let scrutinee_args = List.map (fun (v, _) -> TMeta v) fresh_vars in
-      let* _ = check_branches ctx dec scrutinee_args branches
-        check_command subs in
+      let* _ =
+        check_branches ctx dec scrutinee_args branches check_command subs in
       (* Match produces Cns (consumer) of the data type *)
       Ok (Cns (Sgn (dec_name, scrutinee_args)), subs)
   | Comatch (dec_name, branches) ->
       let* dec = lookup_dec ctx dec_name in
       let fresh_vars = freshen_kinds dec.param_kinds in
       let scrutinee_args = List.map (fun (v, _) -> TMeta v) fresh_vars in
-      let* _ = check_branches ctx dec scrutinee_args branches
-        check_command subs in
+      let* _ =
+        check_branches ctx dec scrutinee_args branches check_command subs in
       (* Comatch produces Prd (producer) of the codata type *)
       Ok (Prd (Sgn (dec_name, scrutinee_args)), subs)
   | MuPrd (ty, x, cmd) ->
@@ -431,7 +432,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       Ok (Cns (Forall (a, k, inst_body)), subs)
   | MatchRaise (t, x, cmd) ->
       (* MatchRaise ~ match { thunk(x: prd t) => cmd }
-         Binds x : Prd t, produces Cns (Raise t) *)
+        Binds x : Prd t, produces Cns (Raise t) *)
       let ctx' = extend ctx x (Prd t) in
       let* _ = check_command ctx' subs cmd in
       Ok (Cns (Raise t), subs)
@@ -444,7 +445,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       | Some subs'' -> Ok (Prd (Raise t), subs''))
   | NewLower (t, x, cmd) ->
       (* NewLower ~ comatch { return(x: cns t) => cmd }
-         Binds x : Cns t, produces Prd (Lower t) *)
+        Binds x : Cns t, produces Prd (Lower t) *)
       let ctx' = extend ctx x (Cns t) in
       let* _ = check_command ctx' subs cmd in
       Ok (Prd (Lower t), subs)
