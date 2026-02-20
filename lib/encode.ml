@@ -115,13 +115,36 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.MuPrd (CTy.Ext Common.Types.Int, alpha,
         CTm.Add (t1', t2', CTm.Var alpha))
 
-  | MTm.TypedLam (x, a, body, _ty) ->
-      (* λx:a. body → NewFun(a', b', x, k, ⟨body' | k⟩) *)
-      let a' = encode_type a in
-      let b' = encode_type (MTm.get_type body) in
+  | MTm.TypedLam (x, a, body, ty) ->
+      (* λx:a. body → NewFun(dom, cod, x, k, ⟨body' | k⟩)
+         The function type ty = Fun(dom, cod) where cod may be Lower(body_type).
+         We use the actual cod from the function type, not the raw body type.
+         
+         If cod = Lower(t), we need to produce a Lower(t) value:
+           NewLower(ret, ⟨body | ret⟩) : Lower(t)  (producer)
+         Then cut against k : Lower(t) (consumer). *)
+      let _a' = encode_type a in
       let body' = encode_term ctx body in
+      let (dom, cod) = match ty with
+        | MTy.Fun (d, c) -> (encode_type d, encode_type c)
+        | _ -> failwith "TypedLam must have Fun type"
+      in
       let k = Ident.fresh () in
-      CTm.NewFun (a', b', x, k, make_cut b' body' (CTm.Var k))
+      let body_ty = encode_type (MTm.get_type body) in
+      let inner_cmd = match cod with
+        | CTy.Lower t when t = body_ty ->
+            (* k : Lower(t), body : t
+               We produce: NewLower(ret, ⟨body | ret⟩) : Lower(t)
+               Then: ⟨NewLower(...) | k⟩ at Lower(t) *)
+            let ret = Ident.fresh () in
+            make_cut cod 
+              (CTm.NewLower (t, ret, make_cut t body' (CTm.Var ret)))
+              (CTm.Var k)
+        | _ ->
+            (* cod = body_ty, no wrapping needed *)
+            make_cut cod body' (CTm.Var k)
+      in
+      CTm.NewFun (dom, cod, x, k, inner_cmd)
 
   | MTm.TypedAll ((tv, k), body, _ty) ->
       (* Λa:k. body → NewForall(a, k', ty', ⟨body' | ...⟩) *)

@@ -388,7 +388,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
         check_switch_branches ctx dec sgn_args
           branches check_command subs
 
-  (* switch v {apply{t1, t2}(x, y) => s} *)
+  (* switch v {apply{t1, t2}(x, y) => s}
+     Switch always expects v to be a producer. *)
   | SwitchFun (v, t1, t2, x, y, body) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
@@ -398,7 +399,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           let ctx' = extend (extend ctx x (Prd t1)) y (Cns t2) in
           check_command ctx' subs' body)
 
-  (* switch v {instantiate_k[a] => s} *)
+  (* switch v {instantiate_k[a] => s}
+     Switch always expects v to be a producer. *)
   | SwitchForall (v, a, k, body) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
@@ -420,7 +422,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           let ctx' = extend ctx x (Cns t) in
           check_command ctx' subs' body)
 
-  (* switch v {return{t}(x) => s} *)
+  (* switch v {return{t}(x) => s}
+     Switch always expects v to be a producer. *)
   | SwitchLower (v, t, x, body) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
@@ -612,7 +615,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           let* _ = check_command ctx subs' then_cmd in
           check_command ctx subs' else_cmd)
 
-  (* ret τ v *)
+  (* ret τ v
+     Like simple.ml, Ret just checks that v is in scope with the right type. *)
   | Ret (ty, v) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in

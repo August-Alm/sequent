@@ -15,6 +15,7 @@ module MTm = Melcore.Terms
 module MPrint = Melcore.Printing
 module CTy = Core.Types.CoreTypes
 module CTm = Core.Terms
+module FB = Focused.Types.FocusedBase
 module FTy = Focused.Types.FocusedTypes
 module FTm = Focused.Terms
 module FPrint = Focused.Printing
@@ -41,6 +42,23 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       (match args with
         v :: _ -> FTm.Ret (ret_ty, v)
       | [] -> cmd)
+  (* Handle SwitchFun on ret: convert to NewFun + Ret *)
+  | FTm.SwitchFun (k, t1, t2, x, y, body) when Ident.name k = "ret" ->
+      let v = Ident.fresh () in
+      let fun_ty = FTy.Fun (t1, t2) in
+      FTm.NewFun (v, t1, t2, x, y, close_ret ret_ty body, FTm.Ret (fun_ty, v))
+  (* Handle SwitchForall on ret: convert to NewForall + Ret *)
+  | FTm.SwitchForall (k, a, kind, body) when Ident.name k = "ret" ->
+      let v = Ident.fresh () in
+      let forall_ty = FTy.Forall (a, kind, ret_ty) in (* TODO: proper body type *)
+      FTm.NewForall (v, a, kind, close_ret ret_ty body, FTm.Ret (forall_ty, v))
+  (* Handle Switch on ret for signature types: convert to New + Ret *)
+  | FTm.Switch (sg, k, branches) when Ident.name k = "ret" ->
+      let v = Ident.fresh () in
+      let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
+        (xtor, ty_vars, tm_vars, close_ret ret_ty b)
+      ) branches in
+      FTm.New (sg, v, branches', FTm.Ret (ret_ty, v))
   | FTm.Let (v, dec, xtor, ty_args, args, body) -> 
       FTm.Let (v, dec, xtor, ty_args, args, close_ret ret_ty body)
   | FTm.New (sg, v, branches, body) ->
@@ -53,19 +71,50 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
       FTm.Switch (sg, x, branches')
+  | FTm.SwitchFun (k, t1, t2, x, y, body) ->
+      FTm.SwitchFun (k, t1, t2, x, y, close_ret ret_ty body)
+  | FTm.SwitchForall (k, a, kind, body) ->
+      FTm.SwitchForall (k, a, kind, close_ret ret_ty body)
+  | FTm.SwitchRaise (k, t, x, body) ->
+      FTm.SwitchRaise (k, t, x, close_ret ret_ty body)
+  | FTm.SwitchLower (k, t, x, body) ->
+      FTm.SwitchLower (k, t, x, close_ret ret_ty body)
+  | FTm.NewFun (v, t1, t2, x, y, body, cont) ->
+      FTm.NewFun (v, t1, t2, x, y, close_ret ret_ty body, close_ret ret_ty cont)
+  | FTm.NewForall (v, a, k, body, cont) ->
+      FTm.NewForall (v, a, k, close_ret ret_ty body, close_ret ret_ty cont)
+  | FTm.NewRaise (v, t, x, body, cont) ->
+      FTm.NewRaise (v, t, x, close_ret ret_ty body, close_ret ret_ty cont)
+  | FTm.NewLower (v, t, k, body, cont) ->
+      FTm.NewLower (v, t, k, close_ret ret_ty body, close_ret ret_ty cont)
   | FTm.Lit (n, v, body) -> 
       FTm.Lit (n, v, close_ret ret_ty body)
   | FTm.Add (a, b, r, body) -> 
       FTm.Add (a, b, r, close_ret ret_ty body)
   | FTm.Ifz (v, t, e) -> 
       FTm.Ifz (v, close_ret ret_ty t, close_ret ret_ty e)
+  | FTm.LetApply (v, t1, t2, x, y, body) ->
+      FTm.LetApply (v, t1, t2, x, y, close_ret ret_ty body)
+  | FTm.LetInstantiate (v, a, k, ty, body) ->
+      FTm.LetInstantiate (v, a, k, ty, close_ret ret_ty body)
+  | FTm.LetThunk (v, t, x, body) ->
+      FTm.LetThunk (v, t, x, close_ret ret_ty body)
+  | FTm.LetReturn (v, t, x, body) ->
+      FTm.LetReturn (v, t, x, close_ret ret_ty body)
   | _ -> cmd
 
-let run_test ~name ~manual_repr (term: MTm.term) =
+let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
   print_endline "────────────────────────────────────────────────────────────────";
+  
+  (* Track overall success - must pass all stages *)
+  let test_passed = ref true in
+  let fail reason = 
+    test_passed := false;
+    Printf.printf "  ✗ %s\n" reason
+  in
   
   (* 1. Print manual representation *)
   print_endline "Melcore Term:";
@@ -75,22 +124,56 @@ let run_test ~name ~manual_repr (term: MTm.term) =
   (* 2. Type-check via infer_term *)
   let empty_ctx : MTm.tc_context = MTm.make_tc_context [] empty_defs in
   
+  (* Raw type printer showing internal structure (for debugging) *)
+  let rec raw_typ (t: MTy.typ) : string = match t with
+    | MTy.Base _ -> "Base"
+    | MTy.Ext _ -> "int"
+    | MTy.TVar v -> "TVar(" ^ Ident.name v ^ ")"
+    | MTy.TMeta v -> "TMeta(" ^ Ident.name v ^ ")"
+    | MTy.Fun (a, b) -> "Fun(" ^ raw_typ a ^ ", " ^ raw_typ b ^ ")"
+    | MTy.Forall (x, k, b) -> "Forall(" ^ Ident.name x ^ ", " ^ raw_typ k ^ ", " ^ raw_typ b ^ ")"
+    | MTy.Raise t' -> "Raise(" ^ raw_typ t' ^ ")"
+    | MTy.Lower t' -> "Lower(" ^ raw_typ t' ^ ")"
+    | MTy.Sgn (p, args) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map raw_typ args) ^ "])"
+    | MTy.PromotedCtor (d, c, args) -> "PromotedCtor(" ^ Path.name d ^ ", " ^ Path.name c ^ ", [" ^ String.concat ", " (List.map raw_typ args) ^ "])"
+    | MTy.Arrow (a, b) -> "Arrow(" ^ raw_typ a ^ ", " ^ raw_typ b ^ ")"
+  in
+  
+  (* Raw Core type printer *)
+  let rec raw_core_typ (t: CTy.typ) : string = match t with
+    | CTy.Base _ -> "Base"
+    | CTy.Ext _ -> "int"
+    | CTy.TVar v -> "TVar(" ^ Ident.name v ^ ")"
+    | CTy.TMeta v -> "TMeta(" ^ Ident.name v ^ ")"
+    | CTy.Fun (a, b) -> "Fun(" ^ raw_core_typ a ^ ", " ^ raw_core_typ b ^ ")"
+    | CTy.Forall (x, k, b) -> "Forall(" ^ Ident.name x ^ ", " ^ raw_core_typ k ^ ", " ^ raw_core_typ b ^ ")"
+    | CTy.Raise t' -> "Raise(" ^ raw_core_typ t' ^ ")"
+    | CTy.Lower t' -> "Lower(" ^ raw_core_typ t' ^ ")"
+    | CTy.Sgn (p, args) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map raw_core_typ args) ^ "])"
+    | CTy.PromotedCtor (d, c, args) -> "PromotedCtor(" ^ Path.name d ^ ", " ^ Path.name c ^ ", [" ^ String.concat ", " (List.map raw_core_typ args) ^ "])"
+    | CTy.Arrow (a, b) -> "Arrow(" ^ raw_core_typ a ^ ", " ^ raw_core_typ b ^ ")"
+  in
+  
   let show_error (e: MTm.check_error) = match e with
     | MTm.UnboundVariable v -> "Unbound variable: " ^ Ident.name v
     | MTm.UnboundSymbol s -> "Unbound symbol: " ^ Path.name s
     | MTm.UnboundDeclaration s -> "Unbound declaration: " ^ Path.name s
     | MTm.UnboundXtor (d, x) -> Printf.sprintf "Unbound xtor %s in %s" (Path.name x) (Path.name d)
-    | MTm.TypeMismatch _ -> "Type mismatch"
-    | MTm.ExpectedFun _ -> "Expected function type"
-    | MTm.ExpectedForall _ -> "Expected forall type"
-    | MTm.ExpectedData _ -> "Expected data type"
-    | MTm.ExpectedCodata _ -> "Expected codata type"
+    | MTm.TypeMismatch {expected; actual} -> 
+        Printf.sprintf "Type mismatch: expected %s, got %s" 
+          (MPrint.typ_to_string expected) (MPrint.typ_to_string actual)
+    | MTm.ExpectedFun t -> Printf.sprintf "Expected function type, got %s" (MPrint.typ_to_string t)
+    | MTm.ExpectedForall t -> Printf.sprintf "Expected forall type, got %s" (MPrint.typ_to_string t)
+    | MTm.ExpectedData t -> Printf.sprintf "Expected data type, got %s" (MPrint.typ_to_string t)
+    | MTm.ExpectedCodata t -> Printf.sprintf "Expected codata type, got %s" (MPrint.typ_to_string t)
     | MTm.XtorArityMismatch {xtor=_; expected; got} ->
         Printf.sprintf "Xtor arity mismatch: expected %d, got %d" expected got
     | MTm.TypeArgArityMismatch {xtor=_; expected; got} ->
         Printf.sprintf "Type arg arity mismatch: expected %d, got %d" expected got
     | MTm.NonExhaustive _ -> "Non-exhaustive"
-    | MTm.UnificationFailed _ -> "Unification failed"
+    | MTm.UnificationFailed (t1, t2) -> 
+        Printf.sprintf "Unification failed:\n      expected: %s\n           raw: %s\n      actual:   %s\n           raw: %s"
+          (MPrint.typ_to_string t1) (raw_typ t1) (MPrint.typ_to_string t2) (raw_typ t2)
     | MTm.KindError _ -> "Kind error"
   in
   
@@ -99,76 +182,189 @@ let run_test ~name ~manual_repr (term: MTm.term) =
     try
       match MTm.infer_term empty_ctx term with
       | Ok (typed_term, inferred_ty) ->
-          print_endline "  OK";
+          print_endline "  ✓ OK";
           Some (typed_term, inferred_ty)
       | Error e ->
-          Printf.printf "  Error: %s\n" (show_error e);
+          fail (show_error e);
           None
     with e ->
-      Printf.printf "  Exception: %s\n" (Printexc.to_string e);
+      fail (Printf.sprintf "Exception: %s" (Printexc.to_string e));
       None
   in
   print_newline ();
   
-  match typed_result with
-  | None -> 
-      print_endline "FAIL: Melcore type-check failed\n"
+  (match typed_result with
+  | None -> ()  (* Already marked as failed *)
   | Some (typed_term, inferred_ty) ->
       (* 3. Encode to Core *)
       let encode_ctx : Encode.encode_ctx = { decs = Path.emptytbl } in
       print_endline "Core Encoding:";
-      (try
-        let core_term = Encode.encode_term encode_ctx typed_term in
-        let core_ty = Encode.encode_type inferred_ty in
-        Printf.printf "  Core type: %s\n" (MPrint.typ_to_string inferred_ty);
-        print_newline ();
-        
-        (* 4. Create cut with ret variable and focus *)
-        print_endline "Focus (Cut-free):";
-        let ret = Ident.mk "ret" in
-        let core_cmd = CTm.Cut (core_ty, core_term, CTm.Var ret) in
-        (try
-          let focused = Focus.focus_command core_cmd in
-          let focused_ty = Focus.focus_type core_ty in
-          let closed = close_ret focused_ty focused in
-          Printf.printf "%s\n" (FPrint.pp_command closed);
+      let core_result =
+        try
+          let core_term = Encode.encode_term encode_ctx typed_term in
+          let core_ty = Encode.encode_type inferred_ty in
+          Printf.printf "  ✓ Melcore type: %s\n" (MPrint.typ_to_string inferred_ty);
+          Printf.printf "        raw: %s\n" (raw_typ inferred_ty);
+          Printf.printf "    Core type raw: %s\n" (raw_core_typ core_ty);
+          Some (core_term, core_ty)
+        with e ->
+          fail (Printf.sprintf "Encode exception: %s" (Printexc.to_string e));
+          None
+      in
+      print_newline ();
+      
+      match core_result with
+      | None -> ()
+      | Some (core_term, core_ty) ->
+          (* Print Core term for debugging *)
+          print_endline "Core Term:";
+          let rec pp_core_term = function
+            | CTm.Var v -> Ident.name v
+            | CTm.NewFun (d, c, x, k, body) -> 
+                Printf.sprintf "NewFun(%s, %s, %s.%s.%s)" 
+                  (FPrint.typ_to_string (Focus.focus_type d))
+                  (FPrint.typ_to_string (Focus.focus_type c))
+                  (Ident.name x) (Ident.name k) (pp_core_cmd body)
+            | CTm.NewLower (t, k, body) ->
+                Printf.sprintf "NewLower(%s, %s.%s)"
+                  (FPrint.typ_to_string (Focus.focus_type t))
+                  (Ident.name k) (pp_core_cmd body)
+            | _ -> "<term>"
+          and pp_core_cmd = function
+            | CTm.Cut (ty, l, r) ->
+                Printf.sprintf "Cut[%s](%s, %s)"
+                  (FPrint.typ_to_string (Focus.focus_type ty))
+                  (pp_core_term l) (pp_core_term r)
+            | _ -> "<cmd>"
+          in
+          Printf.printf "  %s\n\n" (pp_core_term core_term);
+          
+          (* 4. Create cut with ret variable and focus *)
+          print_endline "Focus (Cut-free):";
+          let focus_result =
+            try
+              let ret = Ident.mk "ret" in
+              let core_cmd = CTm.Cut (core_ty, core_term, CTm.Var ret) in
+              let focused = Focus.focus_command core_cmd in
+              let focused_ty = Focus.focus_type core_ty in
+              let closed = close_ret focused_ty focused in
+              Printf.printf "%s\n" (FPrint.pp_command closed);
+              Some (ret, focused_ty, closed)
+            with e ->
+              fail (Printf.sprintf "Focus exception: %s" (Printexc.to_string e));
+              None
+          in
           print_newline ();
           
-          (* 5. Machine evaluation *)
-          print_endline "Machine Evaluation:";
-          (try
-            let trace = false in
-            let ((final_cmd, final_env), step_count) = Machine.eval ~trace closed in
-            Printf.printf "  Steps: %d\n" step_count;
-            Printf.printf "  Final: %s\n" (Machine.cmd_name final_cmd);
-            (* Check if we got a result *)
-            (match Machine.get_result (final_cmd, final_env) with
-             | Some (Machine.IntVal n) ->
-                 Printf.printf "  Result: %d\n" n
-             | Some v ->
-                 Printf.printf "  Result: %s\n" (Machine.pp_value v)
-             | None -> ())
-          with e ->
-            Printf.printf "  Exception: %s\n" (Printexc.to_string e));
-          
-          (* Type checking omitted for now - API differs *)
-          print_endline "Focused Type Check: (skipped)";
-        with e ->
-          Printf.printf "  Focus Exception: %s\n" (Printexc.to_string e));
-        
-        print_endline "PASS ✓";
-        incr pass_count
-      with e ->
-        Printf.printf "  Encode Exception: %s\n" (Printexc.to_string e);
-        print_endline "FAIL: Core encoding failed");
-      print_newline ()
+          match focus_result with
+          | None -> ()
+          | Some (ret, focused_ty, closed) ->
+              (* 5. Machine evaluation *)
+              print_endline "Machine Evaluation:";
+              let eval_result =
+                try
+                  let trace = false in
+                  let ((final_cmd, final_env), step_count) = Machine.eval ~trace closed in
+                  Printf.printf "  Steps: %d\n" step_count;
+                  Printf.printf "  Final: %s\n" (Machine.cmd_name final_cmd);
+                  let result = Machine.get_result (final_cmd, final_env) in
+                  (match result with
+                   | Some (Machine.IntVal n) ->
+                       Printf.printf "  Result: %d\n" n
+                   | Some v ->
+                       Printf.printf "  Result: %s\n" (Machine.pp_value v)
+                   | None -> ());
+                  Some result
+                with e ->
+                  fail (Printf.sprintf "Eval exception: %s" (Printexc.to_string e));
+                  None
+              in
+              
+              (* Check expected result if provided *)
+              (match expected_result, eval_result with
+               | Some expected, Some (Some (Machine.IntVal actual)) when expected = actual ->
+                   Printf.printf "  ✓ Expected %d, got %d\n" expected actual
+               | Some expected, Some (Some (Machine.IntVal actual)) ->
+                   fail (Printf.sprintf "Expected %d, got %d" expected actual)
+               | Some expected, Some None ->
+                   fail (Printf.sprintf "Expected %d, got no result" expected)
+               | Some expected, None ->
+                   fail (Printf.sprintf "Expected %d, evaluation failed" expected)
+               | Some expected, Some (Some v) ->
+                   fail (Printf.sprintf "Expected int %d, got %s" expected (Machine.pp_value v))
+               | None, _ -> ());  (* No expected result specified *)
+              print_newline ();
+              
+              (* 6. Focused type checking *)
+              print_endline "Focused Type Check:";
+              (* Following simple.ml's collapse_chiral: for negative types (codata),
+                 the return continuation chirality flips from Cns to Prd.
+                 Fun, Lower, Forall are negative (codata); Raise, Int, user Sgn are positive (data). *)
+              let is_negative_fty (t: FTy.typ) : bool =
+                match t with
+                | FTy.Fun (_, _) -> true
+                | FTy.Lower _ -> true
+                | FTy.Forall (_, _, _) -> true
+                | _ -> false
+              in
+              let ret_chiral = 
+                if is_negative_fty focused_ty 
+                then FB.Prd focused_ty  (* Negative type: chirality flips Cns -> Prd *)
+                else FB.Cns focused_ty  (* Positive type: stays as Cns *)
+              in
+              let focused_tc_ctx : FTm.context = 
+                { types = FTy.empty_context
+                ; term_vars = Ident.add ret ret_chiral Ident.emptytbl
+                } in
+              (match FTm.check_command focused_tc_ctx Ident.emptytbl closed with
+               | Ok () -> print_endline "  ✓ OK"
+               | Error e -> 
+                   let err_msg = match e with
+                     | FTm.UnboundVariable v -> 
+                         Printf.sprintf "Unbound variable: %s" (Ident.name v)
+                     | FTm.UnboundDeclaration p -> 
+                         Printf.sprintf "Unbound declaration: %s" (Path.name p)
+                     | FTm.UnboundXtor (d, x) -> 
+                         Printf.sprintf "Unbound xtor %s in %s" (Path.name x) (Path.name d)
+                     | FTm.UnificationFailed (t1, t2) -> 
+                         Printf.sprintf "Unification failed: %s vs %s" 
+                           (FPrint.typ_to_string t1) (FPrint.typ_to_string t2)
+                     | FTm.ChiralityMismatch { expected_chirality; actual } ->
+                         let exp = match expected_chirality with `Prd -> "producer" | `Cns -> "consumer" in
+                         let act = match actual with FB.Prd _ -> "producer" | FB.Cns _ -> "consumer" in
+                         Printf.sprintf "Chirality mismatch: expected %s, got %s" exp act
+                     | FTm.XtorArityMismatch { xtor; expected; got } ->
+                         Printf.sprintf "Xtor %s arity mismatch: expected %d, got %d" 
+                           (Path.name xtor) expected got
+                     | FTm.TypeVarArityMismatch { xtor; expected; got } ->
+                         Printf.sprintf "Type var arity mismatch for %s: expected %d, got %d" 
+                           (Path.name xtor) expected got
+                     | FTm.NonExhaustiveMatch { dec_name; missing=_ } ->
+                         Printf.sprintf "Non-exhaustive match on %s" (Path.name dec_name)
+                     | FTm.ArityMismatch { expected; got } ->
+                         Printf.sprintf "Arity mismatch: expected %d, got %d" expected got
+                     | FTm.ExpectedSignature t ->
+                         Printf.sprintf "Expected signature type, got %s" (FPrint.typ_to_string t)
+                   in
+                   fail err_msg));
+  
+  (* Final verdict *)
+  print_newline ();
+  if !test_passed then begin
+    print_endline "PASS ✓";
+    incr pass_count
+  end else
+    print_endline "FAIL ✗";
+  print_newline ()
 
 (* ════════════════════════════════════════════════════════════════════════════
    Helper for building Melcore types
    ════════════════════════════════════════════════════════════════════════════ *)
 
 let int_ty : MTy.typ = MTy.Ext Int
-let arrow (a: MTy.typ) (b: MTy.typ) : MTy.typ = MTy.Fun (a, b)
+(* Use mk_fun to properly polarize: Int (positive) in codomain becomes Lower(Int) *)
+let arrow (a: MTy.typ) (b: MTy.typ) : MTy.typ = 
+  Melcore.Types.mk_fun MTy.empty_context a b
 
 (* ════════════════════════════════════════════════════════════════════════════
    Test Cases (mirroring test_pcf.ml)
