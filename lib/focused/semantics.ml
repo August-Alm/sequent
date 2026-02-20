@@ -4,7 +4,6 @@
 *)
 
 open Common.Identifiers
-open Common.Types
 open Terms
 
 (* ========================================================================= *)
@@ -13,9 +12,13 @@ open Terms
 
 (** Runtime values in the abstract machine *)
 type value =
-    Producer of xtor * env       (** {m; E} - a constructor with its captured environment *)
-  | Consumer of env * branch list (** {E; bs} - branches with their captured environment *)
-  | IntVal of int                 (** Literal integers *)
+  | DataVal of sym * env          (** {m; E} - constructor m with captured environment *)
+  | CodataVal of env * branch list(** {E; bs} - branches with captured environment *)
+  | FunVal of env * var * var * command     (** {E; x, y ⇒ s} - function value *)
+  | ForallVal of env * var * command        (** {E; a ⇒ s} - polymorphic value *)
+  | ThunkVal of env * var * command         (** {E; x ⇒ s} - thunk value *)
+  | ReturnVal of env * var * command        (** {E; x ⇒ s} - return continuation *)
+  | IntVal of int                           (** Literal integers *)
 
 (** Environment maps variables to values *)
 and env = value Ident.tbl
@@ -42,16 +45,6 @@ let lookup_int (e: env) (x: var) : int =
     IntVal n -> n
   | _ -> failwith ("expected int value for: " ^ Ident.name x)
 
-let lookup_producer (e: env) (x: var) : xtor * env =
-  match lookup e x with
-    Producer (m, e0) -> (m, e0)
-  | _ -> failwith ("expected producer value for: " ^ Ident.name x)
-
-let lookup_consumer (e: env) (x: var) : env * branch list =
-  match lookup e x with
-    Consumer (e0, bs) -> (e0, bs)
-  | _ -> failwith ("expected consumer value for: " ^ Ident.name x)
-
 let extend (e: env) (x: var) (v: value) : env =
   Ident.add x v e
 
@@ -67,45 +60,66 @@ let merge_env (e1: env) (e2: env) : env =
 (* Branch Selection                                                          *)
 (* ========================================================================= *)
 
-(** Find the branch matching a given xtor by name *)
-let find_branch (x: xtor) (branches: branch list) : branch option =
-  List.find_opt (fun ((x': xtor), _, _) -> Path.equal x'.name x.name) branches
+(** Find the branch matching a given xtor name *)
+let find_branch (x: sym) (branches: branch list) : branch option =
+  List.find_opt (fun (x', _, _, _) -> Path.equal x' x) branches
 
 (** Find the branch matching a given xtor, or fail *)
-let select_branch (x: xtor) (branches: branch list) : branch =
+let select_branch (x: sym) (branches: branch list) : branch =
   match find_branch x branches with
     Some b -> b
-  | None -> failwith ("no branch for xtor: " ^ Path.name x.name)
+  | None -> failwith ("no branch for xtor: " ^ Path.name x)
 
 (* ========================================================================= *)
 (* Pretty Printing                                                           *)
 (* ========================================================================= *)
 
-let pp_xtor (x: xtor) : string = Path.name x.name
+let pp_sym (x: sym) : string = Path.name x
 
 let pp_value = function
-    Producer (m, _) -> "{" ^ pp_xtor m ^ "; ...}"
-  | Consumer (_, bs) -> "{...; " ^ string_of_int (List.length bs) ^ " branches}"
+  | DataVal (m, _) -> "{" ^ pp_sym m ^ "; ...}"
+  | CodataVal (_, bs) -> "{...; " ^ string_of_int (List.length bs) ^ " branches}"
+  | FunVal _ -> "{fun; ...}"
+  | ForallVal _ -> "{forall; ...}"
+  | ThunkVal _ -> "{thunk; ...}"
+  | ReturnVal _ -> "{return; ...}"
   | IntVal n -> string_of_int n
 
 let pp_env (e: env) : string =
   let bindings = Ident.to_list e in
   String.concat ", " (List.map (fun (x, v) -> Ident.name x ^ " → " ^ pp_value v) bindings)
 
-let pp_config ((cmd, e): config) : string =
-  let cmd_str = match cmd with
-      Let (v, x, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_xtor x ^ "(...)"
-    | Switch (_, v, _) -> "switch " ^ Ident.name v
-    | New (_, v, _, _) -> "new " ^ Ident.name v
-    | Invoke (v, x, _) -> Ident.name v ^ "." ^ pp_xtor x
-    | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
-    | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
-    | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
-    | Ifz (v, _, _) -> "ifz " ^ Ident.name v
-    | End -> "end"
-    | Ret (_, v) -> "ret " ^ Ident.name v
-  in
+let rec pp_config ((cmd, e): config) : string =
+  let cmd_str = cmd_name cmd in
   "⟨" ^ cmd_str ^ " ∥ {" ^ pp_env e ^ "}⟩"
+
+and cmd_name = function
+  | Let (v, _, x, _, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_sym x ^ "(...)"
+  | LetApply (v, _, _, _, _, _) -> "let " ^ Ident.name v ^ " = apply(...)"
+  | LetInstantiate (v, _, _, _, _) -> "let " ^ Ident.name v ^ " = instantiate[...]"
+  | LetThunk (v, _, _, _) -> "let " ^ Ident.name v ^ " = thunk(...)"
+  | LetReturn (v, _, _, _) -> "let " ^ Ident.name v ^ " = return(...)"
+  | Switch (_, v, _) -> "switch " ^ Ident.name v
+  | SwitchFun (v, _, _, _, _, _) -> "switch " ^ Ident.name v ^ " {apply...}"
+  | SwitchForall (v, _, _, _) -> "switch " ^ Ident.name v ^ " {instantiate...}"
+  | SwitchRaise (v, _, _, _) -> "switch " ^ Ident.name v ^ " {thunk...}"
+  | SwitchLower (v, _, _, _) -> "switch " ^ Ident.name v ^ " {return...}"
+  | New (_, v, _, _) -> "new " ^ Ident.name v
+  | NewFun (v, _, _, _, _, _, _) -> "new " ^ Ident.name v ^ " {apply...}"
+  | NewForall (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {instantiate...}"
+  | NewRaise (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {thunk...}"
+  | NewLower (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {return...}"
+  | Invoke (v, _, x, _, _) -> Ident.name v ^ "." ^ pp_sym x
+  | InvokeApply (v, _, _, _, _) -> Ident.name v ^ ".apply(...)"
+  | InvokeInstantiate (v, _, _) -> Ident.name v ^ ".instantiate[...]"
+  | InvokeThunk (v, _, _) -> Ident.name v ^ ".thunk(...)"
+  | InvokeReturn (v, _, _) -> Ident.name v ^ ".return(...)"
+  | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
+  | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
+  | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
+  | Ifz (v, _, _) -> "ifz " ^ Ident.name v
+  | End -> "end"
+  | Ret (_, v) -> "ret " ^ Ident.name v
 
 (* ========================================================================= *)
 (* Single-Step Semantics                                                     *)
@@ -114,88 +128,257 @@ let pp_config ((cmd, e): config) : string =
 (** Single step of the abstract machine. Returns None if stuck or terminal. *)
 let step ((cmd, e): config) : config option =
   match cmd with
-  (* (let) ⟨let v = m(Γ); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|Γ}⟩ 
-     Creates a producer: the xtor m with captured environment for args *)
-    Let (v, m, args, body) ->
+  (* =========== Let forms =========== *)
+  
+  (* (let) ⟨let v = m(args); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|args}⟩ 
+     Constructs a data value with the xtor name and captured args *)
+  | Let (v, _, m, _, args, body) ->
       let e0 = sub_env e args in
-      let e' = extend e v (Producer (m, e0)) in
+      let e' = extend e v (DataVal (m, e0)) in
       Some (body, e')
+
+  (* (let-apply) Constructs Fun value with captured args *)
+  | LetApply (v, _, _, x, y, body) ->
+      let e0 = sub_env e [x; y] in
+      let apply_sym = Path.of_string "apply" in
+      let e' = extend e v (DataVal (apply_sym, e0)) in
+      Some (body, e')
+
+  (* (let-instantiate) Constructs Forall value - type argument is erased *)
+  | LetInstantiate (v, _, _, _, body) ->
+      let inst_sym = Path.of_string "instantiate" in
+      let e' = extend e v (DataVal (inst_sym, empty_env)) in
+      Some (body, e')
+
+  (* (let-thunk) Constructs Raise value *)
+  | LetThunk (v, _, x, body) ->
+      let e0 = sub_env e [x] in
+      let thunk_sym = Path.of_string "thunk" in
+      let e' = extend e v (DataVal (thunk_sym, e0)) in
+      Some (body, e')
+
+  (* (let-return) Constructs Lower value *)
+  | LetReturn (v, _, x, body) ->
+      let e0 = sub_env e [x] in
+      let return_sym = Path.of_string "return" in
+      let e' = extend e v (DataVal (return_sym, e0)) in
+      Some (body, e')
+
+  (* =========== New forms =========== *)
 
   (* (new) ⟨new v = {bs}; s ∥ E⟩ → ⟨s ∥ E, v → {E; bs}⟩
-     Creates a consumer: captures current env, branches will bind params when invoked *)
+     Creates a codata value: captures current env, branches bind params when invoked *)
   | New (_, v, branches, body) ->
-      let e' = extend e v (Consumer (e, branches)) in
+      let e' = extend e v (CodataVal (e, branches)) in
       Some (body, e')
 
+  (* (new-fun) Creates a Fun codata value *)
+  | NewFun (v, _, _, x, y, s1, s2) ->
+      let e' = extend e v (FunVal (e, x, y, s1)) in
+      Some (s2, e')
+
+  (* (new-forall) Creates a Forall codata value *)
+  | NewForall (v, a, _, s1, s2) ->
+      let e' = extend e v (ForallVal (e, a, s1)) in
+      Some (s2, e')
+
+  (* (new-raise) Creates a Raise codata value *)
+  | NewRaise (v, _, x, s1, s2) ->
+      let e' = extend e v (ThunkVal (e, x, s1)) in
+      Some (s2, e')
+
+  (* (new-lower) Creates a Lower codata value *)
+  | NewLower (v, _, x, s1, s2) ->
+      let e' = extend e v (ReturnVal (e, x, s1)) in
+      Some (s2, e')
+
+  (* =========== Switch forms =========== *)
+
   (* (switch) ⟨switch v {bs} ∥ E⟩
-     Destructure producer v, select matching branch, bind params *)
+     Destructure data value v, select matching branch, bind params *)
   | Switch (_, v, branches) ->
       (match lookup e v with
-       | Producer (m, e0) ->
-           (* Find the branch matching this constructor *)
-           let (_, params, branch_body) = select_branch m branches in
-           (* e0 has the captured argument values, bind them to params *)
-           (* Note: sub_env builds with fold_left, so to_list is reversed *)
+       | DataVal (m, e0) ->
+           let (_, _, params, branch_body) = select_branch m branches in
            let e0_list = List.rev (Ident.to_list e0) in
-           let e' = List.fold_left2 (fun acc p (_, v) -> extend acc p v) e params e0_list in
+           let e' = List.fold_left2 (fun acc p (_, val0) -> extend acc p val0) e params e0_list in
            Some (branch_body, e')
        | IntVal n ->
-           (* For integers, we need to match against a single-param branch *)
-           (* Use the first branch and bind the int to its param *)
            (match branches with
               [] -> failwith "switch on int with no branches"
-            | (_, params, branch_body) :: _ ->
+            | (_, _, params, branch_body) :: _ ->
                 let e' = extend e (List.hd params) (IntVal n) in
                 Some (branch_body, e'))
-       | Consumer _ as c ->
-           (* For a consumer value, this is eta-expansion - bind the consumer to params.
-              This represents destructuring a consumer to re-package it. *)
-           (match branches with
-              [] -> failwith "switch on consumer with no branches"
-            | (_, params, branch_body) :: _ ->
-                (* Bind the whole consumer to all params (forwarding) *)
-                let e' = List.fold_left (fun acc p -> extend acc p c) e params in
-                Some (branch_body, e')))
+       | _ -> failwith "switch: expected data value")
 
-  (* (invoke) ⟨v.m(Γ) ∥ E, v → {E0; bs}⟩ → ⟨b ∥ E0[params↦E(Γ)]⟩
-     Invokes a consumer: find matching branch, bind args to params in captured env *)
-  | Invoke (v, m, args) ->
-      let (e0, branches) = lookup_consumer e v in
-      let (_, params, branch_body) = select_branch m branches in
-      (* Bind the current values of args to the branch params *)
-      let arg_vals = List.map (fun a -> lookup e a) args in
-      (* Merge current env with captured env, then add params *)
-      let e_merged = merge_env e0 e in
-      let e' = List.fold_left2 extend e_merged params arg_vals in
-      Some (branch_body, e')
+  (* (switch-fun) Destructure Fun value *)
+  | SwitchFun (v, _, _, x, y, s) ->
+      (match lookup e v with
+       | DataVal (_, e0) ->
+           let e0_list = List.rev (Ident.to_list e0) in
+           (match e0_list with
+            | [(_, v1); (_, v2)] ->
+                let e' = extend (extend e x v1) y v2 in
+                Some (s, e')
+            | _ -> failwith "switch-fun: expected 2 args in data value")
+       | FunVal (e0, _, _, _) ->
+           (* Pass through the captured environment *)
+           Some (s, merge_env e e0)
+       | _ -> failwith "switch-fun: expected fun value")
 
-  (* (axiom) ⟨⟨v | k⟩ ∥ E⟩ - interaction between producer and consumer *)
+  (* (switch-forall) Destructure Forall value - types are erased *)
+  | SwitchForall (v, _, _, s) ->
+      (match lookup e v with
+       | DataVal _ | ForallVal _ -> Some (s, e)
+       | _ -> failwith "switch-forall: expected forall value")
+
+  (* (switch-raise) Destructure Raise value *)
+  | SwitchRaise (v, _, x, s) ->
+      (match lookup e v with
+       | DataVal (_, e0) ->
+           let e0_list = List.rev (Ident.to_list e0) in
+           (match e0_list with
+            | [(_, v0)] ->
+                let e' = extend e x v0 in
+                Some (s, e')
+            | _ -> failwith "switch-raise: expected 1 arg in data value")
+       | _ -> failwith "switch-raise: expected raise value")
+
+  (* (switch-lower) Destructure Lower value *)
+  | SwitchLower (v, _, x, s) ->
+      (match lookup e v with
+       | DataVal (_, e0) ->
+           let e0_list = List.rev (Ident.to_list e0) in
+           (match e0_list with
+            | [(_, v0)] ->
+                let e' = extend e x v0 in
+                Some (s, e')
+            | _ -> failwith "switch-lower: expected 1 arg in data value")
+       | _ -> failwith "switch-lower: expected lower value")
+
+  (* =========== Invoke forms =========== *)
+
+  (* (invoke) ⟨v.m(args) ∥ E, v → {E0; bs}⟩ → ⟨b ∥ E0[params↦E(args)]⟩
+     Invokes a codata value: find matching branch, bind args to params *)
+  | Invoke (v, _, m, _, args) ->
+      (match lookup e v with
+       | CodataVal (e0, branches) ->
+           let (_, _, params, branch_body) = select_branch m branches in
+           let arg_vals = List.map (fun a -> lookup e a) args in
+           let e_merged = merge_env e0 e in
+           let e' = List.fold_left2 extend e_merged params arg_vals in
+           Some (branch_body, e')
+       | _ -> failwith "invoke: expected codata value")
+
+  (* (invoke-apply) Apply a Fun codata value *)
+  | InvokeApply (v, _, _, x, y) ->
+      (match lookup e v with
+       | FunVal (e0, px, py, s) ->
+           let e' = extend (extend (merge_env e0 e) px (lookup e x)) py (lookup e y) in
+           Some (s, e')
+       | CodataVal (e0, branches) ->
+           let apply_sym = Path.of_string "apply" in
+           let (_, _, params, branch_body) = select_branch apply_sym branches in
+           let arg_vals = [lookup e x; lookup e y] in
+           let e_merged = merge_env e0 e in
+           let e' = List.fold_left2 extend e_merged params arg_vals in
+           Some (branch_body, e')
+       | _ -> failwith "invoke-apply: expected fun value")
+
+  (* (invoke-instantiate) Instantiate a Forall codata value - type erased *)
+  | InvokeInstantiate (v, _, _) ->
+      (match lookup e v with
+       | ForallVal (e0, _, s) ->
+           Some (s, merge_env e0 e)
+       | CodataVal (e0, branches) ->
+           let inst_sym = Path.of_string "instantiate" in
+           let (_, _, _, branch_body) = select_branch inst_sym branches in
+           Some (branch_body, merge_env e0 e)
+       | _ -> failwith "invoke-instantiate: expected forall value")
+
+  (* (invoke-thunk) Force a Raise codata value *)
+  | InvokeThunk (v, _, x) ->
+      (match lookup e v with
+       | ThunkVal (e0, px, s) ->
+           let e' = extend (merge_env e0 e) px (lookup e x) in
+           Some (s, e')
+       | CodataVal (e0, branches) ->
+           let thunk_sym = Path.of_string "thunk" in
+           let (_, _, params, branch_body) = select_branch thunk_sym branches in
+           let e_merged = merge_env e0 e in
+           let e' = List.fold_left2 extend e_merged params [lookup e x] in
+           Some (branch_body, e')
+       | _ -> failwith "invoke-thunk: expected thunk value")
+
+  (* (invoke-return) Receive from a Lower codata value *)
+  | InvokeReturn (v, _, x) ->
+      (match lookup e v with
+       | ReturnVal (e0, px, s) ->
+           let e' = extend (merge_env e0 e) px (lookup e x) in
+           Some (s, e')
+       | CodataVal (e0, branches) ->
+           let return_sym = Path.of_string "return" in
+           let (_, _, params, branch_body) = select_branch return_sym branches in
+           let e_merged = merge_env e0 e in
+           let e' = List.fold_left2 extend e_merged params [lookup e x] in
+           Some (branch_body, e')
+       | _ -> failwith "invoke-return: expected return value")
+
+  (* =========== Axiom =========== *)
+
+  (* (axiom) ⟨⟨v | k⟩ ∥ E⟩ - interaction between data and codata *)
   | Axiom (_, v1, v2) ->
       (match lookup_opt e v2 with
-        None ->
-          (* v2 is unbound (open term) - stuck *)
-          None
-      | Some (Consumer (e0, branches)) ->
-          (match lookup e v1 with
-           | IntVal n ->
-               (* Int value passed to continuation *)
-               (* For a simple continuation, use first branch and bind int to its param *)
-               (match branches with
-                  [] -> failwith "axiom: consumer with no branches"
-                | (_, params, branch_body) :: _ ->
-                    let e' = extend e0 (List.hd params) (IntVal n) in
-                    Some (branch_body, e'))
-           | Producer (m, e1) ->
-               (* Producer passed to consumer - find matching branch *)
-               let (_, params, branch_body) = select_branch m branches in
-               (* Bind producer's captured values to params *)
-               let e1_list = List.rev (Ident.to_list e1) in
-               let e' = List.fold_left2 (fun acc p (_, v) -> extend acc p v) e0 params e1_list in
-               Some (branch_body, e')
-           | Consumer _ ->
-               failwith "axiom: expected producer or int on the left, got consumer")
-      | Some _ ->
-          failwith "axiom: expected consumer on the right")
+       | None -> None  (* Open term - stuck *)
+       | Some (CodataVal (e0, branches)) ->
+           (match lookup e v1 with
+            | IntVal n ->
+                (match branches with
+                   [] -> failwith "axiom: consumer with no branches"
+                 | (_, _, params, branch_body) :: _ ->
+                     let e' = extend e0 (List.hd params) (IntVal n) in
+                     Some (branch_body, e'))
+            | DataVal (m, e1) ->
+                let (_, _, params, branch_body) = select_branch m branches in
+                let e1_list = List.rev (Ident.to_list e1) in
+                let e' = List.fold_left2 (fun acc p (_, val0) -> extend acc p val0) e0 params e1_list in
+                Some (branch_body, e')
+            | _ -> failwith "axiom: expected data or int on the left")
+       | Some (FunVal (e0, px, py, s)) ->
+           (match lookup e v1 with
+            | DataVal (_, e1) ->
+                let e1_list = List.rev (Ident.to_list e1) in
+                (match e1_list with
+                 | [(_, v_x); (_, v_y)] ->
+                     let e' = extend (extend (merge_env e0 e) px v_x) py v_y in
+                     Some (s, e')
+                 | _ -> failwith "axiom: fun expected 2 args")
+            | _ -> failwith "axiom: expected data on the left for fun")
+       | Some (ForallVal (e0, _, s)) ->
+           Some (s, merge_env e0 e)
+       | Some (ThunkVal (e0, px, s)) ->
+           (match lookup e v1 with
+            | DataVal (_, e1) ->
+                let e1_list = List.rev (Ident.to_list e1) in
+                (match e1_list with
+                 | [(_, v0)] ->
+                     let e' = extend (merge_env e0 e) px v0 in
+                     Some (s, e')
+                 | _ -> failwith "axiom: thunk expected 1 arg")
+            | _ -> failwith "axiom: expected data on the left for thunk")
+       | Some (ReturnVal (e0, px, s)) ->
+           (match lookup e v1 with
+            | DataVal (_, e1) ->
+                let e1_list = List.rev (Ident.to_list e1) in
+                (match e1_list with
+                 | [(_, v0)] ->
+                     let e' = extend (merge_env e0 e) px v0 in
+                     Some (s, e')
+                 | _ -> failwith "axiom: return expected 1 arg")
+            | _ -> failwith "axiom: expected data on the left for return")
+       | Some _ -> failwith "axiom: expected codata value on the right")
+
+  (* =========== Primitives =========== *)
 
   (* (lit) ⟨lit n { v ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → n⟩ *)
   | Lit (n, v, body) ->
@@ -220,8 +403,8 @@ let step ((cmd, e): config) : config option =
       if n = 0 then Some (then_cmd, e)
       else Some (else_cmd, e)
 
+  (* =========== Terminals =========== *)
   | End -> None
-
   | Ret _ -> None
 
 (* ========================================================================= *)
@@ -231,7 +414,7 @@ let step ((cmd, e): config) : config option =
 (** Check if machine terminated with a result *)
 let get_result ((cmd, e): config) : value option =
   match cmd with
-    Ret (_, v) -> Some (lookup e v)
+  | Ret (_, v) -> Some (lookup e v)
   | Axiom (_, v1, v2) when lookup_opt e v2 = None ->
       Some (lookup e v1)
   | _ -> None
@@ -239,22 +422,9 @@ let get_result ((cmd, e): config) : value option =
 (** Check if machine is stuck on an open term (axiom with unbound continuation) *)
 let is_open_result ((cmd, e): config) : (var * value) option =
   match cmd with
-    Axiom (_, v1, v2) when lookup_opt e v2 = None ->
+  | Axiom (_, v1, v2) when lookup_opt e v2 = None ->
       Some (v2, lookup e v1)
   | _ -> None
-
-(** Short name for a command (for tracing) *)
-let cmd_name = function
-    Let (v, x, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_xtor x
-  | New (_, v, _, _) -> "new " ^ Ident.name v
-  | Switch (_, v, _) -> "switch " ^ Ident.name v
-  | Invoke (v, x, _) -> Ident.name v ^ "." ^ pp_xtor x
-  | Axiom (_, v, k) -> "axiom(" ^ Ident.name v ^ ", " ^ Ident.name k ^ ")"
-  | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
-  | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
-  | Ifz (v, _, _) -> "ifz " ^ Ident.name v
-  | End -> "end"
-  | Ret (_, v) -> "ret " ^ Ident.name v
 
 (** Run the machine until it stops. Returns (final_config, step_count) *)
 let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * int =
@@ -265,13 +435,13 @@ let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * 
     Printf.printf "    [%d] %s | env has %d bindings\n"
       steps (cmd_name cmd) (List.length (Ident.to_list e));
   match step cfg with
-    None -> (cfg, steps)
+  | None -> (cfg, steps)
   | Some cfg' -> run ~trace ~steps:(steps + 1) ~max_steps cfg'
 
 (** Run with tracing, returning all intermediate configurations *)
 let rec run_trace (cfg: config) : config list =
   cfg :: (match step cfg with
-            None -> []
+          | None -> []
           | Some cfg' -> run_trace cfg')
 
 (** Initialize and run a command. Returns (final_config, step_count) *)

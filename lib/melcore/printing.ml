@@ -6,7 +6,7 @@
 *)
 
 open Common.Identifiers
-open Types
+open Types.MelcoreTypes
 open Terms
 
 (* ========================================================================= *)
@@ -33,6 +33,7 @@ let indent n = "\n" ^ String.make n ' '
 
 let parens s = "(" ^ s ^ ")"
 let braces s = "{" ^ s ^ "}"
+let brackets s = "[" ^ s ^ "]"
 
 (* ========================================================================= *)
 (* Identifier printing                                                       *)
@@ -43,108 +44,134 @@ let pp_ident (id: Ident.t) : string = Ident.name id
 let pp_path (p: Path.t) : string = Path.name p
 
 (* ========================================================================= *)
-(* Kind printing                                                             *)
+(* Type/Kind printing                                                        *)
 (* ========================================================================= *)
 
-let rec pp_kind ?(cfg=default_config) (k: kind) : string =
+(* In the modular type system, kinds are just types with Base polarity *)
+let rec pp_kind ?(cfg=default_config) (k: typ) : string =
   ignore cfg;
   match k with
-    Star -> "type"
+    Base _ -> "type"
   | Arrow (k1, k2) ->
       let s1 = match k1 with
           Arrow _ -> parens (pp_kind k1)
         | _ -> pp_kind k1
       in
       s1 ^ " -> " ^ pp_kind k2
+  | _ -> pp_typ ~cfg k  (* Fall back to type printing for other cases *)
 
-(* ========================================================================= *)
-(* Type printing                                                             *)
-(* ========================================================================= *)
-
-let pp_ext_typ (e: ext_typ) : string =
-  match e with
-    Int -> "int"
-
-let rec pp_typ ?(cfg=default_config) (t: typ) : string =
+and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   match t with
-    Ext e -> pp_ext_typ e
-  | Var {contents = Unbound id} -> pp_ident id
-  | Var {contents = Link t'} -> pp_typ ~cfg t'
-  | Rigid id -> pp_ident id
-  | Sym (s, _, _) -> pp_path s
-  | App (f, []) -> pp_typ ~cfg f
-  | App (f, args) ->
-      let f_str = pp_typ_base ~cfg f in
-      let args_str = List.map (fun a -> parens (pp_typ ~cfg a)) args in
-      f_str ^ String.concat "" args_str
-  | Fun (t1, t2) ->
-      let t1_str = match t1 with
-        | Fun _ -> parens (pp_typ ~cfg t1)
-        | _ -> pp_typ ~cfg t1
+    Base _ -> "type"
+  | Arrow (k1, k2) ->
+      let s1 = match k1 with
+          Arrow _ -> parens (pp_typ ~cfg ~nested:true k1)
+        | _ -> pp_typ ~cfg ~nested:true k1
       in
-      t1_str ^ " -> " ^ pp_typ ~cfg t2
-  | All ((x, k), t) ->
+      let inner = s1 ^ " -> " ^ pp_typ ~cfg ~nested:false k2 in
+      if nested then parens inner else inner
+  | Ext Int -> "int"
+  | TVar id -> pp_ident id
+  | TMeta id -> "?" ^ pp_ident id
+  | Sgn (name, []) -> pp_path name
+  | Sgn (name, args) ->
+      let name_str = pp_path name in
+      let args_str = List.map (fun a -> parens (pp_typ ~cfg ~nested:false a)) args in
+      name_str ^ String.concat "" args_str
+  | PromotedCtor (dec, ctor, []) ->
+      "'" ^ pp_path dec ^ "." ^ pp_path ctor
+  | PromotedCtor (dec, ctor, args) ->
+      let base = "'" ^ pp_path dec ^ "." ^ pp_path ctor in
+      let args_str = List.map (fun a -> parens (pp_typ ~cfg ~nested:false a)) args in
+      base ^ String.concat "" args_str
+  | Fun (dom, cod) ->
+      (* Depolarize to show user-level types *)
+      let dom' = Types.depolarize_domain dom in
+      let cod' = Types.depolarize_codomain cod in
+      let dom_str = match dom' with
+          Fun _ | Forall _ -> parens (pp_typ ~cfg ~nested:true dom')
+        | _ -> pp_typ ~cfg ~nested:true dom'
+      in
+      let inner = dom_str ^ " -> " ^ pp_typ ~cfg ~nested:false cod' in
+      if nested then parens inner else inner
+  | Forall (x, k, body) ->
+      (* Depolarize body to show user-level type *)
+      let body' = Types.depolarize_codomain body in
       let k_str = if cfg.show_kinds then ": " ^ pp_kind ~cfg k else "" in
-      braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg t
-  | Data sgn -> pp_sgn_typ ~cfg sgn
-  | Code sgn -> pp_sgn_typ ~cfg sgn
+      let inner = braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg ~nested:false body' in
+      if nested then parens inner else inner
+  | Raise t -> "^" ^ pp_typ ~cfg ~nested:true t
+  | Lower t -> "v" ^ pp_typ ~cfg ~nested:true t
 
 and pp_typ_base ?(cfg=default_config) (t: typ) : string =
   match t with
-  | Ext _ | Var _ | Rigid _ | Sym _ -> pp_typ ~cfg t
+    Ext _ | TVar _ | TMeta _ | Sgn (_, []) -> pp_typ ~cfg t
   | _ -> parens (pp_typ ~cfg t)
 
 (* pp_typ_atom: types that don't need outer parens in most contexts.
-   App is included because its arguments are already parenthesized: stream(a) not (stream(a)).
-   Only Fun and All need parens since they use infix/prefix syntax. *)
+   App (Sgn with args) is included because its arguments are already parenthesized.
+   Only Fun and Forall need parens since they use infix/prefix syntax. *)
 and pp_typ_atom ?(cfg=default_config) (t: typ) : string =
   match t with
-  | Ext _ | Var _ | Rigid _ | Sym _ | App _ | Data _ | Code _ -> pp_typ ~cfg t
-  | Fun _ | All _ -> parens (pp_typ ~cfg t)
-
-and pp_sgn_typ ?(cfg=default_config) (s: sgn_typ) : string =
-  ignore cfg;
-  pp_path s.name
+    Base _ | Ext _ | TVar _ | TMeta _ | Sgn _
+  | PromotedCtor _ | Arrow _ | Raise _ | Lower _ -> pp_typ ~cfg t
+  | Fun _ | Forall _ -> parens (pp_typ ~cfg t)
 
 (* ========================================================================= *)
 (* Xtor printing                                                             *)
 (* ========================================================================= *)
 
-let pp_binder ?(cfg=default_config) ((id, k): Ident.t * kind) : string =
+let pp_binder ?(cfg=default_config) ((id, k): Ident.t * typ) : string =
   if cfg.show_kinds then
     braces (pp_ident id ^ ": " ^ pp_kind ~cfg k)
   else
     braces (pp_ident id)
 
-let pp_xtor_name (x: xtor) : string = pp_path x.name
+let pp_xtor_name (x: sym) : string = pp_path x
 
-let pp_xtor ?(cfg=default_config) (x: xtor) : string =
+let pp_chiral_typ ?(cfg=default_config) (ct: chiral_typ) : string =
+  pp_typ ~cfg (strip_chirality ct)
+
+(** Print an xtor with its polarity context.
+    - For constructors (data/positive): {qi's} arg0 -> ... -> argN -> main
+    - For destructors (codata/negative): {qi's} main -> argN -> ... -> arg0 *)
+let pp_xtor_with_polarity ?(cfg=default_config) (is_data: bool) (x: xtor) : string =
   let name = pp_path x.name in
-  let params_str = String.concat " " (List.map (pp_binder ~cfg) x.parameters) in
-  let args_str = 
-    if x.arguments = [] then ""
-    else String.concat " -> " (List.map (pp_typ ~cfg) x.arguments)
-  in
+  let params_str = String.concat " " (List.map (pp_binder ~cfg) x.quantified) in
+  let args = List.map (pp_chiral_typ ~cfg) x.argument_types in
   let main_str = pp_typ ~cfg x.main in
-  let sep = if params_str = "" || args_str = "" then "" else " " in
-  let body = params_str ^ sep ^ args_str ^ " -> " ^ main_str in
-  name ^ ": " ^ body
+  let components =
+    if is_data then
+      (* Constructor: arg0 -> ... -> argN -> main *)
+      args @ [main_str]
+    else
+      (* Destructor: main -> argN -> ... -> arg0 *)
+      [main_str] @ List.rev args
+  in
+  let body_str = String.concat " -> " components in
+  let sep = if params_str = "" then "" else " " in
+  name ^ ": " ^ params_str ^ sep ^ body_str
+
+(** Print an xtor assuming constructor format (for backwards compatibility) *)
+let pp_xtor ?(cfg=default_config) (x: xtor) : string =
+  pp_xtor_with_polarity ~cfg true x
 
 (* ========================================================================= *)
-(* Signature printing                                                        *)
+(* Declaration printing                                                      *)
 (* ========================================================================= *)
 
-let pp_sgn_full ?(cfg=default_config) ?(lvl=0) (s: sgn_typ) (is_data: bool) : string =
+let pp_dec_full ?(cfg=default_config) ?(lvl=0) (d: dec) : string =
+  let is_data = (d.polarity = Types.MelcoreBase.Pos) in
   let keyword = if is_data then "data" else "code" in
-  let name = pp_path s.name in
+  let name = pp_path d.name in
   let kind_str =
-    if s.parameters = [] then "type"
-    else String.concat " -> " (List.map (pp_kind ~cfg) s.parameters) ^ " -> type"
+    if d.param_kinds = [] then "type"
+    else String.concat " -> " (List.map (pp_kind ~cfg) d.param_kinds) ^ " -> type"
   in
   let xtors_str =
-    if s.xtors = [] then "{ }"
+    if d.xtors = [] then "{ }"
     else
-      let xtor_strs = List.map (pp_xtor ~cfg) s.xtors in
+      let xtor_strs = List.map (pp_xtor_with_polarity ~cfg is_data) d.xtors in
       "{ " ^ String.concat (indent (lvl + cfg.indent_size) ^ "; ") xtor_strs ^
       indent lvl ^ "}"
   in
@@ -211,15 +238,17 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
       indent lvl ^ "{ " ^ branches_str ^
       indent lvl ^ "}"
   
-  | Ctor (xtor, args) ->
+  | Ctor (_, xtor, ty_args, tm_args) ->
       let name = pp_xtor_name xtor in
-      let args_str = List.map (fun a -> parens (pp_term ~cfg ~lvl a)) args in
-      name ^ String.concat "" args_str
+      let ty_args_str = List.map (fun a -> braces (pp_typ ~cfg a)) ty_args in
+      let tm_args_str = List.map (fun a -> parens (pp_term ~cfg ~lvl a)) tm_args in
+      name ^ String.concat "" ty_args_str ^ String.concat "" tm_args_str
   
-  | Dtor (xtor, args) ->
+  | Dtor (_, xtor, ty_args, tm_args) ->
       let name = pp_xtor_name xtor in
-      let args_str = List.map (fun a -> parens (pp_term ~cfg ~lvl a)) args in
-      name ^ String.concat "" args_str
+      let ty_args_str = List.map (fun a -> braces (pp_typ ~cfg a)) ty_args in
+      let tm_args_str = List.map (fun a -> parens (pp_term ~cfg ~lvl a)) tm_args in
+      name ^ String.concat "" ty_args_str ^ String.concat "" tm_args_str
   
   | Ifz (c, t, e) ->
       "ifz " ^ pp_term ~cfg ~lvl c ^ " then " ^
@@ -227,21 +256,22 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
 
 and pp_term_app ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   match tm with
-  | Int _ | Var _ | Sym _ | Add _ | App _ | Ins _ | Ctor _ | Dtor _ ->
+    Int _ | Var _ | Sym _ | Add _ | App _ | Ins _ | Ctor _ | Dtor _ ->
       pp_term ~cfg ~lvl tm
   | _ -> parens (pp_term ~cfg ~lvl tm)
 
-and pp_branch ?(cfg=default_config) ?(lvl=0) ((xtor, vars, body): branch) : string =
+and pp_branch ?(cfg=default_config) ?(lvl=0) ((xtor, ty_vars, tm_vars, body): branch) : string =
   let name = pp_xtor_name xtor in
-  let vars_str = List.map (fun x -> parens (pp_ident x)) vars in
+  let ty_vars_str = List.map (fun x -> braces (pp_ident x)) ty_vars in
+  let tm_vars_str = List.map (fun x -> parens (pp_ident x)) tm_vars in
   (* For multi-line bodies like Match/New, put on new line with extra indentation *)
   let body_str = match body with
-    | Match _ | New _ ->
+      Match _ | New _ ->
         let body_lvl = lvl + cfg.indent_size in
         indent body_lvl ^ pp_term ~cfg ~lvl:body_lvl body
     | _ -> pp_term ~cfg ~lvl body
   in
-  name ^ String.concat "" vars_str ^ " => " ^ body_str
+  name ^ String.concat "" ty_vars_str ^ String.concat "" tm_vars_str ^ " => " ^ body_str
 
 (* ========================================================================= *)
 (* Typed term printing                                                       *)
@@ -299,12 +329,12 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
       in
       "new { " ^ branches_str ^ " }"
   
-  | TypedCtor (xtor, args, _) ->
+  | TypedCtor (_, xtor, args, _) ->
       let name = pp_xtor_name xtor in
       let args_str = List.map (fun a -> parens (pp_typed_term ~cfg ~lvl a)) args in
       name ^ String.concat "" args_str
   
-  | TypedDtor (xtor, args, _) ->
+  | TypedDtor (_, xtor, args, _) ->
       let name = pp_xtor_name xtor in
       let args_str = List.map (fun a -> parens (pp_typed_term ~cfg ~lvl a)) args in
       name ^ String.concat "" args_str
@@ -315,9 +345,8 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
 
 and pp_typed_term_app ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   match tm with
-  | TypedInt _ | TypedVar _ | TypedSym _ | TypedAdd _ | TypedApp _ 
-  | TypedIns _ | TypedCtor _ | TypedDtor _ ->
-      pp_typed_term ~cfg ~lvl tm
+    TypedInt _ | TypedVar _ | TypedSym _ | TypedAdd _ | TypedApp _ 
+  | TypedIns _ | TypedCtor _ | TypedDtor _ -> pp_typed_term ~cfg ~lvl tm
   | _ -> parens (pp_typed_term ~cfg ~lvl tm)
 
 and pp_typed_clause ?(cfg=default_config) ?(lvl=0) 
@@ -332,9 +361,9 @@ and pp_typed_clause ?(cfg=default_config) ?(lvl=0)
 
 let pp_term_def ?(cfg=default_config) (def: term_def) : string =
   let name = pp_path def.name in
-  let ty_args_str = List.map (pp_binder ~cfg) def.type_args |> String.concat "" in
+  let ty_args_str = List.map (pp_binder ~cfg) def.type_params |> String.concat "" in
   let tm_args_str = 
-    def.term_args 
+    def.term_params 
     |> List.map (fun (x, ty) -> parens (pp_ident x ^ ": " ^ pp_typ ~cfg ty))
     |> String.concat ""
   in
@@ -345,9 +374,9 @@ let pp_term_def ?(cfg=default_config) (def: term_def) : string =
 
 let pp_typed_term_def ?(cfg=default_config) (def: typed_term_def) : string =
   let name = pp_path def.name in
-  let ty_args_str = List.map (pp_binder ~cfg) def.type_args |> String.concat "" in
+  let ty_args_str = List.map (pp_binder ~cfg) def.type_params |> String.concat "" in
   let tm_args_str = 
-    def.term_args 
+    def.term_params 
     |> List.map (fun (x, ty) -> parens (pp_ident x ^ ": " ^ pp_typ ~cfg ty))
     |> String.concat ""
   in
