@@ -11,6 +11,16 @@
   - Algebraic data types automatically promoted to the kind level
 *)
 
+module Prim = struct
+  open Identifiers
+  let fun_sym = Path.of_primitive 1 "fun"
+  let apply_sym = Path.access fun_sym "apply"
+  let lower_sym = Path.of_primitive 2 "lower"
+  let return_sym = Path.access lower_sym "return"
+  let raise_sym = Path.of_primitive 3 "raise"
+  let thunk_sym = Path.access raise_sym "thunk"
+end
+
 module type BASE = sig
   type polarity
   val eq_polarity: polarity -> polarity -> bool
@@ -45,11 +55,7 @@ module TypeSystem(Base: BASE) = struct
     | TMeta of Ident.t
     | Sgn of Path.t * typ list (* Signatures; applied data or codata type *)
     | PromotedCtor of Path.t * Path.t * typ list
-    (* The remaining could have been encoded as signatures *)
-    | Fun of typ * typ (* Only for term types *)
     | Forall of Ident.t * typ * typ (* ∀(x: k). body, has kind - when body : - *)
-    | Raise of typ
-    | Lower of typ
 
   let as_typ = fun pol -> Base pol
 
@@ -91,7 +97,7 @@ module TypeSystem(Base: BASE) = struct
     ; arg_kinds : typ list
     ; result_kind : typ
     }
-
+  
   (* Kind errors *)
   type kind_error =
       Unbound_type_variable of Ident.t
@@ -124,15 +130,6 @@ module TypeSystem(Base: BASE) = struct
     ; typ_vars: typ Ident.tbl
     }
 
-  (* The empty context *)
-  let empty_context : context =
-    { subst = Ident.emptytbl
-    ; decs = Path.emptytbl
-    ; data_kinds = Path.emptytbl
-    ; promoted_ctors = Path.emptytbl
-    ; typ_vars = Ident.emptytbl
-    }
-
   let rec apply_subst sbs t =
     match t with
       TMeta v ->
@@ -141,10 +138,6 @@ module TypeSystem(Base: BASE) = struct
         | None -> t)
     | TVar _ -> t
     | Arrow (t1, t2) -> Arrow (apply_subst sbs t1, apply_subst sbs t2)
-    | Fun (t1, t2) -> Fun (apply_subst sbs t1, apply_subst sbs t2)
-    | Forall (x, k, body) -> Forall (x, apply_subst sbs k, apply_subst sbs body)
-    | Raise t' -> Raise (apply_subst sbs t')
-    | Lower t' -> Lower (apply_subst sbs t')
     | Sgn (name, args) -> Sgn (name, List.map (apply_subst sbs) args)
     | PromotedCtor (data_name, ctor_name, args) ->
         PromotedCtor (data_name, ctor_name, List.map (apply_subst sbs) args)
@@ -155,11 +148,7 @@ module TypeSystem(Base: BASE) = struct
       TVar v' -> Ident.equal v v'
     | TMeta v' -> Ident.equal v v'
     | Arrow (t1, t2) -> occurs v t1 || occurs v t2
-    | Fun (t1, t2) -> occurs v t1 || occurs v t2
-    | Forall (x, k, body) ->
-        occurs v k || (not (Ident.equal v x) && occurs v body)
-    | Raise t' -> occurs v t'
-    | Lower t' -> occurs v t'
+    | Forall (x, k, body) -> occurs v k || (not (Ident.equal v x) && occurs v body)
     | Sgn (_, args) -> List.exists (occurs v) args
     | PromotedCtor (_, _, args) -> List.exists (occurs v) args
     | _ -> false
@@ -172,8 +161,10 @@ module TypeSystem(Base: BASE) = struct
         (match Ident.find_opt v sbs with Some t' -> t' | None -> t)
     | Arrow (t1, t2) ->
         Arrow (apply_fresh_subst sbs t1, apply_fresh_subst sbs t2)
-    | Fun (t1, t2) ->
-        Fun (apply_fresh_subst sbs t1, apply_fresh_subst sbs t2)
+    | Sgn (name, args) ->
+        Sgn (name, List.map (apply_fresh_subst sbs) args)
+    | PromotedCtor (d, c, args) ->
+        PromotedCtor (d, c, List.map (apply_fresh_subst sbs) args)
     | Forall (x, k, body) ->
         (* Avoid capture: if x is in sbs, we need to rename *)
         if Ident.contains_key x sbs then
@@ -182,12 +173,6 @@ module TypeSystem(Base: BASE) = struct
           Forall (x', apply_fresh_subst sbs k, apply_fresh_subst sbs body')
         else
           Forall (x, apply_fresh_subst sbs k, apply_fresh_subst sbs body)
-    | Raise t' -> Raise (apply_fresh_subst sbs t')
-    | Lower t' -> Lower (apply_fresh_subst sbs t')
-    | Sgn (name, args) ->
-        Sgn (name, List.map (apply_fresh_subst sbs) args)
-    | PromotedCtor (d, c, args) ->
-        PromotedCtor (d, c, List.map (apply_fresh_subst sbs) args)
     | _ -> t
 
   let rec unify t1 t2 sbs =
@@ -208,14 +193,10 @@ module TypeSystem(Base: BASE) = struct
     | TVar _, _ | _, TVar _ -> None
     | Arrow (a1, b1), Arrow (a2, b2) ->
         Option.bind (unify a1 a2 sbs) (unify b1 b2)
-    | Fun (a1, b1), Fun (a2, b2) ->
-        Option.bind (unify a1 a2 sbs) (unify b1 b2)
     | Forall (x1, k1, body1), Forall (x2, k2, body2) ->
         (* Alpha-rename x2 to x1 in body2 for comparison *)
         let body2' = apply_fresh_subst (Ident.add x2 (TVar x1) Ident.emptytbl) body2 in
         Option.bind (unify k1 k2 sbs) (unify body1 body2')
-    | Raise t1, Raise t2 -> unify t1 t2 sbs
-    | Lower t1, Lower t2 -> unify t1 t2 sbs
     | Ext e, Ext e' when e = e' -> Some sbs
     | Base pol1, Base pol2 when Base.eq_polarity pol1 pol2 -> Some sbs
     | Sgn (name1, args1), Sgn (name2, args2) when
@@ -329,17 +310,6 @@ module TypeSystem(Base: BASE) = struct
         let* _ = valid_kind ctx k1 in
         let* _ = valid_kind ctx k2 in
         Ok (as_typ Base.code_polarity) (* Arrow types are negative *)
-    | Fun (t1, t2) ->
-        (* In a polarized system: (A: +) -> (B: -) : - *)
-        let* _ = check_kind ctx t1 (as_typ Base.data_polarity) in
-        let* _ = check_kind ctx t2 (as_typ Base.code_polarity) in
-        Ok (as_typ Base.code_polarity)
-    | Raise t ->
-        let* _ = check_kind ctx t (as_typ Base.code_polarity) in
-        Ok (as_typ Base.data_polarity)
-    | Lower t ->
-        let* _ = check_kind ctx t (as_typ Base.data_polarity) in
-        Ok (as_typ Base.code_polarity)
     | Forall (x, k, body) ->
         (* ∀(x: k). body : - when body : - under x: k *)
         let* _ = valid_kind ctx k in
@@ -517,49 +487,78 @@ module TypeSystem(Base: BASE) = struct
       else None
     ) d.xtors
 
-end
-
-module type BASE_TRANSLATION = sig
-  module B1: BASE
-  module B2: BASE
-
-  val translate_polarity: B1.polarity -> B2.polarity
-  val translate_xtor_arg_type: B1.polarity -> int -> TypeSystem(B1).chiral_typ -> TypeSystem(B2).chiral_typ
-end
-
-module TypeTranslation(BaseTrans: BASE_TRANSLATION) = struct
-  module T1 = TypeSystem(BaseTrans.B1)
-  module T2 = TypeSystem(BaseTrans.B2)
-
-  let rec translate_type (t: T1.typ) : T2.typ =
-    match t with
-      T1.Base pol -> T2.Base (BaseTrans.translate_polarity pol)
-    | T1.Arrow (t1, t2) -> T2.Arrow (translate_type t1, translate_type t2)
-    | T1.Ext e -> T2.Ext e
-    | T1.TVar v -> T2.TVar v
-    | T1.TMeta v -> T2.TMeta v
-    | T1.Sgn (p, args) -> T2.Sgn (p, List.map translate_type args)
-    | T1.PromotedCtor (d, c, args) -> T2.PromotedCtor (d, c, List.map translate_type args)
-    | T1.Fun (t1, t2) -> T2.Fun (translate_type t1, translate_type t2)
-    | T1.Forall (x, k, body) -> T2.Forall (x, translate_type k, translate_type body)
-    | T1.Raise t' -> T2.Raise (translate_type t')
-    | T1.Lower t' -> T2.Lower (translate_type t')
-  
-  let translate_xtor (pol: BaseTrans.B1.polarity) (x: T1.xtor) : T2.xtor =
-    { name = x.name
-    ; quantified = List.map (fun (v, k) -> (v, translate_type k)) x.quantified
-    ; existentials = List.map (fun (v, k) -> (v, translate_type k)) x.existentials
+  (* Primitives *)
+  let apply_xtor =
+    let a = Ident.mk "a" in
+    let b = Ident.mk "b" in
+    { name = Prim.apply_sym
+    ; quantified =
+      [ (a, as_typ Base.data_polarity)
+      ; (b, as_typ Base.code_polarity)
+      ]
+    ; existentials = []
     ; argument_types =
-        x.argument_types
-        |> List.mapi (BaseTrans.translate_xtor_arg_type pol)
-    ; main = translate_type x.main
+        [ Base.mk_consumer (TVar b)
+        ; Base.mk_producer (TVar a)
+        ]
+    ; main = Sgn (Prim.fun_sym, [TVar a; TVar b])
     }
   
-  let translate_dec (d: T1.dec) : T2.dec =
-    { name = d.name
-    ; polarity = BaseTrans.translate_polarity d.polarity
-    ; param_kinds = List.map translate_type d.param_kinds
-    ; xtors = List.map (translate_xtor d.polarity) d.xtors
+  let fun_dec =
+    { name = Prim.fun_sym
+    ; polarity = Base.code_polarity
+    ; param_kinds = [as_typ Base.data_polarity; as_typ Base.code_polarity]
+    ; xtors = [ apply_xtor ]
+    }
+
+  let fun_sgn a b = Sgn (Prim.fun_sym, [a; b])
+
+  let thunk_xtor =
+    let a = Ident.mk "a" in
+    { name = Prim.thunk_sym
+    ; quantified = [ (a, as_typ Base.code_polarity) ]
+    ; existentials = []
+    ; argument_types = [ Base.mk_producer (TVar a) ]
+    ; main = Sgn (Prim.raise_sym, [TVar a])
     }
   
+  let raise_dec =
+    { name = Prim.raise_sym
+    ; polarity = Base.data_polarity
+    ; param_kinds = [as_typ Base.code_polarity]
+    ; xtors = [ thunk_xtor ]
+    }
+  
+  let raise_sgn a = Sgn (Prim.raise_sym, [a])
+
+  let return_xtor =
+    let a = Ident.mk "a" in
+    { name = Prim.return_sym
+    ; quantified = [ (a, as_typ Base.data_polarity) ]
+    ; existentials = []
+    ; argument_types = [ Base.mk_producer (TVar a) ]
+    ; main = Sgn (Prim.lower_sym, [TVar a])
+    }
+
+  let lower_dec =
+    { name = Prim.lower_sym
+    ; polarity = Base.code_polarity
+    ; param_kinds = [as_typ Base.data_polarity]
+    ; xtors = [ return_xtor ]
+    }
+
+  let lower_sgn a = Sgn (Prim.lower_sym, [a])
+
+  (* The empty context has the primitive declarations *)
+  let empty_context : context =
+    add_declarations
+      { subst = Ident.emptytbl
+      ; decs = Path.emptytbl
+      ; data_kinds = Path.emptytbl
+      ; promoted_ctors = Path.emptytbl
+      ; typ_vars = Ident.emptytbl
+      } 
+      [ fun_dec; raise_dec; lower_dec ]
+    |> Option.get 
+
 end

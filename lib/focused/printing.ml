@@ -68,14 +68,6 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   | PromotedCtor (dec, ctor, args) ->
       let args_str = comma_sep (List.map (pp_typ ~cfg ~nested:false) args) in
       "'" ^ pp_sym dec ^ "." ^ pp_sym ctor ^ brackets args_str
-  | Fun (t1, t2) ->
-      let s1 = match t1 with
-        | Fun _ | Forall _ -> parens (pp_typ ~cfg ~nested:true t1)
-        | _ -> pp_typ ~cfg ~nested:true t1
-      in
-      let arrow = if cfg.unicode then " → " else " -> " in
-      let inner = s1 ^ arrow ^ pp_typ ~cfg ~nested:false t2 in
-      if nested then parens inner else inner
   | Forall (id, k, body) ->
       let binder = 
         if cfg.show_types 
@@ -84,10 +76,6 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       in
       let inner = binder ^ pp_typ ~cfg ~nested:false body in
       if nested then parens inner else inner
-  | Raise t -> 
-      "↑" ^ pp_typ ~cfg ~nested:true t
-  | Lower t -> 
-      "↓" ^ pp_typ ~cfg ~nested:true t
 
 let typ_to_string (t: typ) : string = pp_typ ~cfg:default_config ~nested:false t
 
@@ -134,28 +122,10 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       ind ^ "let " ^ pp_var v ^ " = " ^ pp_sym x ^ tys_str ^ args_str ^ ";\n" ^
       pp_cmd ~cfg n body
 
-  (* let v = apply{t1, t2}(x, y); body *)
-  | LetApply (v, t1, t2, x, y, body) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ t1 ^ ", " ^ pp_typ t2 ^ "}" else "" in
-      ind ^ "let " ^ pp_var v ^ " = apply" ^ tys_str ^ "(" ^ pp_var x ^ ", " ^ pp_var y ^ ");\n" ^
-      pp_cmd ~cfg n body
-
   (* let v = instantiate[a]{k, t}; body *)
   | LetInstantiate (v, a, k, t, body) ->
       let tys_str = if cfg.show_types then "{" ^ pp_typ k ^ ", " ^ pp_typ t ^ "}" else "" in
       ind ^ "let " ^ pp_var v ^ " = instantiate[" ^ pp_var a ^ "]" ^ tys_str ^ ";\n" ^
-      pp_cmd ~cfg n body
-
-  (* let v = thunk{t}(x); body *)
-  | LetThunk (v, t, x, body) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "let " ^ pp_var v ^ " = thunk" ^ ty_str ^ "(" ^ pp_var x ^ ");\n" ^
-      pp_cmd ~cfg n body
-
-  (* let v = return{t}(x); body *)
-  | LetReturn (v, t, x, body) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "let " ^ pp_var v ^ " = return" ^ ty_str ^ "(" ^ pp_var x ^ ");\n" ^
       pp_cmd ~cfg n body
 
   (* =========== Switch forms =========== *)
@@ -167,35 +137,11 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       pp_branches ~cfg (n + cfg.indent_size) branches ^ "\n" ^
       ind ^ "}"
 
-  (* switch v { apply{t1, t2}(x, y) ⇒ s } *)
-  | SwitchFun (v, t1, t2, x, y, s) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ t1 ^ ", " ^ pp_typ t2 ^ "}" else "" in
-      ind ^ "switch " ^ pp_var v ^ " {\n" ^
-      ind ^ "  apply" ^ tys_str ^ "(" ^ pp_var x ^ ", " ^ pp_var y ^ ") ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s ^ "\n" ^
-      ind ^ "}"
-
   (* switch v { instantiate[a]{k} ⇒ s } *)
   | SwitchForall (v, a, k, s) ->
       let ty_str = if cfg.show_types then "{" ^ pp_typ k ^ "}" else "" in
       ind ^ "switch " ^ pp_var v ^ " {\n" ^
       ind ^ "  instantiate[" ^ pp_var a ^ "]" ^ ty_str ^ " ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s ^ "\n" ^
-      ind ^ "}"
-
-  (* switch v { thunk{t}(x) ⇒ s } *)
-  | SwitchRaise (v, t, x, s) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "switch " ^ pp_var v ^ " {\n" ^
-      ind ^ "  thunk" ^ ty_str ^ "(" ^ pp_var x ^ ") ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s ^ "\n" ^
-      ind ^ "}"
-
-  (* switch v { return{t}(x) ⇒ s } *)
-  | SwitchLower (v, t, x, s) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "switch " ^ pp_var v ^ " {\n" ^
-      ind ^ "  return" ^ ty_str ^ "(" ^ pp_var x ^ ") ⇒\n" ^
       pp_cmd ~cfg (n + cfg.indent_size * 2) s ^ "\n" ^
       ind ^ "}"
 
@@ -209,38 +155,11 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       ind ^ "};\n" ^
       pp_cmd ~cfg n body
 
-  (* new v = { apply{t1, t2}(x, y) ⇒ s1 }; s2 *)
-  | NewFun (v, t1, t2, x, y, s1, s2) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ t1 ^ ", " ^ pp_typ t2 ^ "}" else "" in
-      ind ^ "new " ^ pp_var v ^ " = {\n" ^
-      ind ^ "  apply" ^ tys_str ^ "(" ^ pp_var x ^ ", " ^ pp_var y ^ ") ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s1 ^ "\n" ^
-      ind ^ "};\n" ^
-      pp_cmd ~cfg n s2
-
   (* new v = { instantiate[a]{k} ⇒ s1 }; s2 *)
   | NewForall (v, a, k, s1, s2) ->
       let ty_str = if cfg.show_types then "{" ^ pp_typ k ^ "}" else "" in
       ind ^ "new " ^ pp_var v ^ " = {\n" ^
       ind ^ "  instantiate[" ^ pp_var a ^ "]" ^ ty_str ^ " ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s1 ^ "\n" ^
-      ind ^ "};\n" ^
-      pp_cmd ~cfg n s2
-
-  (* new v = { thunk{t}(x) ⇒ s1 }; s2 *)
-  | NewRaise (v, t, x, s1, s2) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "new " ^ pp_var v ^ " = {\n" ^
-      ind ^ "  thunk" ^ ty_str ^ "(" ^ pp_var x ^ ") ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s1 ^ "\n" ^
-      ind ^ "};\n" ^
-      pp_cmd ~cfg n s2
-
-  (* new v = { return{t}(x) ⇒ s1 }; s2 *)
-  | NewLower (v, t, x, s1, s2) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ "new " ^ pp_var v ^ " = {\n" ^
-      ind ^ "  return" ^ ty_str ^ "(" ^ pp_var x ^ ") ⇒\n" ^
       pp_cmd ~cfg (n + cfg.indent_size * 2) s1 ^ "\n" ^
       ind ^ "};\n" ^
       pp_cmd ~cfg n s2
@@ -253,25 +172,10 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
       ind ^ pp_var v ^ "." ^ pp_sym x ^ tys_str ^ args_str
 
-  (* invoke v apply{t1, t2}(x, y) *)
-  | InvokeApply (v, t1, t2, x, y) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ t1 ^ ", " ^ pp_typ t2 ^ "}" else "" in
-      ind ^ pp_var v ^ ".apply" ^ tys_str ^ "(" ^ pp_var x ^ ", " ^ pp_var y ^ ")"
-
   (* invoke v instantiate{ty, k} *)
   | InvokeInstantiate (v, ty, k) ->
       let tys_str = if cfg.show_types then "{" ^ pp_typ ty ^ ", " ^ pp_typ k ^ "}" else "" in
       ind ^ pp_var v ^ ".instantiate" ^ tys_str
-
-  (* invoke v thunk{t}(x) *)
-  | InvokeThunk (v, t, x) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ pp_var v ^ ".thunk" ^ ty_str ^ "(" ^ pp_var x ^ ")"
-
-  (* invoke v return{t}(x) *)
-  | InvokeReturn (v, t, x) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ t ^ "}" else "" in
-      ind ^ pp_var v ^ ".return" ^ ty_str ^ "(" ^ pp_var x ^ ")"
 
   (* =========== Axiom =========== *)
 

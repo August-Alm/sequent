@@ -236,12 +236,3 @@ This compiler is based on:
 ## License
 
 [To be determined]
-
-
-
-TransmissionStatusAccepted
-TransmissionStatusPartiallyAccepted
-TransmissionStatusAllRejected
-TransmissionStatusPartiallyAccepted
-TransmissionStatusRejected
-TransmissionStatusFailed

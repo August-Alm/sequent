@@ -95,25 +95,13 @@ let rec pp_config ((cmd, e): config) : string =
 
 and cmd_name = function
   | Let (v, _, x, _, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_sym x ^ "(...)"
-  | LetApply (v, _, _, _, _, _) -> "let " ^ Ident.name v ^ " = apply(...)"
   | LetInstantiate (v, _, _, _, _) -> "let " ^ Ident.name v ^ " = instantiate[...]"
-  | LetThunk (v, _, _, _) -> "let " ^ Ident.name v ^ " = thunk(...)"
-  | LetReturn (v, _, _, _) -> "let " ^ Ident.name v ^ " = return(...)"
   | Switch (_, v, _) -> "switch " ^ Ident.name v
-  | SwitchFun (v, _, _, _, _, _) -> "switch " ^ Ident.name v ^ " {apply...}"
   | SwitchForall (v, _, _, _) -> "switch " ^ Ident.name v ^ " {instantiate...}"
-  | SwitchRaise (v, _, _, _) -> "switch " ^ Ident.name v ^ " {thunk...}"
-  | SwitchLower (v, _, _, _) -> "switch " ^ Ident.name v ^ " {return...}"
   | New (_, v, _, _) -> "new " ^ Ident.name v
-  | NewFun (v, _, _, _, _, _, _) -> "new " ^ Ident.name v ^ " {apply...}"
   | NewForall (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {instantiate...}"
-  | NewRaise (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {thunk...}"
-  | NewLower (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {return...}"
   | Invoke (v, _, x, _, _) -> Ident.name v ^ "." ^ pp_sym x
-  | InvokeApply (v, _, _, _, _) -> Ident.name v ^ ".apply(...)"
   | InvokeInstantiate (v, _, _) -> Ident.name v ^ ".instantiate[...]"
-  | InvokeThunk (v, _, _) -> Ident.name v ^ ".thunk(...)"
-  | InvokeReturn (v, _, _) -> Ident.name v ^ ".return(...)"
   | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
   | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
   | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
@@ -137,31 +125,10 @@ let step ((cmd, e): config) : config option =
       let e' = extend e v (DataVal (m, e0)) in
       Some (body, e')
 
-  (* (let-apply) Constructs Fun value with captured args *)
-  | LetApply (v, _, _, x, y, body) ->
-      let e0 = sub_env e [x; y] in
-      let apply_sym = Path.of_string "apply" in
-      let e' = extend e v (DataVal (apply_sym, e0)) in
-      Some (body, e')
-
   (* (let-instantiate) Constructs Forall value - type argument is erased *)
   | LetInstantiate (v, _, _, _, body) ->
       let inst_sym = Path.of_string "instantiate" in
       let e' = extend e v (DataVal (inst_sym, empty_env)) in
-      Some (body, e')
-
-  (* (let-thunk) Constructs Raise value *)
-  | LetThunk (v, _, x, body) ->
-      let e0 = sub_env e [x] in
-      let thunk_sym = Path.of_string "thunk" in
-      let e' = extend e v (DataVal (thunk_sym, e0)) in
-      Some (body, e')
-
-  (* (let-return) Constructs Lower value *)
-  | LetReturn (v, _, x, body) ->
-      let e0 = sub_env e [x] in
-      let return_sym = Path.of_string "return" in
-      let e' = extend e v (DataVal (return_sym, e0)) in
       Some (body, e')
 
   (* =========== New forms =========== *)
@@ -172,24 +139,9 @@ let step ((cmd, e): config) : config option =
       let e' = extend e v (CodataVal (e, branches)) in
       Some (body, e')
 
-  (* (new-fun) Creates a Fun codata value *)
-  | NewFun (v, _, _, x, y, s1, s2) ->
-      let e' = extend e v (FunVal (e, x, y, s1)) in
-      Some (s2, e')
-
   (* (new-forall) Creates a Forall codata value *)
   | NewForall (v, a, _, s1, s2) ->
       let e' = extend e v (ForallVal (e, a, s1)) in
-      Some (s2, e')
-
-  (* (new-raise) Creates a Raise codata value *)
-  | NewRaise (v, _, x, s1, s2) ->
-      let e' = extend e v (ThunkVal (e, x, s1)) in
-      Some (s2, e')
-
-  (* (new-lower) Creates a Lower codata value *)
-  | NewLower (v, _, x, s1, s2) ->
-      let e' = extend e v (ReturnVal (e, x, s1)) in
       Some (s2, e')
 
   (* =========== Switch forms =========== *)
@@ -211,50 +163,11 @@ let step ((cmd, e): config) : config option =
                 Some (branch_body, e'))
        | _ -> failwith "switch: expected data value")
 
-  (* (switch-fun) Destructure Fun value *)
-  | SwitchFun (v, _, _, x, y, s) ->
-      (match lookup e v with
-       | DataVal (_, e0) ->
-           let e0_list = List.rev (Ident.to_list e0) in
-           (match e0_list with
-            | [(_, v1); (_, v2)] ->
-                let e' = extend (extend e x v1) y v2 in
-                Some (s, e')
-            | _ -> failwith "switch-fun: expected 2 args in data value")
-       | FunVal (e0, _, _, _) ->
-           (* Pass through the captured environment *)
-           Some (s, merge_env e e0)
-       | _ -> failwith "switch-fun: expected fun value")
-
   (* (switch-forall) Destructure Forall value - types are erased *)
   | SwitchForall (v, _, _, s) ->
       (match lookup e v with
        | DataVal _ | ForallVal _ -> Some (s, e)
        | _ -> failwith "switch-forall: expected forall value")
-
-  (* (switch-raise) Destructure Raise value *)
-  | SwitchRaise (v, _, x, s) ->
-      (match lookup e v with
-       | DataVal (_, e0) ->
-           let e0_list = List.rev (Ident.to_list e0) in
-           (match e0_list with
-            | [(_, v0)] ->
-                let e' = extend e x v0 in
-                Some (s, e')
-            | _ -> failwith "switch-raise: expected 1 arg in data value")
-       | _ -> failwith "switch-raise: expected raise value")
-
-  (* (switch-lower) Destructure Lower value *)
-  | SwitchLower (v, _, x, s) ->
-      (match lookup e v with
-       | DataVal (_, e0) ->
-           let e0_list = List.rev (Ident.to_list e0) in
-           (match e0_list with
-            | [(_, v0)] ->
-                let e' = extend e x v0 in
-                Some (s, e')
-            | _ -> failwith "switch-lower: expected 1 arg in data value")
-       | _ -> failwith "switch-lower: expected lower value")
 
   (* =========== Invoke forms =========== *)
 
@@ -270,21 +183,6 @@ let step ((cmd, e): config) : config option =
            Some (branch_body, e')
        | _ -> failwith "invoke: expected codata value")
 
-  (* (invoke-apply) Apply a Fun codata value *)
-  | InvokeApply (v, _, _, x, y) ->
-      (match lookup e v with
-       | FunVal (e0, px, py, s) ->
-           let e' = extend (extend (merge_env e0 e) px (lookup e x)) py (lookup e y) in
-           Some (s, e')
-       | CodataVal (e0, branches) ->
-           let apply_sym = Path.of_string "apply" in
-           let (_, _, params, branch_body) = select_branch apply_sym branches in
-           let arg_vals = [lookup e x; lookup e y] in
-           let e_merged = merge_env e0 e in
-           let e' = List.fold_left2 extend e_merged params arg_vals in
-           Some (branch_body, e')
-       | _ -> failwith "invoke-apply: expected fun value")
-
   (* (invoke-instantiate) Instantiate a Forall codata value - type erased *)
   | InvokeInstantiate (v, _, _) ->
       (match lookup e v with
@@ -295,34 +193,6 @@ let step ((cmd, e): config) : config option =
            let (_, _, _, branch_body) = select_branch inst_sym branches in
            Some (branch_body, merge_env e0 e)
        | _ -> failwith "invoke-instantiate: expected forall value")
-
-  (* (invoke-thunk) Force a Raise codata value *)
-  | InvokeThunk (v, _, x) ->
-      (match lookup e v with
-       | ThunkVal (e0, px, s) ->
-           let e' = extend (merge_env e0 e) px (lookup e x) in
-           Some (s, e')
-       | CodataVal (e0, branches) ->
-           let thunk_sym = Path.of_string "thunk" in
-           let (_, _, params, branch_body) = select_branch thunk_sym branches in
-           let e_merged = merge_env e0 e in
-           let e' = List.fold_left2 extend e_merged params [lookup e x] in
-           Some (branch_body, e')
-       | _ -> failwith "invoke-thunk: expected thunk value")
-
-  (* (invoke-return) Receive from a Lower codata value *)
-  | InvokeReturn (v, _, x) ->
-      (match lookup e v with
-       | ReturnVal (e0, px, s) ->
-           let e' = extend (merge_env e0 e) px (lookup e x) in
-           Some (s, e')
-       | CodataVal (e0, branches) ->
-           let return_sym = Path.of_string "return" in
-           let (_, _, params, branch_body) = select_branch return_sym branches in
-           let e_merged = merge_env e0 e in
-           let e' = List.fold_left2 extend e_merged params [lookup e x] in
-           Some (branch_body, e')
-       | _ -> failwith "invoke-return: expected return value")
 
   (* =========== Axiom =========== *)
 

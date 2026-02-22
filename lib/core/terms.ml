@@ -37,26 +37,12 @@ and term =
   | MuPrd of typ * var * command
   (* μC binds producer var, forms consumer *)
   | MuCns of typ * var * command
-  (* We treat the Fun(t, u) type as a codata type:
-      NewFun ~ comatch { apply(x: prd t, k: cns u) => cmd } *)
-  | NewFun of typ * typ * var * var * command
-  | ApplyDtor of typ * typ * term * term
   (* We treat the Forall(a, k, t) as a codata type:
       NewForall ~ comatch { instantiate[a] => cmd }
     The instantiate destructor works as an xtor with
     an existentially bound type parameter `a` of kind `k`. *)
   | NewForall of var * typ * typ * command
   | InstantiateDtor of typ
-  (* We treat Raise(t) as a data type with a single constructor
-    "thunk" that packs a codata type.
-      MatchRaise ~ match { thunk(x: prd t) => cmd } *)
-  | MatchRaise of typ * var * command
-  | ThunkCtor of typ * term
-  (* We treat Lower(t) as a codata type with a single destructor
-    "return" that unpacks a data type.
-      NewLower ~ comatch { return(x: cns t) => cmd } *)
-  | NewLower of typ * var * command
-  | ReturnDtor of typ * term
 
 (* xtor{t0, .., tn}(x0, .., xm) => cmd *)
 and branch = sym * (var list) * (var list) * command
@@ -383,8 +369,8 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       let* dec = lookup_dec ctx dec_name in
       let fresh_vars = freshen_kinds dec.param_kinds in
       let scrutinee_args = List.map (fun (v, _) -> TMeta v) fresh_vars in
-      let* _ =
-        check_branches ctx dec scrutinee_args branches check_command subs in
+      let* _ = check_branches ctx dec scrutinee_args branches
+        check_command subs in
       (* Comatch produces Prd (producer) of the codata type *)
       Ok (Prd (Sgn (dec_name, scrutinee_args)), subs)
   | MuPrd (ty, x, cmd) ->
@@ -397,24 +383,6 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       let ctx' = extend ctx k (Prd ty) in
       let* _ = check_command ctx' subs cmd in
       Ok (Cns ty, subs)
-  | NewFun (t, u, x, k, cmd) ->
-      (* NewFun ~ comatch { apply(x: prd t, k: cns u) => cmd }
-         Binds x : Prd t, k : Cns u, produces Prd (Fun t u) *)
-      let ctx' = extend (extend ctx x (Prd t)) k (Cns u) in
-      let* _ = check_command ctx' subs cmd in
-      Ok (Prd (Fun (t, u)), subs)
-  | ApplyDtor (t, u, arg, cont) ->
-      (* apply destructor: takes prd t and cns u, produces Cns (Fun t u) *)
-      let* (arg_ct, subs') = infer_typ ctx subs arg in
-      let* (cont_ct, subs'') = infer_typ ctx subs' cont in
-      let* arg_ty = expect_prd arg_ct in
-      let* cont_ty = expect_cns cont_ct in
-      (match unify arg_ty t subs'' with
-        None -> Error (UnificationFailed (arg_ty, t))
-      | Some subs''' ->
-          (match unify cont_ty u subs''' with
-            None -> Error (UnificationFailed (cont_ty, u))
-          | Some subs4 -> Ok (Cns (Fun (t, u)), subs4)))
   | NewForall (a, k, body_ty, cmd) ->
       (* NewForall ~ comatch { instantiate[a: k] => cmd }
          Binds type var a : k, produces Prd (Forall a k body_ty) *)
@@ -430,32 +398,6 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       (* Substitute ty_arg for a in body *)
       let inst_body = apply_fresh_subst (Ident.add a ty_arg Ident.emptytbl) body in
       Ok (Cns (Forall (a, k, inst_body)), subs)
-  | MatchRaise (t, x, cmd) ->
-      (* MatchRaise ~ match { thunk(x: prd t) => cmd }
-        Binds x : Prd t, produces Cns (Raise t) *)
-      let ctx' = extend ctx x (Prd t) in
-      let* _ = check_command ctx' subs cmd in
-      Ok (Cns (Raise t), subs)
-  | ThunkCtor (t, arg) ->
-      (* thunk constructor: takes prd t, produces Prd (Raise t) *)
-      let* (arg_ct, subs') = infer_typ ctx subs arg in
-      let* arg_ty = expect_prd arg_ct in
-      (match unify arg_ty t subs' with
-        None -> Error (UnificationFailed (arg_ty, t))
-      | Some subs'' -> Ok (Prd (Raise t), subs''))
-  | NewLower (t, x, cmd) ->
-      (* NewLower ~ comatch { return(x: cns t) => cmd }
-        Binds x : Cns t, produces Prd (Lower t) *)
-      let ctx' = extend ctx x (Cns t) in
-      let* _ = check_command ctx' subs cmd in
-      Ok (Prd (Lower t), subs)
-  | ReturnDtor (t, arg) ->
-      (* return destructor: takes cns t, produces Cns (Lower t) *)
-      let* (arg_ct, subs') = infer_typ ctx subs arg in
-      let* arg_ty = expect_cns arg_ct in
-      (match unify arg_ty t subs' with
-        None -> Error (UnificationFailed (arg_ty, t))
-      | Some subs'' -> Ok (Cns (Lower t), subs''))
 
 (** Check a command under context and substitution *)
 and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_result =

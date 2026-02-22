@@ -17,7 +17,7 @@ module CoreBase = struct
   type polarity = Pos | Neg
   let eq_polarity p1 p2 = (p1 = p2)
   let data_polarity = Pos
-  let code_polarity = Pos
+  let code_polarity = Neg
   let polarities = [Pos; Neg]
 
   type 'a chiral = Prd of 'a | Cns of 'a

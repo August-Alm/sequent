@@ -120,8 +120,8 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
           (* Complex type in function position - not supported *)
           failwith "Complex type application not supported")
 
-  | AST_TyFun (t1, t2) ->
-      MT.Fun (typ_of_ast ctx t1, typ_of_ast ctx t2)
+  | AST_TyFun (t1, t2) -> (* TODO: Is this really correct? Doesn't handle polarization *)
+      MT.fun_sgn (typ_of_ast ctx t1) (typ_of_ast ctx t2)
 
   | AST_TyAll ((x, k_opt), t) ->
       let k = match k_opt with Some k -> kind_of_ast k | None -> default_kind in

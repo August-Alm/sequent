@@ -74,6 +74,18 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   | TVar id -> pp_ident id
   | TMeta id -> "?" ^ pp_ident id
   | Sgn (name, []) -> pp_path name
+  | Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
+      (* Depolarize to show user-level types *)
+      let dom' = Types.depolarize_domain dom in
+      let cod' = Types.depolarize_codomain cod in
+      let dom_str = match dom' with
+          Sgn (s, [_; _]) when Path.equal s Common.Types.Prim.fun_sym ->
+            parens (pp_typ ~cfg ~nested:true dom')
+        | Forall _ -> parens (pp_typ ~cfg ~nested:true dom')
+        | _ -> pp_typ ~cfg ~nested:true dom'
+      in
+      let inner = dom_str ^ " -> " ^ pp_typ ~cfg ~nested:false cod' in
+      if nested then parens inner else inner
   | Sgn (name, args) ->
       let name_str = pp_path name in
       let args_str = List.map (fun a -> parens (pp_typ ~cfg ~nested:false a)) args in
@@ -84,24 +96,12 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       let base = "'" ^ pp_path dec ^ "." ^ pp_path ctor in
       let args_str = List.map (fun a -> parens (pp_typ ~cfg ~nested:false a)) args in
       base ^ String.concat "" args_str
-  | Fun (dom, cod) ->
-      (* Depolarize to show user-level types *)
-      let dom' = Types.depolarize_domain dom in
-      let cod' = Types.depolarize_codomain cod in
-      let dom_str = match dom' with
-          Fun _ | Forall _ -> parens (pp_typ ~cfg ~nested:true dom')
-        | _ -> pp_typ ~cfg ~nested:true dom'
-      in
-      let inner = dom_str ^ " -> " ^ pp_typ ~cfg ~nested:false cod' in
-      if nested then parens inner else inner
   | Forall (x, k, body) ->
       (* Depolarize body to show user-level type *)
       let body' = Types.depolarize_codomain body in
       let k_str = if cfg.show_kinds then ": " ^ pp_kind ~cfg k else "" in
       let inner = braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg ~nested:false body' in
       if nested then parens inner else inner
-  | Raise t -> "^" ^ pp_typ ~cfg ~nested:true t
-  | Lower t -> "v" ^ pp_typ ~cfg ~nested:true t
 
 and pp_typ_base ?(cfg=default_config) (t: typ) : string =
   match t with
@@ -113,9 +113,8 @@ and pp_typ_base ?(cfg=default_config) (t: typ) : string =
    Only Fun and Forall need parens since they use infix/prefix syntax. *)
 and pp_typ_atom ?(cfg=default_config) (t: typ) : string =
   match t with
-    Base _ | Ext _ | TVar _ | TMeta _ | Sgn _
-  | PromotedCtor _ | Arrow _ | Raise _ | Lower _ -> pp_typ ~cfg t
-  | Fun _ | Forall _ -> parens (pp_typ ~cfg t)
+    Base _ | Ext _ | TVar _ | TMeta _ | Sgn _ | PromotedCtor _ | Arrow _ -> pp_typ ~cfg t
+  | Forall _ -> parens (pp_typ ~cfg t)
 
 (* ========================================================================= *)
 (* Xtor printing                                                             *)

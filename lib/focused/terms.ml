@@ -38,19 +38,10 @@ type command =
     (* v, T_name, m, ti's, xi's, s *)
     Let of var * sym * sym * (typ list) * (var list) * command
 
-    (* `Let` for the xtor of the built-in signature `Fun(t1, t2)`:
-      let v = apply{t1, t2}(x, y); s *)
-  | LetApply of var * typ * typ * var * var * command (* v, t1, t2, x, y, s *)
     (* `Let` for the xtor of the built-in signature `Forall(a, k, t)`:
       let v = instantiate{k, t}[ty_arg]; s 
       This provides a type argument ty_arg and creates a producer of Forall *)
   | LetInstantiate of var * var * typ * typ * command (* v, a, k, body_ty, s *)
-    (* `Let` for the xtor of the built-in signature `Raise(t)`:
-      let v = thunk{t}(x); s *)
-  | LetThunk of var * typ * var * command (* v, t, x, s *)
-    (* `Let` for the xtor of the built-in signature `Lower(t)`:
-      let v = return{t}(x); s *)
-  | LetReturn of var * typ * var * command (* v, t, x, s *)
 
     (* switch v {m1(y1, ...) ⇒ s1, ...}
        
@@ -62,14 +53,8 @@ type command =
     (* T_name, v, branches *)
   | Switch of sym * var * branch list
 
-    (* switch v {apply{t1, t2}(x, y) ⇒ s} *)
-  | SwitchFun of var * typ * typ * var * var * command (* v, t1, t2, x, y, s *)
     (* switch v {instantiate_k[a] ⇒ s} *)
   | SwitchForall of var * var * typ * command (* v, a, k, s *)
-    (* switch v {thunk{t}(x) ⇒ s} *)
-  | SwitchRaise of var * typ * var * command (* v, t, x, s *)
-    (* switch v {return{t}(x) ⇒ s} *)
-  | SwitchLower of var * typ * var * command (* v, t, x, s *)
 
     (* new v = {m1(y1, ...) ⇒ s1, ...}; s
        
@@ -81,14 +66,8 @@ type command =
     (* T_name, v, branches, s *)
   | New of sym * var * branch list * command
 
-    (* new v = {apply{t1, t2}(x, y) ⇒ s1}; s2 *)
-  | NewFun of var * typ * typ * var * var * command * command (* v, t1, t2, x, y, s1, s2 *)
     (* new v = {instantiate_k_t[a] ⇒ s1}; s2 *)
   | NewForall of var * var * typ * command * command (* v, a, k, s1, s2 *)
-    (* new v = {thunk{t}(x) ⇒ s1}; s2 *)
-  | NewRaise of var * typ * var * command * command (* v, t, x, s1, s2 *)
-    (* new v = {return{t}(x) ⇒ s1}; s2 *)
-  | NewLower of var * typ * var * command * command (* v, t, x, s1, s2 *)
 
     (* invoke v m(x1, ...)
        
@@ -100,14 +79,8 @@ type command =
     (* v, T_name, m, ti's, xi's *)
   | Invoke of var * sym * sym * (typ list) * (var list)
 
-    (* invoke v apply{t1, t2}(x, y) *)
-  | InvokeApply of var * typ * typ * var * var (* v, t1, t2, x, y *)
     (* invoke v instantiate_k[ty_arg] *)
   | InvokeInstantiate of var * typ * typ (* v, ty_arg, k *)
-    (* invoke v thunk{t}(x) *)
-  | InvokeThunk of var * typ * var (* v, t, x *)
-    (* invoke v return{t}(x) *)
-  | InvokeReturn of var * typ * var (* v, t, x *)
 
     (* ⟨v | k⟩
        
@@ -334,21 +307,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               let v_typ = Prd inst_main in
               check_command (extend ctx v v_typ) subs' body)
 
-  (* let v = apply{t1, t2}(x, y); s *)
-  | LetApply (v, t1, t2, x, y, body) ->
-      let* x_ct = lookup_var ctx x in
-      let* y_ct = lookup_var ctx y in
-      let* x_ty = expect_prd x_ct in
-      let* y_ty = expect_cns y_ct in
-      (match unify x_ty t1 subs with
-        None -> Error (UnificationFailed (x_ty, t1))
-      | Some subs' ->
-          (match unify y_ty t2 subs' with
-            None -> Error (UnificationFailed (y_ty, t2))
-          | Some subs'' ->
-              let v_typ = Prd (Fun (t1, t2)) in
-              check_command (extend ctx v v_typ) subs'' body))
-
   (* let v = instantiate{k, body_ty}[a]; s *)
   | LetInstantiate (v, a, k, body_ty, body) ->
       (* Creates producer of Forall(a, k, body_ty) *)
@@ -356,48 +314,21 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let ctx' = extend_tyvar ctx a k in
       check_command (extend ctx' v v_typ) subs body
 
-  (* let v = thunk{t}(x); s *)
-  | LetThunk (v, t, x, body) ->
-      let* x_ct = lookup_var ctx x in
-      let* x_ty = expect_cns x_ct in
-      (match unify x_ty t subs with
-        None -> Error (UnificationFailed (x_ty, t))
-      | Some subs' ->
-          let v_typ = Prd (Raise t) in
-          check_command (extend ctx v v_typ) subs' body)
-
-  (* let v = return{t}(x); s *)
-  | LetReturn (v, t, x, body) ->
-      let* x_ct = lookup_var ctx x in
-      let* x_ty = expect_prd x_ct in
-      (match unify x_ty t subs with
-        None -> Error (UnificationFailed (x_ty, t))
-      | Some subs' ->
-          let v_typ = Prd (Lower t) in
-          check_command (extend ctx v v_typ) subs' body)
-
   (* switch v {...} *)
   | Switch (dec_name, v, branches) ->
       let* dec = lookup_dec ctx dec_name in
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
-      let* (sgn_name, sgn_args) = expect_sgn v_ty subs in
-      if not (Path.equal sgn_name dec_name) then
-        Error (UnificationFailed (v_ty, Sgn (dec_name, [])))
-      else
-        check_switch_branches ctx dec sgn_args
-          branches check_command subs
-
-  (* switch v {apply{t1, t2}(x, y) => s}
-     Switch always expects v to be a producer. *)
-  | SwitchFun (v, t1, t2, x, y, body) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_prd v_ct in
-      (match unify v_ty (Fun (t1, t2)) subs with
-        None -> Error (UnificationFailed (v_ty, Fun (t1, t2)))
+      (* Create fresh metas for the declaration's type parameters *)
+      let fresh_params = freshen_kinds dec.param_kinds in
+      let expected_args = List.map (fun (v, _) -> TMeta v) fresh_params in
+      let expected_ty = Sgn (dec_name, expected_args) in
+      (* Unify v's type with the expected signature *)
+      (match unify v_ty expected_ty subs with
+        None -> Error (UnificationFailed (v_ty, expected_ty))
       | Some subs' ->
-          let ctx' = extend (extend ctx x (Prd t1)) y (Cns t2) in
-          check_command ctx' subs' body)
+          check_switch_branches ctx dec expected_args
+            branches check_command subs')
 
   (* switch v {instantiate_k[a] => s}
      Switch always expects v to be a producer. *)
@@ -412,27 +343,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           let ctx' = extend_tyvar ctx a k in
           check_command ctx' subs' body)
 
-  (* switch v {thunk{t}(x) => s} *)
-  | SwitchRaise (v, t, x, body) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_prd v_ct in
-      (match unify v_ty (Raise t) subs with
-        None -> Error (UnificationFailed (v_ty, Raise t))
-      | Some subs' ->
-          let ctx' = extend ctx x (Cns t) in
-          check_command ctx' subs' body)
-
-  (* switch v {return{t}(x) => s}
-     Switch always expects v to be a producer. *)
-  | SwitchLower (v, t, x, body) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_prd v_ct in
-      (match unify v_ty (Lower t) subs with
-        None -> Error (UnificationFailed (v_ty, Lower t))
-      | Some subs' ->
-          let ctx' = extend ctx x (Prd t) in
-          check_command ctx' subs' body)
-
   (* new v = {...}; s *)
   | New (dec_name, v, branches, body) ->
       let* dec = lookup_dec ctx dec_name in
@@ -445,15 +355,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let v_typ = Cns (Sgn (dec_name, type_args)) in
       check_command (extend ctx v v_typ) subs body
 
-  (* new v = {apply{t1, t2}(x, y) => s1}; s2 *)
-  | NewFun (v, t1, t2, x, y, branch_body, continuation) ->
-      (* Check the branch body with x: Prd t1, y: Cns t2 *)
-      let ctx_branch = extend (extend ctx x (Prd t1)) y (Cns t2) in
-      let* _ = check_command ctx_branch subs branch_body in
-      (* Check continuation with v: Cns (Fun(t1, t2)) *)
-      let v_typ = Cns (Fun (t1, t2)) in
-      check_command (extend ctx v v_typ) subs continuation
-
   (* new v = {instantiate{k}[a] => s1}; s2 *)
   | NewForall (v, a, k, branch_body, continuation) ->
       (* Check the branch body with type var a: k in scope *)
@@ -462,24 +363,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       (* The body type is inferred from usage - use fresh meta *)
       let body_meta = TMeta (Ident.fresh ()) in
       let v_typ = Cns (Forall (a, k, body_meta)) in
-      check_command (extend ctx v v_typ) subs continuation
-
-  (* new v = {thunk{t}(x) => s1}; s2 *)
-  | NewRaise (v, t, x, branch_body, continuation) ->
-      (* Check the branch body with x: Cns t *)
-      let ctx_branch = extend ctx x (Cns t) in
-      let* _ = check_command ctx_branch subs branch_body in
-      (* Check continuation with v: Cns (Raise t) *)
-      let v_typ = Cns (Raise t) in
-      check_command (extend ctx v v_typ) subs continuation
-
-  (* new v = {return{t}(x) => s1}; s2 *)
-  | NewLower (v, t, x, branch_body, continuation) ->
-      (* Check the branch body with x: Prd t *)
-      let ctx_branch = extend ctx x (Prd t) in
-      let* _ = check_command ctx_branch subs branch_body in
-      (* Check continuation with v: Cns (Lower t) *)
-      let v_typ = Cns (Lower t) in
       check_command (extend ctx v v_typ) subs continuation
 
   (* invoke v m{ti's}(xi's) *)
@@ -515,24 +398,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               check_xtor_args ctx xtor_name inst_args' term_vars subs
               |> Result.map (fun _ -> ()))
 
-  (* invoke v apply{t1, t2}(x, y) *)
-  | InvokeApply (v, t1, t2, x, y) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_cns v_ct in
-      (match unify v_ty (Fun (t1, t2)) subs with
-        None -> Error (UnificationFailed (v_ty, Fun (t1, t2)))
-      | Some subs' ->
-          let* x_ct = lookup_var ctx x in
-          let* y_ct = lookup_var ctx y in
-          let* x_ty = expect_prd x_ct in
-          let* y_ty = expect_cns y_ct in
-          (match unify x_ty t1 subs' with
-            None -> Error (UnificationFailed (x_ty, t1))
-          | Some subs'' ->
-              (match unify y_ty t2 subs'' with
-                None -> Error (UnificationFailed (y_ty, t2))
-              | Some _ -> Ok ())))
-
   (* invoke v instantiate_k[ty_arg] *)
   | InvokeInstantiate (v, _ty_arg, k) ->
       let* v_ct = lookup_var ctx v in
@@ -543,32 +408,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       (match unify v_ty (Forall (a, k, body_meta)) subs with
         None -> Error (UnificationFailed (v_ty, Forall (a, k, body_meta)))
       | Some _ -> Ok ())
-
-  (* invoke v thunk{t}(x) *)
-  | InvokeThunk (v, t, x) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_cns v_ct in
-      (match unify v_ty (Raise t) subs with
-        None -> Error (UnificationFailed (v_ty, Raise t))
-      | Some subs' ->
-          let* x_ct = lookup_var ctx x in
-          let* x_ty = expect_cns x_ct in
-          (match unify x_ty t subs' with
-            None -> Error (UnificationFailed (x_ty, t))
-          | Some _ -> Ok ()))
-
-  (* invoke v return{t}(x) *)
-  | InvokeReturn (v, t, x) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_cns v_ct in
-      (match unify v_ty (Lower t) subs with
-        None -> Error (UnificationFailed (v_ty, Lower t))
-      | Some subs' ->
-          let* x_ct = lookup_var ctx x in
-          let* x_ty = expect_prd x_ct in
-          (match unify x_ty t subs' with
-            None -> Error (UnificationFailed (x_ty, t))
-          | Some _ -> Ok ()))
 
   (* ⟨v | k⟩ at ty *)
   | Axiom (ty, v, k) ->
@@ -618,8 +457,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
   (* ret τ v
      Like simple.ml, Ret just checks that v is in scope with the right type. *)
   | Ret (ty, v) ->
+      (* Following simple.ml's Collapsed checker: just check variable exists 
+         and has the right type, don't check chirality.
+         For negative types, x will be Cns; for positive, x will be Prd. *)
       let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_prd v_ct in
+      let v_ty = strip_chirality v_ct in
       (match unify v_ty ty subs with
         None -> Error (UnificationFailed (v_ty, ty))
       | Some _ -> Ok ())

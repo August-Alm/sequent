@@ -42,17 +42,12 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       (match args with
         v :: _ -> FTm.Ret (ret_ty, v)
       | [] -> cmd)
-  (* Handle SwitchFun on ret: convert to NewFun + Ret *)
-  | FTm.SwitchFun (k, t1, t2, x, y, body) when Ident.name k = "ret" ->
-      let v = Ident.fresh () in
-      let fun_ty = FTy.Fun (t1, t2) in
-      FTm.NewFun (v, t1, t2, x, y, close_ret ret_ty body, FTm.Ret (fun_ty, v))
   (* Handle SwitchForall on ret: convert to NewForall + Ret *)
   | FTm.SwitchForall (k, a, kind, body) when Ident.name k = "ret" ->
       let v = Ident.fresh () in
       let forall_ty = FTy.Forall (a, kind, ret_ty) in (* TODO: proper body type *)
       FTm.NewForall (v, a, kind, close_ret ret_ty body, FTm.Ret (forall_ty, v))
-  (* Handle Switch on ret for signature types: convert to New + Ret *)
+  (* Handle Switch on ret for signature types (including Fun, Raise, Lower): convert to New + Ret *)
   | FTm.Switch (sg, k, branches) when Ident.name k = "ret" ->
       let v = Ident.fresh () in
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
@@ -61,46 +56,28 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       FTm.New (sg, v, branches', FTm.Ret (ret_ty, v))
   | FTm.Let (v, dec, xtor, ty_args, args, body) -> 
       FTm.Let (v, dec, xtor, ty_args, args, close_ret ret_ty body)
+  | FTm.LetInstantiate (v, a, k, ty, body) ->
+      FTm.LetInstantiate (v, a, k, ty, close_ret ret_ty body)
   | FTm.New (sg, v, branches, body) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
       FTm.New (sg, v, branches', close_ret ret_ty body)
+  | FTm.NewForall (v, a, k, body, cont) ->
+      FTm.NewForall (v, a, k, close_ret ret_ty body, close_ret ret_ty cont)
   | FTm.Switch (sg, x, branches) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
       FTm.Switch (sg, x, branches')
-  | FTm.SwitchFun (k, t1, t2, x, y, body) ->
-      FTm.SwitchFun (k, t1, t2, x, y, close_ret ret_ty body)
   | FTm.SwitchForall (k, a, kind, body) ->
       FTm.SwitchForall (k, a, kind, close_ret ret_ty body)
-  | FTm.SwitchRaise (k, t, x, body) ->
-      FTm.SwitchRaise (k, t, x, close_ret ret_ty body)
-  | FTm.SwitchLower (k, t, x, body) ->
-      FTm.SwitchLower (k, t, x, close_ret ret_ty body)
-  | FTm.NewFun (v, t1, t2, x, y, body, cont) ->
-      FTm.NewFun (v, t1, t2, x, y, close_ret ret_ty body, close_ret ret_ty cont)
-  | FTm.NewForall (v, a, k, body, cont) ->
-      FTm.NewForall (v, a, k, close_ret ret_ty body, close_ret ret_ty cont)
-  | FTm.NewRaise (v, t, x, body, cont) ->
-      FTm.NewRaise (v, t, x, close_ret ret_ty body, close_ret ret_ty cont)
-  | FTm.NewLower (v, t, k, body, cont) ->
-      FTm.NewLower (v, t, k, close_ret ret_ty body, close_ret ret_ty cont)
   | FTm.Lit (n, v, body) -> 
       FTm.Lit (n, v, close_ret ret_ty body)
   | FTm.Add (a, b, r, body) -> 
       FTm.Add (a, b, r, close_ret ret_ty body)
   | FTm.Ifz (v, t, e) -> 
       FTm.Ifz (v, close_ret ret_ty t, close_ret ret_ty e)
-  | FTm.LetApply (v, t1, t2, x, y, body) ->
-      FTm.LetApply (v, t1, t2, x, y, close_ret ret_ty body)
-  | FTm.LetInstantiate (v, a, k, ty, body) ->
-      FTm.LetInstantiate (v, a, k, ty, close_ret ret_ty body)
-  | FTm.LetThunk (v, t, x, body) ->
-      FTm.LetThunk (v, t, x, close_ret ret_ty body)
-  | FTm.LetReturn (v, t, x, body) ->
-      FTm.LetReturn (v, t, x, close_ret ret_ty body)
   | _ -> cmd
 
 let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
@@ -130,10 +107,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
     | MTy.Ext _ -> "int"
     | MTy.TVar v -> "TVar(" ^ Ident.name v ^ ")"
     | MTy.TMeta v -> "TMeta(" ^ Ident.name v ^ ")"
-    | MTy.Fun (a, b) -> "Fun(" ^ raw_typ a ^ ", " ^ raw_typ b ^ ")"
     | MTy.Forall (x, k, b) -> "Forall(" ^ Ident.name x ^ ", " ^ raw_typ k ^ ", " ^ raw_typ b ^ ")"
-    | MTy.Raise t' -> "Raise(" ^ raw_typ t' ^ ")"
-    | MTy.Lower t' -> "Lower(" ^ raw_typ t' ^ ")"
     | MTy.Sgn (p, args) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map raw_typ args) ^ "])"
     | MTy.PromotedCtor (d, c, args) -> "PromotedCtor(" ^ Path.name d ^ ", " ^ Path.name c ^ ", [" ^ String.concat ", " (List.map raw_typ args) ^ "])"
     | MTy.Arrow (a, b) -> "Arrow(" ^ raw_typ a ^ ", " ^ raw_typ b ^ ")"
@@ -145,10 +119,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
     | CTy.Ext _ -> "int"
     | CTy.TVar v -> "TVar(" ^ Ident.name v ^ ")"
     | CTy.TMeta v -> "TMeta(" ^ Ident.name v ^ ")"
-    | CTy.Fun (a, b) -> "Fun(" ^ raw_core_typ a ^ ", " ^ raw_core_typ b ^ ")"
     | CTy.Forall (x, k, b) -> "Forall(" ^ Ident.name x ^ ", " ^ raw_core_typ k ^ ", " ^ raw_core_typ b ^ ")"
-    | CTy.Raise t' -> "Raise(" ^ raw_core_typ t' ^ ")"
-    | CTy.Lower t' -> "Lower(" ^ raw_core_typ t' ^ ")"
     | CTy.Sgn (p, args) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map raw_core_typ args) ^ "])"
     | CTy.PromotedCtor (d, c, args) -> "PromotedCtor(" ^ Path.name d ^ ", " ^ Path.name c ^ ", [" ^ String.concat ", " (List.map raw_core_typ args) ^ "])"
     | CTy.Arrow (a, b) -> "Arrow(" ^ raw_core_typ a ^ ", " ^ raw_core_typ b ^ ")"
@@ -197,7 +168,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
   | None -> ()  (* Already marked as failed *)
   | Some (typed_term, inferred_ty) ->
       (* 3. Encode to Core *)
-      let encode_ctx : Encode.encode_ctx = { decs = Path.emptytbl } in
+      let encode_ctx : Encode.encode_ctx = { types = CTy.empty_context } in
       print_endline "Core Encoding:";
       let core_result =
         try
@@ -220,22 +191,39 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
           print_endline "Core Term:";
           let rec pp_core_term = function
             | CTm.Var v -> Ident.name v
-            | CTm.NewFun (d, c, x, k, body) -> 
-                Printf.sprintf "NewFun(%s, %s, %s.%s.%s)" 
-                  (FPrint.typ_to_string (Focus.focus_type d))
-                  (FPrint.typ_to_string (Focus.focus_type c))
-                  (Ident.name x) (Ident.name k) (pp_core_cmd body)
-            | CTm.NewLower (t, k, body) ->
-                Printf.sprintf "NewLower(%s, %s.%s)"
-                  (FPrint.typ_to_string (Focus.focus_type t))
-                  (Ident.name k) (pp_core_cmd body)
-            | _ -> "<term>"
+            | CTm.Lit n -> string_of_int n
+            | CTm.Ctor (dec, xtor, _, _) ->
+                Printf.sprintf "Ctor(%s, %s, ...)" (Path.name dec) (Path.name xtor)
+            | CTm.Dtor (dec, xtor, _, _) ->
+                Printf.sprintf "Dtor(%s, %s, ...)" (Path.name dec) (Path.name xtor)
+            | CTm.Match (dec, _) ->
+                Printf.sprintf "Match(%s, ...)" (Path.name dec)
+            | CTm.Comatch (dec, branches) ->
+                let branch_strs = List.map (fun (xtor, _, _, body) ->
+                  Printf.sprintf "%s => %s" (Path.name xtor) (pp_core_cmd body)
+                ) branches in
+                Printf.sprintf "Comatch(%s, [%s])" (Path.name dec) (String.concat "; " branch_strs)
+            | CTm.MuPrd (_, v, body) ->
+                Printf.sprintf "μ+%s.%s" (Ident.name v) (pp_core_cmd body)
+            | CTm.MuCns (_, v, body) ->
+                Printf.sprintf "μ-%s.%s" (Ident.name v) (pp_core_cmd body)
+            | CTm.NewForall (a, k, _, body) ->
+                Printf.sprintf "NewForall(%s:%s, %s)" 
+                  (Ident.name a) (FPrint.typ_to_string (Focus.focus_type k)) (pp_core_cmd body)
+            | CTm.InstantiateDtor ty ->
+                Printf.sprintf "InstantiateDtor(%s)" (FPrint.typ_to_string (Focus.focus_type ty))
           and pp_core_cmd = function
             | CTm.Cut (ty, l, r) ->
                 Printf.sprintf "Cut[%s](%s, %s)"
                   (FPrint.typ_to_string (Focus.focus_type ty))
                   (pp_core_term l) (pp_core_term r)
-            | _ -> "<cmd>"
+            | CTm.Call (p, _, _) ->
+                Printf.sprintf "Call(%s, ...)" (Path.name p)
+            | CTm.Add (a, b, r) ->
+                Printf.sprintf "Add(%s, %s, %s)" (pp_core_term a) (pp_core_term b) (pp_core_term r)
+            | CTm.Ifz (cond, t, e) ->
+                Printf.sprintf "Ifz(%s, %s, %s)" (pp_core_term cond) (pp_core_cmd t) (pp_core_cmd e)
+            | CTm.End -> "End"
           in
           Printf.printf "  %s\n\n" (pp_core_term core_term);
           
@@ -302,8 +290,8 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
                  Fun, Lower, Forall are negative (codata); Raise, Int, user Sgn are positive (data). *)
               let is_negative_fty (t: FTy.typ) : bool =
                 match t with
-                | FTy.Fun (_, _) -> true
-                | FTy.Lower _ -> true
+                | FTy.Sgn (s, _) when Path.equal s Common.Types.Prim.fun_sym -> true
+                | FTy.Sgn (s, _) when Path.equal s Common.Types.Prim.lower_sym -> true
                 | FTy.Forall (_, _, _) -> true
                 | _ -> false
               in

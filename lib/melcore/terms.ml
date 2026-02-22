@@ -222,14 +222,14 @@ let unify_or_error
 let expect_fun (sbs: subst) (t: typ) : (typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Fun (dom, cod) ->
+  | Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
       (* Return user-visible (depolarized) types *)
       Ok (Types.depolarize_domain dom, Types.depolarize_codomain cod)
   | TMeta _ ->
       (* Unify with fresh function type *)
       let a = fresh_meta () in
       let b = fresh_meta () in
-      (match unify t' (Fun (a, b)) sbs with
+      (match unify t' (fun_sgn a b) sbs with
         Some _ -> Ok (a, b) | None -> Error (ExpectedFun t'))
   | _ -> Error (ExpectedFun t')
 
