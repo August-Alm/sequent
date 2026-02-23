@@ -55,7 +55,7 @@ let record_type_param (name: name) (mvar: name * int): unit infer =
 
 let sequence (lst: 'a infer list): 'a list infer =
   let rec go acc = function
-    | [] -> return (List.rev acc)
+      [] -> return (List.rev acc)
     | m :: rest -> let+ a = m in go (a :: acc) rest
   in
   go [] lst
@@ -70,7 +70,7 @@ type param = { name: name; tpe: type_ }
 (* Lookup type recursively, translating to mono args *)
 let rec lookup_type_direct (tpe: type_) (ctx: context): mono_arg =
   match tpe with
-  | Base name -> MonoBase name
+    Base name -> MonoBase name
   | Var name -> 
       let (mvar, idx) = Ident.find name ctx.tparam_map in
       MonoIndex (mvar, idx)
@@ -83,7 +83,7 @@ let lookup_type (tpe: type_): mono_arg infer =
 (* Constraint generation *)
 let rec generate_for_type (tpe: type_): unit infer =
   match tpe with
-  | Base _ | Var _ -> return ()
+    Base _ | Var _ -> return ()
   | Enum (name, targs) ->
       let+ dst = lookup_decl name in
       let+ margs = traverse targs lookup_type in
@@ -91,7 +91,7 @@ let rec generate_for_type (tpe: type_): unit infer =
       traverse targs generate_for_type |> map (fun _ -> ())
 
 type term =
-  | Block of decl list * term
+    Block of decl list * term
   | App of name * type_ list * term list
   | Match of term * rule list
   | Var of name | Lit of string | Let of name * term * term
@@ -99,22 +99,22 @@ type term =
   | If of term * term * term
   | Magic of type_
 
-and rule = {
-  case: name;
-  mvar: name;
-  tparams: name list;
-  body: term;
-}
+and rule =
+  { case: name
+  ; mvar: name
+  ; tparams: name list
+  ; body: term
+  }
 
-and decl = {
-  name: name;
-  mvar: name;
-  tparams: name list;
-  body: decl_body;
-}
+and decl =
+  { name: name
+  ; mvar: name
+  ; tparams: name list
+  ; body: decl_body
+  }
 
 and decl_body =
-  | DeclEnum of decl list
+    DeclEnum of decl list
   | DeclDef of param list * type_ * term
   | DeclSig of param list * type_
 
@@ -123,7 +123,7 @@ let rec generate_for_decl (decl: decl): unit infer =
     (List.mapi (fun i tp -> (tp, i)) decl.tparams)
     (fun (tp, i) -> record_type_param tp (decl.mvar, i)) in
   match decl.body with
-  | DeclEnum members ->
+    DeclEnum members ->
       traverse members generate_for_decl |> map (fun _ -> ())
   | DeclDef (params, ret_type, body) ->
       let+ _ = traverse params (fun p -> generate_for_type p.tpe) in
@@ -135,7 +135,7 @@ let rec generate_for_decl (decl: decl): unit infer =
 
 and generate_for_term (term: term): unit infer =
   match term with
-  | Block (decls, rest) ->
+    Block (decls, rest) ->
       let+ _ = traverse decls (fun d -> record_decl d.name d.mvar) in
       let+ _ = traverse decls generate_for_decl in
       generate_for_term rest
@@ -190,7 +190,7 @@ end)
 let bfs (start: node) (target: node) (graph: node -> node list option): node list option =
   let rec go visited queue =
     match queue with
-    | [] -> None
+      [] -> None
     | node :: _ when node = target -> 
         Some (List.rev (target :: visited))
     | (name, idx) :: rest ->
@@ -225,13 +225,13 @@ let metas_to_fun (metas: meta_edge list): node -> node list option =
   
   fun (name, index) ->
     match Hashtbl.find_opt map name with
+      Some dst_names -> Some (List.map (fun dst_name -> (dst_name, index)) dst_names)
     | None -> None
-    | Some dst_names -> Some (List.map (fun dst_name -> (dst_name, index)) dst_names)
 
 (* Extract edges from individual mono arguments *)
 let rec arg_to_edges (src: mono_arg) (dst: name) (index: index): edge list =
   match src with
-  | MonoBase _ -> []
+    MonoBase _ -> []
   | MonoIndex (src_name, src_index) -> 
       [{ src = (src_name, src_index); dst = (dst, index); tpe = Stable }]
   | MonoEnum (_, targs) -> 
@@ -240,7 +240,7 @@ let rec arg_to_edges (src: mono_arg) (dst: name) (index: index): edge list =
 (* Extract growing edges from nested enum arguments *)
 and inner_arg_to_edges (src: mono_arg) (dst: name) (index: index): edge list =
   match src with
-  | MonoEnum (_, targs) ->
+    MonoEnum (_, targs) ->
       List.concat_map (fun arg -> inner_arg_to_edges arg dst index) targs
   | MonoBase _ -> []
   | MonoIndex (src_name, src_index) ->
@@ -249,7 +249,7 @@ and inner_arg_to_edges (src: mono_arg) (dst: name) (index: index): edge list =
 (* Convert flows to edges *)
 let flow_to_edges (flow: flow): edge list option * meta_edge option =
   match flow.input with
-  | Vector args ->
+    Vector args ->
       let edges = List.concat_map (fun (index, arg) ->
         arg_to_edges arg flow.dst index
       ) (List.mapi (fun i arg -> (i, arg)) args) in
@@ -273,20 +273,19 @@ let find_growing_cycle (flows: flow list): node list option =
   
   let full_fun (node: node) =
     match NodeMap.find_opt node graph_map with
-    | Some neighbors -> Some neighbors
+      Some neighbors -> Some neighbors
     | None -> meta_fun node
   in
   
   (* Do BFS from each growing edge's destination to its source *)
   let cycles = List.concat_map (fun (edge: edge) ->
     match bfs edge.dst edge.src full_fun with
-    | None -> []
-    | Some cycle -> [cycle]
+      Some cycle -> [cycle] | None -> []
   ) growing_edges in
   
   (* Return the shortest cycle *)
   match cycles with
-  | [] -> None
+    [] -> None
   | cycles -> Some (List.fold_left (fun acc c ->
       if List.length c < List.length acc then c else acc
     ) (List.hd cycles) (List.tl cycles))
@@ -294,7 +293,7 @@ let find_growing_cycle (flows: flow list): node list option =
 (* FlowSolver - solves flow constraints via fixpoint computation *)
 
 type ground_arg =
-  | GroundBase of name
+    GroundBase of name
   | GroundEnum of name * ground_arg list
 
 type ground_flow_input = ground_arg list
@@ -303,20 +302,19 @@ type ground_flow = { src: ground_flow_input; dst: name }
 (* Check if a mono arg contains type variables *)
 let rec type_vars (arg: mono_arg): name list =
   match arg with
-  | MonoBase _ -> []
+    MonoBase _ -> []
   | MonoIndex (name, _) -> [name]
   | MonoEnum (_, targs) -> List.concat_map type_vars targs
 
 (* Convert mono arg to ground arg if possible *)
 let rec mono_arg_as_ground (arg: mono_arg): ground_arg option =
   match arg with
-  | MonoEnum (name, targs) ->
+    MonoEnum (name, targs) ->
       (match List.map mono_arg_as_ground targs |> List.fold_left (fun acc opt ->
         match (acc, opt) with
-        | (Some lst, Some g) -> Some (g :: lst)
-        | _ -> None
+          (Some lst, Some g) -> Some (g :: lst) | _ -> None
       ) (Some []) with
-      | Some lst -> Some (GroundEnum (name, List.rev lst))
+        Some lst -> Some (GroundEnum (name, List.rev lst))
       | None -> None)
   | MonoBase name -> Some (GroundBase name)
   | MonoIndex (_, _) -> None
@@ -324,31 +322,30 @@ let rec mono_arg_as_ground (arg: mono_arg): ground_arg option =
 (* Convert ground arg back to mono arg *)
 let rec ground_arg_as_mono (arg: ground_arg): mono_arg =
   match arg with
-  | GroundBase name -> MonoBase name
+    GroundBase name -> MonoBase name
   | GroundEnum (name, args) -> MonoEnum (name, List.map ground_arg_as_mono args)
 
 (* Convert flow input to ground flow input if possible *)
 let flow_input_as_ground (input: flow_input): ground_flow_input option =
   match input with
-  | Vector args ->
+    Vector args ->
       (match List.map mono_arg_as_ground args |> List.fold_left (fun acc opt ->
         match (acc, opt) with
-        | (Some lst, Some g) -> Some (g :: lst)
-        | _ -> None
+          (Some lst, Some g) -> Some (g :: lst) | _ -> None
       ) (Some []) with
-      | Some lst -> Some (List.rev lst)
+        Some lst -> Some (List.rev lst)
       | None -> None)
   | Var _ -> None
 
 (* Partially instantiate a mono arg based on a ground flow *)
 let rec partially_instantiate_mono_arg (arg: mono_arg) (fact: ground_flow): mono_arg =
   match arg with
-  | MonoEnum (name, targs) -> 
+    MonoEnum (name, targs) -> 
       MonoEnum (name, List.map (fun t -> partially_instantiate_mono_arg t fact) targs)
   | MonoBase name -> MonoBase name
   | MonoIndex (name, index) when name = fact.dst ->
       (match List.nth_opt fact.src index with
-      | Some g -> ground_arg_as_mono g
+        Some g -> ground_arg_as_mono g
       | None -> MonoIndex (name, index))
   | MonoIndex (name, index) -> MonoIndex (name, index)
 
@@ -359,13 +356,12 @@ let partially_instantiate_args (args: mono_arg list) (fact: ground_flow): mono_a
 (* Instantiate a rule based on facts *)
 let rec instantiate_rule (rule: flow) (facts: ground_flow list): ground_flow list =
   match rule.input with
-  | Vector args ->
+    Vector args ->
       (match List.concat_map type_vars args |> List.find_opt (fun _ -> true) with
-      | None ->
+        None ->
           (* Already ground *)
           (match flow_input_as_ground rule.input with
-          | Some src -> [{ src; dst = rule.dst }]
-          | None -> [])
+            Some src -> [{ src; dst = rule.dst }] | None -> [])
       | Some tvar ->
           (* Instantiate the first type variable *)
           List.concat_map (fun fact ->
@@ -379,10 +375,8 @@ let rec instantiate_rule (rule: flow) (facts: ground_flow list): ground_flow lis
   | Var src ->
       (* Forward all facts from src to dst *)
       List.filter_map (fun fact ->
-        if fact.dst = src then
-          Some { fact with dst = rule.dst }
-        else
-          None
+        if fact.dst = src then Some { fact with dst = rule.dst }
+        else None
       ) facts
 
 (* Solve helper: apply all rules to current facts *)
@@ -407,10 +401,8 @@ let solve (cs: flow list): ground_flow list =
   
   List.iter (fun flow ->
     match flow_input_as_ground flow.input with
-    | Some ground_src ->
-        facts := { src = ground_src; dst = flow.dst } :: !facts
-    | None ->
-        rules := flow :: !rules
+      Some ground_src -> facts := { src = ground_src; dst = flow.dst } :: !facts
+    | None -> rules := flow :: !rules
   ) cs;
   
   (* Apply fixpoint *)
