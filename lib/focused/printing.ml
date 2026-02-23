@@ -115,11 +115,11 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   match cmd with
   (* =========== Let forms =========== *)
   
-  (* let v = m{tys}(args); body *)
-  | Let (v, _, x, tys, args, body) ->
-      let tys_str = pp_typs tys in
+  (* let v = m(args); body *)
+  | Let (v, dec, x, args, body) ->
+      let dec_str = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       let args_str = if args = [] then "()" else "(" ^ pp_vars args ^ ")" in
-      ind ^ "let " ^ pp_var v ^ " = " ^ pp_sym x ^ tys_str ^ args_str ^ ";\n" ^
+      ind ^ "let " ^ pp_var v ^ " = " ^ pp_sym x ^ args_str ^ dec_str ^ ";\n" ^
       pp_cmd ~cfg n body
 
   (* let v = instantiate[a]{k, t}; body *)
@@ -131,8 +131,8 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   (* =========== Switch forms =========== *)
 
   (* switch v { branches } *)
-  | Switch (sg, v, branches) ->
-      let ty_ann = if cfg.show_types then " : " ^ pp_sym sg else "" in
+  | Switch (v, dec, branches) ->
+      let ty_ann = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       ind ^ "switch " ^ pp_var v ^ ty_ann ^ " {\n" ^
       pp_branches ~cfg (n + cfg.indent_size) branches ^ "\n" ^
       ind ^ "}"
@@ -148,8 +148,8 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   (* =========== New forms =========== *)
 
   (* new v = { branches }; body *)
-  | New (sg, v, branches, body) ->
-      let ty_ann = if cfg.show_types then " : " ^ pp_sym sg else "" in
+  | New (v, dec, branches, body) ->
+      let ty_ann = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       ind ^ "new " ^ pp_var v ^ ty_ann ^ " = {\n" ^
       pp_branches ~cfg (n + cfg.indent_size) branches ^ "\n" ^
       ind ^ "};\n" ^
@@ -166,11 +166,11 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
 
   (* =========== Invoke forms =========== *)
 
-  (* invoke v m{tys}(args) *)
-  | Invoke (v, _, x, tys, args) ->
-      let tys_str = pp_typs tys in
+  (* invoke v m(args) *)
+  | Invoke (v, dec, x, args) ->
+      let dec_str = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
-      ind ^ pp_var v ^ "." ^ pp_sym x ^ tys_str ^ args_str
+      ind ^ pp_var v ^ "." ^ pp_sym x ^ args_str ^ dec_str
 
   (* invoke v instantiate{ty, k} *)
   | InvokeInstantiate (v, ty, k) ->
@@ -198,6 +198,15 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   | Add (x, y, r, body) ->
       ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " + " ^ pp_var y ^ ";\n" ^
       pp_cmd ~cfg n body
+
+  (* new k = { v ⇒ branch }; cont *)
+  | NewInt (k, v, branch, cont) ->
+      let ind2 = String.make (n + cfg.indent_size) ' ' in
+      ind ^ "new " ^ pp_var k ^ " = {\n" ^
+      ind2 ^ pp_var v ^ " ⇒\n" ^
+      pp_cmd ~cfg (n + 2 * cfg.indent_size) branch ^ "\n" ^
+      ind ^ "};\n" ^
+      pp_cmd ~cfg n cont
 
   (* ifz v { then } { else } *)
   | Ifz (v, then_cmd, else_cmd) ->

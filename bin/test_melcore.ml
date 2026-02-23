@@ -37,7 +37,7 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
   match cmd with
   | FTm.Axiom (_, v, k) when Ident.name k = "ret" -> 
       FTm.Ret (ret_ty, v)
-  | FTm.Invoke (k, _, _, _, args) when Ident.name k = "ret" ->
+  | FTm.Invoke (k, _, _, args) when Ident.name k = "ret" ->
       (* ret.xtor(args) - create a producer and return it *)
       (match args with
         v :: _ -> FTm.Ret (ret_ty, v)
@@ -48,34 +48,36 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       let forall_ty = FTy.Forall (a, kind, ret_ty) in (* TODO: proper body type *)
       FTm.NewForall (v, a, kind, close_ret ret_ty body, FTm.Ret (forall_ty, v))
   (* Handle Switch on ret for signature types (including Fun, Raise, Lower): convert to New + Ret *)
-  | FTm.Switch (sg, k, branches) when Ident.name k = "ret" ->
+  | FTm.Switch (k, sg, branches) when Ident.name k = "ret" ->
       let v = Ident.fresh () in
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
-      FTm.New (sg, v, branches', FTm.Ret (ret_ty, v))
-  | FTm.Let (v, dec, xtor, ty_args, args, body) -> 
-      FTm.Let (v, dec, xtor, ty_args, args, close_ret ret_ty body)
+      FTm.New (v, sg, branches', FTm.Ret (ret_ty, v))
+  | FTm.Let (v, dec, xtor, args, body) -> 
+      FTm.Let (v, dec, xtor, args, close_ret ret_ty body)
   | FTm.LetInstantiate (v, a, k, ty, body) ->
       FTm.LetInstantiate (v, a, k, ty, close_ret ret_ty body)
-  | FTm.New (sg, v, branches, body) ->
+  | FTm.New (v, sg, branches, body) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
-      FTm.New (sg, v, branches', close_ret ret_ty body)
+      FTm.New (v, sg, branches', close_ret ret_ty body)
   | FTm.NewForall (v, a, k, body, cont) ->
       FTm.NewForall (v, a, k, close_ret ret_ty body, close_ret ret_ty cont)
-  | FTm.Switch (sg, x, branches) ->
+  | FTm.Switch (x, sg, branches) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
-      FTm.Switch (sg, x, branches')
+      FTm.Switch (x, sg, branches')
   | FTm.SwitchForall (k, a, kind, body) ->
       FTm.SwitchForall (k, a, kind, close_ret ret_ty body)
   | FTm.Lit (n, v, body) -> 
       FTm.Lit (n, v, close_ret ret_ty body)
   | FTm.Add (a, b, r, body) -> 
       FTm.Add (a, b, r, close_ret ret_ty body)
+  | FTm.NewInt (k, v, branch, cont) ->
+      FTm.NewInt (k, v, close_ret ret_ty branch, close_ret ret_ty cont)
   | FTm.Ifz (v, t, e) -> 
       FTm.Ifz (v, close_ret ret_ty t, close_ret ret_ty e)
   | _ -> cmd
@@ -192,17 +194,17 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
           let rec pp_core_term = function
             | CTm.Var v -> Ident.name v
             | CTm.Lit n -> string_of_int n
-            | CTm.Ctor (dec, xtor, _, _) ->
-                Printf.sprintf "Ctor(%s, %s, ...)" (Path.name dec) (Path.name xtor)
-            | CTm.Dtor (dec, xtor, _, _) ->
-                Printf.sprintf "Dtor(%s, %s, ...)" (Path.name dec) (Path.name xtor)
+            | CTm.Ctor (dec, xtor, _) ->
+                Printf.sprintf "Ctor(%s, %s, ...)" (Path.name dec.CTy.name) (Path.name xtor)
+            | CTm.Dtor (dec, xtor, _) ->
+                Printf.sprintf "Dtor(%s, %s, ...)" (Path.name dec.CTy.name) (Path.name xtor)
             | CTm.Match (dec, _) ->
-                Printf.sprintf "Match(%s, ...)" (Path.name dec)
+                Printf.sprintf "Match(%s, ...)" (Path.name dec.CTy.name)
             | CTm.Comatch (dec, branches) ->
                 let branch_strs = List.map (fun (xtor, _, _, body) ->
                   Printf.sprintf "%s => %s" (Path.name xtor) (pp_core_cmd body)
                 ) branches in
-                Printf.sprintf "Comatch(%s, [%s])" (Path.name dec) (String.concat "; " branch_strs)
+                Printf.sprintf "Comatch(%s, [%s])" (Path.name dec.CTy.name) (String.concat "; " branch_strs)
             | CTm.MuPrd (_, v, body) ->
                 Printf.sprintf "μ+%s.%s" (Ident.name v) (pp_core_cmd body)
             | CTm.MuCns (_, v, body) ->
@@ -223,16 +225,20 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
                 Printf.sprintf "Add(%s, %s, %s)" (pp_core_term a) (pp_core_term b) (pp_core_term r)
             | CTm.Ifz (cond, t, e) ->
                 Printf.sprintf "Ifz(%s, %s, %s)" (pp_core_term cond) (pp_core_cmd t) (pp_core_cmd e)
+            | CTm.Ret (ty, t) ->
+                Printf.sprintf "Ret[%s](%s)" (FPrint.typ_to_string (Focus.focus_type ty)) (pp_core_term t)
             | CTm.End -> "End"
           in
           Printf.printf "  %s\n\n" (pp_core_term core_term);
           
-          (* 4. Create cut with ret variable and focus *)
+          (* 4. Create cut with ret consumer and focus *)
           print_endline "Focus (Cut-free):";
           let focus_result =
             try
               let ret = Ident.mk "ret" in
-              let core_cmd = CTm.Cut (core_ty, core_term, CTm.Var ret) in
+              (* Use MuCns to create a proper consumer binding, matching simple.ml's pattern *)
+              let ret_consumer = CTm.MuCns (core_ty, ret, CTm.Ret (core_ty, CTm.Var ret)) in
+              let core_cmd = CTm.Cut (core_ty, core_term, ret_consumer) in
               let focused = Focus.focus_command core_cmd in
               let focused_ty = Focus.focus_type core_ty in
               let closed = close_ret focused_ty focused in

@@ -32,11 +32,11 @@ type command =
        
       m ∈ T    Γ(xi) = Ai (args of m)    Γ, v : prd T ⊢ s
       ---------------------------------------------------- [LET]
-      Γ ⊢ let v = m{Ti}(x1, ...); s
+      Γ ⊢ let v = m(x1, ...); s
       
       Constructs a producer of T using constructor m. *)
-    (* v, T_name, m, ti's, xi's, s *)
-    Let of var * sym * sym * (typ list) * (var list) * command
+    (* v, instantiated dec, m, xi's, s *)
+    Let of var* dec * sym * (var list) * command
 
     (* `Let` for the xtor of the built-in signature `Forall(a, k, t)`:
       let v = instantiate{k, t}[ty_arg]; s 
@@ -50,8 +50,8 @@ type command =
       Γ ⊢ switch v {m1(y1, ...) ⇒ s1, ...}
       
       Pattern matches on producer v of signature T. *)
-    (* T_name, v, branches *)
-  | Switch of sym * var * branch list
+    (* v, instantiated dec, branches *)
+  | Switch of var * dec * branch list
 
     (* switch v {instantiate_k[a] ⇒ s} *)
   | SwitchForall of var * var * typ * command (* v, a, k, s *)
@@ -63,8 +63,8 @@ type command =
       Γ ⊢ new v = {m1(y1, ...) ⇒ s1, ...}; s
       
       Creates a consumer of T via copattern matching. *)
-    (* T_name, v, branches, s *)
-  | New of sym * var * branch list * command
+    (* v, instantiated dec, branches, s *)
+  | New of var * dec * branch list * command
 
     (* new v = {instantiate_k_t[a] ⇒ s1}; s2 *)
   | NewForall of var * var * typ * command * command (* v, a, k, s1, s2 *)
@@ -73,11 +73,11 @@ type command =
        
       Γ(v) = cns T    m ∈ T    Γ(xi) = Ai
       ------------------------------------ [INVOKE]
-      Γ ⊢ invoke v m{ti}(x1, ...)
+      Γ ⊢ invoke v m(x1, ...)
       
       Invokes destructor m on consumer v. *)
-    (* v, T_name, m, ti's, xi's *)
-  | Invoke of var * sym * sym * (typ list) * (var list)
+    (* v, instantiated dec, m, xi's *)
+  | Invoke of var * dec * sym * (var list)
 
     (* invoke v instantiate_k[ty_arg] *)
   | InvokeInstantiate of var * typ * typ (* v, ty_arg, k *)
@@ -94,6 +94,7 @@ type command =
     (* Primitives for integers *)
   | Lit of int * var * command       (* lit n { v ⇒ s } *)
   | Add of var * var * var * command (* add(x, y) { v ⇒ s } *)
+  | NewInt of var * var * command * command  (* new k = { v ⇒ s1 }; s2 - Int consumer binding, k : Cns Int *)
   | Ifz of var * command * command   (* ifz(v) { sThen; sElse } *)
 
     (* Terminals *)
@@ -174,25 +175,17 @@ let expect_sgn (t: typ) (subs: subst) : (Path.t * typ list, check_error) result 
 (* Xtor Instantiation                                                        *)
 (* ========================================================================= *)
 
-(** Instantiate an xtor's types with the declaration's type arguments *)
-let instantiate_xtor (xtor: xtor) (type_args: typ list)
-    : (Ident.t * typ) list * chiral_typ list * typ =
-  (* Create substitution from declaration params to type args *)
-  let quant_subst =
-    List.fold_left2 (fun s (v, _) arg ->
-      Ident.add v arg s
-    ) Ident.emptytbl xtor.quantified type_args
-  in
-  (* Freshen existentials *)
-  let fresh_exist, exist_subst = freshen_meta xtor.existentials in
-  (* Combine substitutions *)
-  let combined = Ident.join quant_subst exist_subst in
-  (* Instantiate argument types and main type *)
+(** Freshen an xtor's existential types with fresh metavariables.
+    For instantiated declarations, quantified is empty so we only freshen existentials. *)
+let freshen_xtor_existentials (xtor: xtor)
+    : (chiral_typ list * typ) =
+  (* Freshen existential variables only - quantified is empty for instantiated dec *)
+  let _, exist_subst = freshen_meta xtor.existentials in
   let inst_args =
-    List.map (chiral_map (apply_fresh_subst combined))
+    List.map (chiral_map (apply_fresh_subst exist_subst))
       xtor.argument_types in
-  let inst_main = apply_fresh_subst combined xtor.main in
-  (fresh_exist, inst_args, inst_main)
+  let inst_main = apply_fresh_subst exist_subst xtor.main in
+  (inst_args, inst_main)
 
 (** Bind term variables with xtor argument types *)
 let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var list)
@@ -203,9 +196,10 @@ let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var l
 (* Branch Checking                                                           *)
 (* ========================================================================= *)
 
-(** Check a single branch *)
+(** Check a single branch.
+    For instantiated declarations, xtor.quantified is empty. *)
 let check_branch
-    (ctx: context) (dec: dec) (scrutinee_args: typ list)
+    (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
     (check_cmd: context -> subst -> command -> unit check_result)
     (subs: subst)
@@ -213,7 +207,7 @@ let check_branch
   match find_xtor dec xtor_name with
     None -> Error (UnboundXtor (dec.name, xtor_name))
   | Some xtor ->
-      (* Check type variable arity *)
+      (* Check type variable arity (existentials only, quantified is empty) *)
       let num_exist = List.length xtor.existentials in
       if List.length type_vars <> num_exist then
         Error (TypeVarArityMismatch {
@@ -225,18 +219,19 @@ let check_branch
         ; expected = List.length xtor.argument_types
         ; got = List.length term_vars })
       else
-        let fresh_exist, inst_args, _ = instantiate_xtor xtor scrutinee_args in
+        (* Freshen existentials only - dec is already instantiated *)
+        let inst_args, _ = freshen_xtor_existentials xtor in
         (* Substitute user-provided type variable names for existentials *)
-        let exist_rename =
+        let exist_subst =
           List.fold_left2 (fun s (old_v, _) new_v ->
             Ident.add old_v (TVar new_v) s
-          ) Ident.emptytbl fresh_exist type_vars
+          ) Ident.emptytbl xtor.existentials type_vars
         in
         let inst_args' =
-          List.map (chiral_map (apply_fresh_subst exist_rename))
+          List.map (chiral_map (apply_fresh_subst exist_subst))
             inst_args
         in
-        (* Extend context with existential type vars *)
+        (* Extend context with existential type vars and term vars *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
             ctx type_vars xtor.existentials
@@ -244,33 +239,29 @@ let check_branch
         let ctx'' = bind_xtor_term_args ctx' inst_args' term_vars in
         check_cmd ctx'' subs cmd
 
-(** Check all branches for a Match/Switch *)
-let check_switch_branches
-    (ctx: context) (dec: dec) (scrutinee_args: typ list) (branches: branch list)
+(** Check all branches and verify exhaustiveness.
+    For instantiated declarations, exhaustiveness is just checking all xtors are covered. *)
+let check_branches
+    (ctx: context) (dec: dec) (branches: branch list)
     (check_cmd: context -> subst -> command -> unit check_result)
     (subs: subst)
     : unit check_result =
+  (* Check each branch *)
   let* () =
     List.fold_left (fun acc (xtor_name, type_vars, term_vars, cmd) ->
       let* _ = acc in
-      check_branch ctx dec scrutinee_args xtor_name
+      check_branch ctx dec xtor_name
         type_vars term_vars cmd check_cmd subs
     ) (Ok ()) branches
   in
-  (* Check exhaustiveness *)
+  (* Check exhaustiveness - all xtors in instantiated dec must be covered *)
   let covered = List.map (fun (xtor_name, _, _, _) -> xtor_name) branches in
-  let missing = check_exhaustive ctx.types dec scrutinee_args covered in
+  let missing = List.filter_map (fun (x: xtor) ->
+    if List.exists (Path.equal x.name) covered then None
+    else Some x.name
+  ) dec.xtors in
   if missing = [] then Ok ()
   else Error (NonExhaustiveMatch { dec_name = dec.name; missing })
-
-(** Check all branches for a New/Comatch *)
-let check_new_branches
-    (ctx: context) (dec: dec) (scrutinee_args: typ list) (branches: branch list)
-    (check_cmd: context -> subst -> command -> unit check_result)
-    (subs: subst)
-    : unit check_result =
-  (* Same as switch branches - branches bind arguments, check body *)
-  check_switch_branches ctx dec scrutinee_args branches check_cmd subs
 
 (* ========================================================================= *)
 (* Command Type Checking                                                     *)
@@ -280,32 +271,25 @@ let check_new_branches
 let rec check_command (ctx: context) (subs: subst) (cmd: command)
     : unit check_result =
   match cmd with
-  (* let v = m{ti's}(xi's); s *)
-  | Let (v, dec_name, xtor_name, type_args, term_vars, body) ->
-      let* dec = lookup_dec ctx dec_name in
+  (* let v = m(xi's); s -- dec is pre-instantiated *)
+  | Let (v, dec, xtor_name, term_vars, body) ->
       (match find_xtor dec xtor_name with
-        None -> Error (UnboundXtor (dec_name, xtor_name))
+        None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
-          if List.length type_args <> List.length dec.param_kinds then
-            Error (ArityMismatch
-              { expected = List.length dec.param_kinds
-              ; got = List.length type_args
+          (* Freshen existentials - quantified is empty for instantiated dec *)
+          let inst_args, inst_main = freshen_xtor_existentials xtor in
+          if List.length term_vars <> List.length inst_args then
+            Error (XtorArityMismatch
+              { xtor = xtor_name
+              ; expected = List.length inst_args
+              ; got = List.length term_vars
               })
           else
-            let _, inst_args, inst_main =
-              instantiate_xtor xtor type_args in
-            if List.length term_vars <> List.length inst_args then
-              Error (XtorArityMismatch
-                { xtor = xtor_name
-                ; expected = List.length inst_args
-                ; got = List.length term_vars
-                })
-            else
-              (* Check that term_vars have the expected types in context *)
-              let* subs' =
-                check_xtor_args ctx xtor_name inst_args term_vars subs in
-              let v_typ = Prd inst_main in
-              check_command (extend ctx v v_typ) subs' body)
+            (* Check that term_vars have the expected types in context *)
+            let* subs' =
+              check_xtor_args ctx xtor_name inst_args term_vars subs in
+            let v_typ = Prd inst_main in
+            check_command (extend ctx v v_typ) subs' body)
 
   (* let v = instantiate{k, body_ty}[a]; s *)
   | LetInstantiate (v, a, k, body_ty, body) ->
@@ -314,21 +298,17 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let ctx' = extend_tyvar ctx a k in
       check_command (extend ctx' v v_typ) subs body
 
-  (* switch v {...} *)
-  | Switch (dec_name, v, branches) ->
-      let* dec = lookup_dec ctx dec_name in
+  (* switch v {...} -- dec is pre-instantiated *)
+  | Switch (v, dec, branches) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
-      (* Create fresh metas for the declaration's type parameters *)
-      let fresh_params = freshen_kinds dec.param_kinds in
-      let expected_args = List.map (fun (v, _) -> TMeta v) fresh_params in
-      let expected_ty = Sgn (dec_name, expected_args) in
+      (* The expected type is the instantiated signature *)
+      let expected_ty = Sgn (dec.name, dec.type_args) in
       (* Unify v's type with the expected signature *)
       (match unify v_ty expected_ty subs with
         None -> Error (UnificationFailed (v_ty, expected_ty))
       | Some subs' ->
-          check_switch_branches ctx dec expected_args
-            branches check_command subs')
+          check_branches ctx dec branches check_command subs')
 
   (* switch v {instantiate_k[a] => s}
      Switch always expects v to be a producer. *)
@@ -343,16 +323,12 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           let ctx' = extend_tyvar ctx a k in
           check_command ctx' subs' body)
 
-  (* new v = {...}; s *)
-  | New (dec_name, v, branches, body) ->
-      let* dec = lookup_dec ctx dec_name in
-      (* Create fresh metas for type parameters - inferred from usage *)
-      let fresh_vars = freshen_kinds dec.param_kinds in
-      let type_args = List.map (fun (v, _) -> TMeta v) fresh_vars in
+  (* new v = {...}; s -- dec is pre-instantiated *)
+  | New (v, dec, branches, body) ->
       let* _ =
-        check_new_branches ctx dec type_args branches check_command subs
+        check_branches ctx dec branches check_command subs
       in
-      let v_typ = Cns (Sgn (dec_name, type_args)) in
+      let v_typ = Cns (Sgn (dec.name, dec.type_args)) in
       check_command (extend ctx v v_typ) subs body
 
   (* new v = {instantiate{k}[a] => s1}; s2 *)
@@ -365,38 +341,21 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let v_typ = Cns (Forall (a, k, body_meta)) in
       check_command (extend ctx v v_typ) subs continuation
 
-  (* invoke v m{ti's}(xi's) *)
-  | Invoke (v, dec_name, xtor_name, type_args, term_vars) ->
-      let* dec = lookup_dec ctx dec_name in
+  (* invoke v m(xi's) -- dec is pre-instantiated *)
+  | Invoke (v, dec, xtor_name, term_vars) ->
       (match find_xtor dec xtor_name with
-        None -> Error (UnboundXtor (dec_name, xtor_name))
+        None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
           let* v_ct = lookup_var ctx v in
           let* v_ty = expect_cns v_ct in
-          let* (sgn_name, sgn_args) = expect_sgn v_ty subs in
-          if not (Path.equal sgn_name dec_name) then
-            Error (UnificationFailed (v_ty, Sgn (dec_name, [])))
-          else
-            let _, inst_args, _ = instantiate_xtor xtor sgn_args in
-            (* Substitute explicit type_args for existentials *)
-            if List.length type_args <> List.length xtor.existentials then
-              Error (TypeVarArityMismatch {
-                xtor = xtor_name
-              ; expected = List.length xtor.existentials
-              ; got = List.length type_args
-              })
-            else
-              let exist_subst =
-                List.fold_left2 (fun s (v, _) arg ->
-                  Ident.add v arg s
-                ) Ident.emptytbl xtor.existentials type_args
-              in
-              let inst_args' =
-                List.map (chiral_map (apply_fresh_subst exist_subst))
-                  inst_args
-              in
-              check_xtor_args ctx xtor_name inst_args' term_vars subs
-              |> Result.map (fun _ -> ()))
+          let expected_ty = Sgn (dec.name, dec.type_args) in
+          (match unify v_ty expected_ty subs with
+            None -> Error (UnificationFailed (v_ty, expected_ty))
+          | Some subs' ->
+              (* Freshen existentials - quantified is empty for instantiated dec *)
+              let inst_args, _ = freshen_xtor_existentials xtor in
+              check_xtor_args ctx xtor_name inst_args term_vars subs'
+              |> Result.map (fun _ -> ())))
 
   (* invoke v instantiate_k[ty_arg] *)
   | InvokeInstantiate (v, _ty_arg, k) ->
@@ -443,6 +402,14 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               let v_typ = Prd int_ty in
               check_command (extend ctx v v_typ) subs'' body))
 
+  (* new k = { v => s1 }; s2 - Int consumer binding, k : Cns Int *)
+  | NewInt (k, v, branch_body, cont) ->
+      let int_ty = Ext Int in
+      (* Check branch with v : Prd Int *)
+      let* _ = check_command (extend ctx v (Prd int_ty)) subs branch_body in
+      (* Check continuation with k : Cns Int *)
+      check_command (extend ctx k (Cns int_ty)) subs cont
+
   (* ifz(v) { then; else } *)
   | Ifz (v, then_cmd, else_cmd) ->
       let* v_ct = lookup_var ctx v in
@@ -486,6 +453,15 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
           let* var_ct = lookup_var ctx var in
           let exp_ty = strip_chirality exp_ct in
           let var_ty = strip_chirality var_ct in
+          (* DEBUG - use simple string conversion to avoid cycle *)
+          let rec ty_str = function
+            | TVar a -> "TVar " ^ Ident.name a
+            | Sgn (p, tys) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map ty_str tys) ^ "])"
+            | Ext Int -> "Ext Int"
+            | _ -> "..."
+          in
+          Format.eprintf "check_xtor_args: var=%s, exp_ty=%s, var_ty=%s@."
+            (Ident.name var) (ty_str exp_ty) (ty_str var_ty);
           (match unify exp_ty var_ty subs with
             None -> Error (UnificationFailed (exp_ty, var_ty))
           | Some subs' ->

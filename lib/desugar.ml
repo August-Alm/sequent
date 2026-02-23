@@ -149,12 +149,12 @@ let collect_type_symbols (defs: ast_defs) : conv_ctx =
         let path = Path.of_string dec.name in
         let params = params_of_kind dec.kind in
         (* Create placeholder - will be replaced in build_signatures *)
-        let sgn = lazy { MT.name = path; polarity = Pos; param_kinds = params; xtors = [] } in
+        let sgn = lazy { MT.name = path; polarity = Pos; param_kinds = params; type_args = []; xtors = [] } in
         add_type_symbol ctx dec.name path Pos sgn
     | AST_TyCode dec ->
         let path = Path.of_string dec.name in
         let params = params_of_kind dec.kind in
-        let sgn = lazy { MT.name = path; polarity = Neg; param_kinds = params; xtors = [] } in
+        let sgn = lazy { MT.name = path; polarity = Neg; param_kinds = params; type_args = []; xtors = [] } in
         add_type_symbol ctx dec.name path Neg sgn
   ) empty_ctx defs.type_defs
 
@@ -215,7 +215,7 @@ let build_recursive_signature
     (* Create a modified context where this type maps to our recursive lazy *)
     let ctx = add_type_symbol ctx dec.name path pol lazy_sgn in
     let xtors = List.map (xtor_of_ast ctx is_data) dec.clauses in
-    {MT.name = path; polarity = pol; param_kinds = params; xtors = xtors}
+    {MT.name = path; polarity = pol; param_kinds = params; type_args = []; xtors = xtors}
   end in
   lazy_sgn
 

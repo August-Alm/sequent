@@ -83,11 +83,19 @@ module TypeSystem(Base: BASE) = struct
     ; main: typ
     }
 
-  (* Declaration *)
+  (* Declaration 
+     
+     An instantiated declaration has:
+     - param_kinds = [] (no more parameters to bind)
+     - type_args = the types that were substituted for parameters
+     
+     For example, lower[Int] has name=lower, param_kinds=[], type_args=[Int].
+  *)
   type dec =
     { name: Path.t
     ; polarity: Base.polarity
     ; param_kinds: typ list
+    ; type_args: typ list  (* Instantiation arguments, empty for uninstantiated *)
     ; xtors: xtor list
     }
 
@@ -195,7 +203,8 @@ module TypeSystem(Base: BASE) = struct
         Option.bind (unify a1 a2 sbs) (unify b1 b2)
     | Forall (x1, k1, body1), Forall (x2, k2, body2) ->
         (* Alpha-rename x2 to x1 in body2 for comparison *)
-        let body2' = apply_fresh_subst (Ident.add x2 (TVar x1) Ident.emptytbl) body2 in
+        let renamed = Ident.add x2 (TVar x1) Ident.emptytbl in
+        let body2' = apply_fresh_subst renamed body2 in
         Option.bind (unify k1 k2 sbs) (unify body1 body2')
     | Ext e, Ext e' when e = e' -> Some sbs
     | Base pol1, Base pol2 when Base.eq_polarity pol1 pol2 -> Some sbs
@@ -487,7 +496,67 @@ module TypeSystem(Base: BASE) = struct
       else None
     ) d.xtors
 
+  (** Instantiate a declaration with concrete type arguments.
+      
+      Given a declaration like:
+        data List[a: +] where
+          Nil : List[a]
+          Cons(hd: Prd a, tl: Prd List[a]) : List[a]
+      
+      And type arguments [Int], produces:
+        data List where
+          Nil : List
+          Cons(hd: Prd Int, tl: Prd List) : List
+      
+      Also filters xtors to only those that are reachable at this instantiation.
+      For example, if we have a GADT:
+        data Expr[a: +] where
+          IntLit(n: Prd Int) : Expr[Int]
+          BoolLit(b: Prd Bool) : Expr[Bool]
+      
+      Then instantiate_dec expr_dec [Int] would only include IntLit.
+  *)
+  let instantiate_dec (dec: dec) (type_args: typ list) : dec =
+    (* Instantiate a single xtor with the given type arguments *)
+    let instantiate_xtor (xtor: xtor) : xtor =
+      (* The xtor.quantified binds names for the dec's type params.
+         We substitute the type_args for those quantified vars. *)
+      let xtor_subst = 
+        List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
+          Ident.emptytbl xtor.quantified type_args
+      in
+      { name = xtor.name
+      ; quantified = []  (* No longer quantified after instantiation *)
+      ; existentials = xtor.existentials  (* Keep existentials *)
+      ; argument_types = 
+          List.map (chiral_map (apply_fresh_subst xtor_subst)) xtor.argument_types
+      ; main = apply_fresh_subst xtor_subst xtor.main
+      }
+    in
+    (* Filter to only reachable xtors *)
+    let scrutinee_type = Sgn (dec.name, type_args) in
+    let reachable_xtors = 
+      List.filter_map (fun (xtor: xtor) ->
+        (* Check if xtor's main type can unify with the scrutinee type *)
+        let _, fresh_subst = freshen_meta xtor.quantified in
+        let fresh_main = apply_fresh_subst fresh_subst xtor.main in
+        match unify fresh_main scrutinee_type Ident.emptytbl with
+        | Some _ -> Some (instantiate_xtor xtor)
+        | None -> None
+      ) dec.xtors
+    in
+    { name = dec.name
+    ; polarity = dec.polarity
+    ; param_kinds = []  (* No more params after instantiation *)
+    ; type_args = type_args  (* Store the instantiation arguments *)
+    ; xtors = reachable_xtors
+    }
+
   (* Primitives *)
+
+  (* fun[a, b] is the negative (codata) function type.
+     apply destructor takes: (continuation: Cns b, arg: Prd a)
+     Order: [Cns b; Prd a] = [continuation; argument] *)
   let apply_xtor =
     let a = Ident.mk "a" in
     let b = Ident.mk "b" in
@@ -498,6 +567,7 @@ module TypeSystem(Base: BASE) = struct
       ]
     ; existentials = []
     ; argument_types =
+        (* Order: [Cns b; Prd a] = [continuation; argument] *)
         [ Base.mk_consumer (TVar b)
         ; Base.mk_producer (TVar a)
         ]
@@ -508,17 +578,21 @@ module TypeSystem(Base: BASE) = struct
     { name = Prim.fun_sym
     ; polarity = Base.code_polarity
     ; param_kinds = [as_typ Base.data_polarity; as_typ Base.code_polarity]
+    ; type_args = []  (* Uninstantiated *)
     ; xtors = [ apply_xtor ]
     }
 
   let fun_sgn a b = Sgn (Prim.fun_sym, [a; b])
 
+  (* raise[a] is the positive (data) type wrapping a negative.
+     thunk constructor takes: (producer of a) - the wrapped codata value
+     Following simple.ml: raise[a] = Pos [[Lhs a]] *)
   let thunk_xtor =
     let a = Ident.mk "a" in
     { name = Prim.thunk_sym
     ; quantified = [ (a, as_typ Base.code_polarity) ]
     ; existentials = []
-    ; argument_types = [ Base.mk_producer (TVar a) ]
+    ; argument_types = [ Base.mk_producer (TVar a) ]  (* Lhs a = producer *)
     ; main = Sgn (Prim.raise_sym, [TVar a])
     }
   
@@ -526,17 +600,21 @@ module TypeSystem(Base: BASE) = struct
     { name = Prim.raise_sym
     ; polarity = Base.data_polarity
     ; param_kinds = [as_typ Base.code_polarity]
+    ; type_args = []  (* Uninstantiated *)
     ; xtors = [ thunk_xtor ]
     }
   
   let raise_sgn a = Sgn (Prim.raise_sym, [a])
 
+  (* lower[a] is the negative (codata) type wrapping a positive.
+     return destructor takes: (continuation: Cns a) - where to send the value
+     Following simple.ml: lower[a] = Neg [[Rhs a]] *)
   let return_xtor =
     let a = Ident.mk "a" in
     { name = Prim.return_sym
     ; quantified = [ (a, as_typ Base.data_polarity) ]
     ; existentials = []
-    ; argument_types = [ Base.mk_producer (TVar a) ]
+    ; argument_types = [ Base.mk_consumer (TVar a) ]  (* Rhs a = consumer continuation *)
     ; main = Sgn (Prim.lower_sym, [TVar a])
     }
 
@@ -544,6 +622,7 @@ module TypeSystem(Base: BASE) = struct
     { name = Prim.lower_sym
     ; polarity = Base.code_polarity
     ; param_kinds = [as_typ Base.data_polarity]
+    ; type_args = []  (* Uninstantiated *)
     ; xtors = [ return_xtor ]
     }
 

@@ -114,6 +114,44 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (go cond, go then_br, go else_br, go_typ ty)
 
+(** Substitute a term variable with a typed term in a typed term.
+    Used for term-level beta reduction: (λx. body) arg -> body[arg/x] *)
+let rec subst_term_in_typed_term (x: Ident.t) (replacement: typed_term) (tm: typed_term) : typed_term =
+  let go = subst_term_in_typed_term x replacement in
+  let go_clause (xtor_name, ty_vars, tm_vars, body) =
+    (* Don't substitute if x is shadowed by a term binding *)
+    if List.exists (Ident.equal x) tm_vars then
+      (xtor_name, ty_vars, tm_vars, body)
+    else
+      (xtor_name, ty_vars, tm_vars, go body)
+  in
+  match tm with
+    TypedInt n -> TypedInt n
+  | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
+  | TypedVar (y, ty) -> 
+      if Ident.equal x y then replacement else TypedVar (y, ty)
+  | TypedSym (path, ty) -> TypedSym (path, ty)
+  | TypedApp (f, arg, ty) -> TypedApp (go f, go arg, ty)
+  | TypedIns (t, ty_arg, k, ty) -> TypedIns (go t, ty_arg, k, ty)
+  | TypedLam (y, a, body, ty) -> 
+      if Ident.equal x y then tm  (* x is shadowed *)
+      else TypedLam (y, a, go body, ty)
+  | TypedAll ((a, k), body, ty) -> TypedAll ((a, k), go body, ty)
+  | TypedLet (y, t1, t2, ty) ->
+      let t1' = go t1 in
+      if Ident.equal x y then TypedLet (y, t1', t2, ty)  (* x is shadowed in t2 *)
+      else TypedLet (y, t1', go t2, ty)
+  | TypedMatch (scrut, branches, ty) ->
+      TypedMatch (go scrut, List.map go_clause branches, ty)
+  | TypedNew (branches, ty) ->
+      TypedNew (List.map go_clause branches, ty)
+  | TypedCtor (d, c, ty_args, args, ty) ->
+      TypedCtor (d, c, ty_args, List.map go args, ty)
+  | TypedDtor (d, c, ty_args, args, ty) ->
+      TypedDtor (d, c, ty_args, List.map go args, ty)
+  | TypedIfz (cond, then_br, else_br, ty) ->
+      TypedIfz (go cond, go then_br, go else_br, ty)
+
 type term_def =
   { name: sym
   ; type_params: (var * typ) list  (* type parameters with their kinds *)

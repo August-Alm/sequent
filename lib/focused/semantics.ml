@@ -94,13 +94,14 @@ let rec pp_config ((cmd, e): config) : string =
   "⟨" ^ cmd_str ^ " ∥ {" ^ pp_env e ^ "}⟩"
 
 and cmd_name = function
-  | Let (v, _, x, _, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_sym x ^ "(...)"
+  | Let (v, _, x, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_sym x ^ "(...)"
   | LetInstantiate (v, _, _, _, _) -> "let " ^ Ident.name v ^ " = instantiate[...]"
-  | Switch (_, v, _) -> "switch " ^ Ident.name v
+  | Switch (v, _, _) -> "switch " ^ Ident.name v
   | SwitchForall (v, _, _, _) -> "switch " ^ Ident.name v ^ " {instantiate...}"
-  | New (_, v, _, _) -> "new " ^ Ident.name v
+  | New (v, _, _, _) -> "new " ^ Ident.name v
   | NewForall (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {instantiate...}"
-  | Invoke (v, _, x, _, _) -> Ident.name v ^ "." ^ pp_sym x
+  | NewInt (k, _, _, _) -> "new " ^ Ident.name k ^ " {int...}"
+  | Invoke (v, _, x, _) -> Ident.name v ^ "." ^ pp_sym x
   | InvokeInstantiate (v, _, _) -> Ident.name v ^ ".instantiate[...]"
   | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
   | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
@@ -120,7 +121,7 @@ let step ((cmd, e): config) : config option =
   
   (* (let) ⟨let v = m(args); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|args}⟩ 
      Constructs a data value with the xtor name and captured args *)
-  | Let (v, _, m, _, args, body) ->
+  | Let (v, _, m, args, body) ->
       let e0 = sub_env e args in
       let e' = extend e v (DataVal (m, e0)) in
       Some (body, e')
@@ -135,7 +136,7 @@ let step ((cmd, e): config) : config option =
 
   (* (new) ⟨new v = {bs}; s ∥ E⟩ → ⟨s ∥ E, v → {E; bs}⟩
      Creates a codata value: captures current env, branches bind params when invoked *)
-  | New (_, v, branches, body) ->
+  | New (v, _, branches, body) ->
       let e' = extend e v (CodataVal (e, branches)) in
       Some (body, e')
 
@@ -148,7 +149,7 @@ let step ((cmd, e): config) : config option =
 
   (* (switch) ⟨switch v {bs} ∥ E⟩
      Destructure data value v, select matching branch, bind params *)
-  | Switch (_, v, branches) ->
+  | Switch (v, _, branches) ->
       (match lookup e v with
        | DataVal (m, e0) ->
            let (_, _, params, branch_body) = select_branch m branches in
@@ -173,7 +174,7 @@ let step ((cmd, e): config) : config option =
 
   (* (invoke) ⟨v.m(args) ∥ E, v → {E0; bs}⟩ → ⟨b ∥ E0[params↦E(args)]⟩
      Invokes a codata value: find matching branch, bind args to params *)
-  | Invoke (v, _, m, _, args) ->
+  | Invoke (v, _, m, args) ->
       (match lookup e v with
        | CodataVal (e0, branches) ->
            let (_, _, params, branch_body) = select_branch m branches in
@@ -266,6 +267,12 @@ let step ((cmd, e): config) : config option =
              (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
        | (None, _) -> failwith ("add: unbound " ^ Ident.name v1)
        | (_, None) -> failwith ("add: unbound " ^ Ident.name v2))
+
+  (* (newint) ⟨new k = { v ⇒ s1 }; s2 ∥ E⟩ → ⟨s2 ∥ E, k → intcns(E, v, s1)⟩ *)
+  | NewInt (k, v, branch_body, cont) ->
+      (* Create an Int consumer closure: when k receives an int n, bind v=n and run branch_body *)
+      let e' = extend e k (CodataVal (e, [(Path.of_primitive 0 "int", [], [v], branch_body)])) in
+      Some (cont, e')
 
   (* (ifz) ⟨ifz v {s1} {s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩ *)
   | Ifz (v, then_cmd, else_cmd) ->

@@ -58,6 +58,7 @@ let encode_dec (d: MTy.dec) : CTy.dec =
   { name = d.name
   ; polarity = (match d.polarity with MB.Pos -> CB.Pos | MB.Neg -> CB.Neg)
   ; param_kinds = List.map encode_type d.param_kinds
+  ; type_args = List.map encode_type d.type_args
   ; xtors = List.map (encode_xtor d.polarity) d.xtors
   }
 
@@ -85,6 +86,12 @@ let is_negative (ctx: CTy.context) (t: CTy.typ) : bool =
 type encode_ctx =
   { types: CTy.context   (* Type-level context with declarations *)
   }
+
+(** Get an instantiated declaration for a symbol with given type arguments *)
+let get_instantiated_dec (ctx: encode_ctx) (sym: Path.t) (type_args: CTy.typ list) : CTy.dec =
+  match Path.find_opt sym ctx.types.decs with
+  | Some dec -> CTy.instantiate_dec dec type_args
+  | None -> failwith ("Unknown declaration: " ^ Path.name sym)
 
 (** Make a cut between a producer and consumer at a given type *)
 let make_cut (ty: CTy.typ) (lhs: CTm.term) (rhs: CTm.term) : CTm.command =
@@ -145,10 +152,11 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       let x' = Ident.fresh () in
       (* If dom = Raise(orig_dom), we need to unwrap x' to get the actual x *)
       let inner_cmd = match dom with
-        | CTy.Sgn (s, [_orig_dom]) when Path.equal s Prim.raise_sym ->
+        | CTy.Sgn (s, [orig_dom]) when Path.equal s Prim.raise_sym ->
             (* x' : Prd Raise(orig_dom), need to match to extract x : orig_dom *)
+            let raise_dec = get_instantiated_dec ctx Prim.raise_sym [orig_dom] in
             make_cut dom (CTm.Var x')
-              (CTm.Match (Prim.raise_sym,
+              (CTm.Match (raise_dec,
                 [(Prim.thunk_sym, [], [x], 
                   (* Now we have x : orig_dom. Cut body against k. *)
                   wrap_body_for_cod ctx body' body_ty cod k)]))
@@ -163,7 +171,9 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
         | CTy.Sgn (s, [_]) when Path.equal s Prim.raise_sym -> x'
         | _ -> x
       in
-      CTm.Comatch (Prim.fun_sym,
+      let fun_dec = get_instantiated_dec ctx Prim.fun_sym [dom; cod] in
+      (* Branch vars: [k; x] matching apply_xtor.argument_types = [Cns b; Prd a] *)
+      CTm.Comatch (fun_dec,
         [(Prim.apply_sym, [], [k; branch_x], inner_cmd)])
 
   | MTm.TypedAll ((tv, k), body, ty) ->
@@ -178,59 +188,92 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.NewForall (tv, k', body_ty', make_cut body_ty' body' (CTm.Var alpha))
 
   | MTm.TypedApp (f, arg, result_ty) ->
-      (* f(arg) → μα.⟨f' | Dtor(fun_sym, apply, [α, arg'])⟩
-         
-         The apply destructor expects: [Cns cod; Prd dom]
-         So we pass: [α (consumer for result); arg' (producer)] 
-         
-         If result is wrapped with Lower, we need to force the thunk. *)
-      let f' = encode_term ctx f in
-      let arg' = encode_term ctx arg in
-      let f_ty = encode_type (MTm.get_type f) in
-      let arg_ty = encode_type (MTm.get_type arg) in
-      let result_ty' = encode_type result_ty in
-      let (dom, cod) = match f_ty with
-        | CTy.Sgn (s, [d; c]) when Path.equal s Prim.fun_sym -> (d, c)
-        | _ -> failwith "TypedApp: f must have function type"
-      in
-      (* Wrap arg if dom is Raise *)
-      let wrapped_arg = match dom with
-        | CTy.Sgn (s, [_orig_dom]) when Path.equal s Prim.raise_sym ->
-            CTm.Ctor (Prim.raise_sym, Prim.thunk_sym, [arg_ty], [arg'])
-        | _ -> arg'
-      in
-      (* Result handling: if cod = Lower(result_ty'), we get a Lower value
-         and need to force it *)
-      (match cod with
-      | CTy.Sgn (s, [inner_ty]) when Path.equal s Prim.lower_sym ->
-          (* cod = Lower(inner_ty), we receive a Lower value and force it *)
-          let thunk = Ident.fresh () in
-          let ret = Ident.fresh () in
-          CTm.MuPrd (result_ty', ret,
-            make_cut f_ty f'
-              (CTm.Dtor (Prim.fun_sym, Prim.apply_sym, [dom; cod],
-                [CTm.MuCns (cod, thunk,
-                   make_cut cod (CTm.Var thunk)
-                     (CTm.Dtor (Prim.lower_sym, Prim.return_sym, [inner_ty],
-                       [CTm.Var ret])));
-                 wrapped_arg])))
+      (* Beta-reduce if f is a lambda: (λx. body) arg → body[arg/x] *)
+      (match f with
+      | MTm.TypedLam (x, _a, body, _fun_ty) ->
+          let reduced = MTm.subst_term_in_typed_term x arg body in
+          encode_term ctx reduced
+      (* Handle (Λa. body){ty_arg} arg - first instantiate, then apply *)
+      | MTm.TypedIns (MTm.TypedAll ((tv, _k'), body, _forall_ty), ty_arg, _, _) ->
+          let sbs = Ident.add tv ty_arg Ident.emptytbl in
+          let inst_body = MTm.subst_type_in_typed_term sbs body in
+          (* Recursively encode the application - this may trigger lambda beta-reduction *)
+          encode_term ctx (MTm.TypedApp (inst_body, arg, result_ty))
       | _ ->
-          (* cod is already the result type, no forcing needed *)
-          let alpha = Ident.fresh () in
-          CTm.MuPrd (result_ty', alpha,
-            make_cut f_ty f'
-              (CTm.Dtor (Prim.fun_sym, Prim.apply_sym, [dom; cod],
-                [CTm.Var alpha; wrapped_arg]))))
+          (* f(arg) → μα.⟨f' | Dtor(fun_sym, apply, [α, arg'])⟩
+             
+             The apply destructor expects: [Cns cod; Prd dom]
+             So we pass: [α (consumer for result); arg' (producer)] 
+             
+             If cod = Lower(result_ty'), the function returns a suspended computation.
+             We need to force it: receive the Lower value, call return, get the Int. *)
+          let f' = encode_term ctx f in
+          let arg' = encode_term ctx arg in
+          let f_ty = encode_type (MTm.get_type f) in
+          let result_ty' = encode_type result_ty in
+          let (dom, cod) = match f_ty with
+            | CTy.Sgn (s, [d; c]) when Path.equal s Prim.fun_sym -> (d, c)
+            | _ -> failwith "TypedApp: f must have function type"
+          in
+          (* Wrap arg if dom is Raise *)
+          let wrapped_arg = match dom with
+            | CTy.Sgn (s, [orig_dom]) when Path.equal s Prim.raise_sym ->
+                let raise_dec = get_instantiated_dec ctx Prim.raise_sym [orig_dom] in
+                CTm.Ctor (raise_dec, Prim.thunk_sym, [arg'])
+            | _ -> arg'
+          in
+          let fun_dec = get_instantiated_dec ctx Prim.fun_sym [dom; cod] in
+          (match cod with
+          | CTy.Sgn (s, [inner_ty]) when Path.equal s Prim.lower_sym ->
+              (* cod = Lower(inner_ty), function returns suspended computation.
+                 
+                 We receive a Lower value and force it:
+                 μret.⟨f | apply(μ̃thunk.⟨thunk | return(ret)⟩, arg)⟩
+                 
+                 - MuPrd at result_ty' (= inner_ty) binds ret to receive the Int
+                 - MuCns at cod binds thunk to receive the Lower value  
+                 - Inner cut forces: ⟨thunk | return(ret)⟩
+                 - When return is called on thunk, we get the Int, which goes to ret *)
+              let lower_dec = get_instantiated_dec ctx Prim.lower_sym [inner_ty] in
+              let thunk = Ident.fresh () in
+              let ret = Ident.fresh () in
+              (* MuCns receives the Lower value, forces it, sends Int to ret *)
+              let force_cmd = make_cut cod (CTm.Var thunk)
+                (CTm.Dtor (lower_dec, Prim.return_sym, [CTm.Var ret])) in
+              let force_continuation = CTm.MuCns (cod, thunk, force_cmd) in
+              CTm.MuPrd (result_ty', ret,
+                make_cut f_ty f'
+                  (CTm.Dtor (fun_dec, Prim.apply_sym,
+                    [force_continuation; wrapped_arg])))
+          | _ ->
+              (* cod is already the result type, no forcing needed *)
+              let alpha = Ident.fresh () in
+              CTm.MuPrd (result_ty', alpha,
+                make_cut f_ty f'
+                  (CTm.Dtor (fun_dec, Prim.apply_sym,
+                    [CTm.Var alpha; wrapped_arg])))))
 
   | MTm.TypedIns (f, ty_arg, _k, result_ty) ->
-      (* f{ty_arg} → μα.⟨f' | instantiate[ty_arg'](α)⟩ *)
-      let f' = encode_term ctx f in
-      let ty_arg' = encode_type ty_arg in
-      let result_ty' = encode_type result_ty in
-      let f_ty = encode_type (MTm.get_type f) in
-      let alpha = Ident.fresh () in
-      CTm.MuPrd (result_ty', alpha,
-        make_cut f_ty f' (CTm.InstantiateDtor ty_arg'))
+      (* Instantiate if f is a TypedAll: (Λa. body){ty_arg} → body[ty_arg/a] *)
+      (match f with
+      | MTm.TypedAll ((tv, _k'), body, _forall_ty) ->
+          let sbs = Ident.add tv ty_arg Ident.emptytbl in
+          let reduced = MTm.subst_type_in_typed_term sbs body in
+          encode_term ctx reduced
+      (* Handle ((λx. body) arg){ty_arg} - first beta-reduce, then instantiate *)
+      | MTm.TypedApp (MTm.TypedLam (x, _a, lam_body, _fun_ty), arg, _app_ty) ->
+          let reduced = MTm.subst_term_in_typed_term x arg lam_body in
+          (* Recursively encode the instantiation - this may trigger forall instantiation *)
+          encode_term ctx (MTm.TypedIns (reduced, ty_arg, _k, result_ty))
+      | _ ->
+          (* f{ty_arg} → μα.⟨f' | instantiate[ty_arg'](α)⟩ *)
+          let f' = encode_term ctx f in
+          let ty_arg' = encode_type ty_arg in
+          let result_ty' = encode_type result_ty in
+          let f_ty = encode_type (MTm.get_type f) in
+          let alpha = Ident.fresh () in
+          CTm.MuPrd (result_ty', alpha,
+            make_cut f_ty f' (CTm.InstantiateDtor ty_arg')))
 
   | MTm.TypedLet (x, t1, t2, _ty) ->
       (* let x = t1 in t2 → μα.⟨t1' | μ̃x.⟨t2' | α⟩⟩ *)
@@ -248,35 +291,39 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       let scrut' = encode_term ctx scrut in
       let scrut_ty = encode_type (MTm.get_type scrut) in
       let ty' = encode_type ty in
-      let dec_name = match scrut_ty with
-        | CTy.Sgn (d, _) -> d
+      let (dec_name, type_args) = match scrut_ty with
+        | CTy.Sgn (d, args) -> (d, args)
         | _ -> failwith "Match scrutinee must be data type"
       in
+      let inst_dec = get_instantiated_dec ctx dec_name type_args in
       let branches' = List.map (encode_match_branch ctx ty') branches in
       let alpha = Ident.fresh () in
       CTm.MuPrd (ty', alpha,
-        make_cut scrut_ty scrut' (CTm.Match (dec_name, branches')))
+        make_cut scrut_ty scrut' (CTm.Match (inst_dec, branches')))
 
   | MTm.TypedNew (branches, ty) ->
       (* new { ... } → Comatch(d, branches') *)
       let ty' = encode_type ty in
-      let dec_name = match ty' with
-        | CTy.Sgn (d, _) -> d
+      let (dec_name, type_args) = match ty' with
+        | CTy.Sgn (d, args) -> (d, args)
         | _ -> failwith "New type must be codata type"
       in
+      let inst_dec = get_instantiated_dec ctx dec_name type_args in
       let branches' = List.map (encode_new_branch ctx) branches in
-      CTm.Comatch (dec_name, branches')
+      CTm.Comatch (inst_dec, branches')
 
   | MTm.TypedCtor (dec, ctor, ty_args, args, _ty) ->
-      (* Ctor(d, c, {ty_args}, args) → Ctor(d, c, ty_args', args') *)
+      (* Ctor(d, c, {ty_args}, args) → Ctor(inst_dec, c, args') *)
       let ty_args' = List.map encode_type ty_args in
       let args' = List.map (encode_term ctx) args in
-      CTm.Ctor (dec, ctor, ty_args', args')
+      let inst_dec = get_instantiated_dec ctx dec ty_args' in
+      CTm.Ctor (inst_dec, ctor, args')
 
   | MTm.TypedDtor (dec, dtor, ty_args, args, ty) ->
-      (* Dtor(d, c, {ty_args}, this :: rest) → μα.⟨this' | Dtor(d, c, ty_args', rest' @ [α])⟩ *)
+      (* Dtor(d, c, {ty_args}, this :: rest) → μα.⟨this' | Dtor(inst_dec, c, rest' @ [α])⟩ *)
       let ty' = encode_type ty in
       let ty_args' = List.map encode_type ty_args in
+      let inst_dec = get_instantiated_dec ctx dec ty_args' in
       (match args with
       | [] -> failwith "Dtor must have at least a subject argument"
       | this_arg :: rest_args ->
@@ -285,7 +332,7 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
           let rest' = List.map (encode_term ctx) rest_args in
           let alpha = Ident.fresh () in
           CTm.MuPrd (ty', alpha,
-            make_cut this_ty this' (CTm.Dtor (dec, dtor, ty_args', rest' @ [CTm.Var alpha]))))
+            make_cut this_ty this' (CTm.Dtor (inst_dec, dtor, rest' @ [CTm.Var alpha]))))
 
   | MTm.TypedIfz (cond, then_br, else_br, ty) ->
       (* ifz cond then t else e → μα.ifz(cond', ⟨then' | α⟩, ⟨else' | α⟩) *)
@@ -300,17 +347,23 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
           make_cut ty' else' (CTm.Var alpha)))
 
 (** Helper: wrap body and cut against k, handling Lower codomain *)
-and wrap_body_for_cod (_ctx: encode_ctx) (body: CTm.term) (body_ty: CTy.typ) 
+and wrap_body_for_cod (ctx: encode_ctx) (body: CTm.term) (body_ty: CTy.typ) 
     (cod: CTy.typ) (k: Ident.t) : CTm.command =
   match cod with
   | CTy.Sgn (s, [_inner_ty]) when Path.equal s Prim.lower_sym ->
       (* cod = Lower(inner_ty), k : Cns Lower(inner_ty)
-         We need to produce a Lower value: Comatch { return(r) => ⟨body | r⟩ }
-         Then cut: ⟨Comatch{...} | k⟩ *)
-      let ret = Ident.fresh () in
+         body produces body_ty (= inner_ty)
+         We need to produce a Lower value: Comatch { return(r) => Cut(body, r) }
+         Then cut: ⟨Comatch{...} | k⟩
+         
+         The r parameter is where the caller wants the result sent.
+         So we just cut body against r - the result goes where caller requested. *)
+      let lower_dec = get_instantiated_dec ctx Prim.lower_sym [body_ty] in
+      let r = Ident.fresh () in
       make_cut cod
-        (CTm.Comatch (Prim.lower_sym,
-          [(Prim.return_sym, [], [ret], make_cut body_ty body (CTm.Var ret))]))
+        (CTm.Comatch (lower_dec,
+          [(Prim.return_sym, [], [r], 
+            CTm.Cut (body_ty, body, CTm.Var r))]))
         (CTm.Var k)
   | _ ->
       (* cod = body_ty, no wrapping needed *)

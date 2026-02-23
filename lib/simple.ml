@@ -17,7 +17,7 @@ open Common.Identifiers
 module Fun = struct
 
   (* ========================================================================= *)
-  (* Types (Fun Language)                                                     *)
+  (* Types (Fun Language)                                                      *)
   (* ========================================================================= *)
 
   type signature = tpe list list
@@ -294,7 +294,7 @@ module Encode = struct
     List.map encode_dtor sgn
 
   (* ========================================================================= *)
-  (* Fun Type Checking                                                        *)
+  (* Fun Type Checking                                                         *)
   (* ========================================================================= *)
 
   type ctx = Fun.tpe Ident.tbl
@@ -464,7 +464,7 @@ module Encode = struct
       ) (Ok ()) clauses sgn
 
   (* ========================================================================= *)
-  (* Term Encoding                                                            *)
+  (* Term Encoding                                                             *)
   (* ========================================================================= *)
 
   (** Helper to get result type, failing on error *)
