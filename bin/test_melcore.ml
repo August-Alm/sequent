@@ -169,12 +169,15 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
   (match typed_result with
   | None -> ()  (* Already marked as failed *)
   | Some (typed_term, inferred_ty) ->
-      (* 3. Encode to Core *)
+      (* 3. Normalize (beta-reduce and instantiate) before encoding *)
+      let normalized_term = MTm.normalize typed_term in
+      
+      (* 4. Encode to Core *)
       let encode_ctx : Encode.encode_ctx = { types = CTy.empty_context } in
       print_endline "Core Encoding:";
       let core_result =
         try
-          let core_term = Encode.encode_term encode_ctx typed_term in
+          let core_term = Encode.encode_term encode_ctx normalized_term in
           let core_ty = Encode.encode_type inferred_ty in
           Printf.printf "  ✓ Melcore type: %s\n" (MPrint.typ_to_string inferred_ty);
           Printf.printf "        raw: %s\n" (raw_typ inferred_ty);

@@ -188,19 +188,7 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.NewForall (tv, k', body_ty', make_cut body_ty' body' (CTm.Var alpha))
 
   | MTm.TypedApp (f, arg, result_ty) ->
-      (* Beta-reduce if f is a lambda: (λx. body) arg → body[arg/x] *)
-      (match f with
-      | MTm.TypedLam (x, _a, body, _fun_ty) ->
-          let reduced = MTm.subst_term_in_typed_term x arg body in
-          encode_term ctx reduced
-      (* Handle (Λa. body){ty_arg} arg - first instantiate, then apply *)
-      | MTm.TypedIns (MTm.TypedAll ((tv, _k'), body, _forall_ty), ty_arg, _, _) ->
-          let sbs = Ident.add tv ty_arg Ident.emptytbl in
-          let inst_body = MTm.subst_type_in_typed_term sbs body in
-          (* Recursively encode the application - this may trigger lambda beta-reduction *)
-          encode_term ctx (MTm.TypedApp (inst_body, arg, result_ty))
-      | _ ->
-          (* f(arg) → μα.⟨f' | Dtor(fun_sym, apply, [α, arg'])⟩
+      (* f(arg) → μα.⟨f' | Dtor(fun_sym, apply, [α, arg'])⟩
              
              The apply destructor expects: [Cns cod; Prd dom]
              So we pass: [α (consumer for result); arg' (producer)] 
@@ -251,29 +239,17 @@ let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
               CTm.MuPrd (result_ty', alpha,
                 make_cut f_ty f'
                   (CTm.Dtor (fun_dec, Prim.apply_sym,
-                    [CTm.Var alpha; wrapped_arg])))))
+                    [CTm.Var alpha; wrapped_arg]))))
 
   | MTm.TypedIns (f, ty_arg, _k, result_ty) ->
-      (* Instantiate if f is a TypedAll: (Λa. body){ty_arg} → body[ty_arg/a] *)
-      (match f with
-      | MTm.TypedAll ((tv, _k'), body, _forall_ty) ->
-          let sbs = Ident.add tv ty_arg Ident.emptytbl in
-          let reduced = MTm.subst_type_in_typed_term sbs body in
-          encode_term ctx reduced
-      (* Handle ((λx. body) arg){ty_arg} - first beta-reduce, then instantiate *)
-      | MTm.TypedApp (MTm.TypedLam (x, _a, lam_body, _fun_ty), arg, _app_ty) ->
-          let reduced = MTm.subst_term_in_typed_term x arg lam_body in
-          (* Recursively encode the instantiation - this may trigger forall instantiation *)
-          encode_term ctx (MTm.TypedIns (reduced, ty_arg, _k, result_ty))
-      | _ ->
-          (* f{ty_arg} → μα.⟨f' | instantiate[ty_arg'](α)⟩ *)
-          let f' = encode_term ctx f in
-          let ty_arg' = encode_type ty_arg in
-          let result_ty' = encode_type result_ty in
-          let f_ty = encode_type (MTm.get_type f) in
-          let alpha = Ident.fresh () in
-          CTm.MuPrd (result_ty', alpha,
-            make_cut f_ty f' (CTm.InstantiateDtor ty_arg')))
+      (* f{ty_arg} → μα.⟨f' | instantiate[ty_arg'](α)⟩ *)
+      let f' = encode_term ctx f in
+      let ty_arg' = encode_type ty_arg in
+      let result_ty' = encode_type result_ty in
+      let f_ty = encode_type (MTm.get_type f) in
+      let alpha = Ident.fresh () in
+      CTm.MuPrd (result_ty', alpha,
+        make_cut f_ty f' (CTm.InstantiateDtor ty_arg'))
 
   | MTm.TypedLet (x, t1, t2, _ty) ->
       (* let x = t1 in t2 → μα.⟨t1' | μ̃x.⟨t2' | α⟩⟩ *)

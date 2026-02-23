@@ -152,6 +152,128 @@ let rec subst_term_in_typed_term (x: Ident.t) (replacement: typed_term) (tm: typ
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (go cond, go then_br, go else_br, ty)
 
+(** Normalize a typed term:
+    - Beta-reduce term applications to weak head normal form (WHNF)
+    - Strongly reduce type instantiations (recurse under all binders)
+    - Inline let-bound values (lambdas, foralls, ints)
+    
+    WHNF means we reduce until the head is not a redex, but don't reduce
+    under term-level binders (lambdas). Type instantiations are reduced
+    strongly because they don't have computational content.
+*)
+let rec normalize (tm: typed_term) : typed_term =
+  (* First, normalize the head to expose any redexes *)
+  match tm with
+  (* Type instantiation: always reduce strongly *)
+  | TypedIns (f, ty_arg, k, result_ty) ->
+      let f' = normalize f in
+      (match f' with
+      | TypedAll ((tv, _k'), body, _forall_ty) ->
+          (* (Λa. body){ty_arg} → body[ty_arg/a], then continue normalizing *)
+          let sbs = Ident.add tv ty_arg Ident.emptytbl in
+          let reduced = subst_type_in_typed_term sbs body in
+          normalize reduced
+      (* Expose redex: ((λx. body) arg){ty} → first beta-reduce *)
+      | TypedApp (TypedLam (x, _a, lam_body, _fun_ty), arg, _app_ty) ->
+          let reduced = subst_term_in_typed_term x arg lam_body in
+          normalize (TypedIns (reduced, ty_arg, k, result_ty))
+      | _ ->
+          (* Can't reduce further, but normalize under Ins for strong reduction *)
+          TypedIns (f', ty_arg, k, result_ty))
+  
+  (* Term application: reduce to WHNF *)
+  | TypedApp (f, arg, result_ty) ->
+      let f' = normalize f in
+      (match f' with
+      | TypedLam (x, _a, body, _fun_ty) ->
+          (* (λx. body) arg → body[arg/x], then continue normalizing *)
+          let reduced = subst_term_in_typed_term x arg body in
+          normalize reduced
+      (* Expose redex: (Λa. body){ty} arg → first type-instantiate *)
+      | TypedIns (TypedAll ((tv, _k'), body, _forall_ty), ty_arg, _, _) ->
+          let sbs = Ident.add tv ty_arg Ident.emptytbl in
+          let inst_body = subst_type_in_typed_term sbs body in
+          normalize (TypedApp (inst_body, arg, result_ty))
+      | _ ->
+          (* Can't reduce head, return with normalized function *)
+          TypedApp (f', arg, result_ty))
+  
+  (* Let: inline values to expose redexes *)
+  | TypedLet (x, t1, t2, ty) ->
+      let t1' = normalize t1 in
+      (match t1' with
+      | TypedLam _ | TypedAll _ | TypedInt _ ->
+          (* Inline value and continue normalizing *)
+          let inlined = subst_term_in_typed_term x t1' t2 in
+          normalize inlined
+      | _ ->
+          (* Can't inline, just return with normalized bound term *)
+          TypedLet (x, t1', t2, ty))
+  
+  (* For TypedAll, recurse into body for strong type reduction *)
+  | TypedAll ((a, k), body, ty) ->
+      TypedAll ((a, k), normalize body, ty)
+  
+  (* Lambda: don't reduce under binder for WHNF, but do normalize type instantiations *)
+  | TypedLam (x, a, body, ty) ->
+      (* Only normalize type-level stuff in body, not full reduction *)
+      TypedLam (x, a, normalize_types_only body, ty)
+  
+  (* Other forms: already in WHNF, but normalize subterms for type instantiations *)
+  | TypedInt _ -> tm
+  | TypedVar _ -> tm
+  | TypedSym _ -> tm
+  | TypedAdd (t1, t2) -> TypedAdd (normalize t1, normalize t2)
+  | TypedMatch (scrut, branches, ty) ->
+      TypedMatch (normalize scrut, List.map normalize_clause branches, ty)
+  | TypedNew (branches, ty) ->
+      TypedNew (List.map normalize_clause branches, ty)
+  | TypedCtor (d, c, ty_args, args, ty) ->
+      TypedCtor (d, c, ty_args, List.map normalize args, ty)
+  | TypedDtor (d, c, ty_args, args, ty) ->
+      TypedDtor (d, c, ty_args, List.map normalize args, ty)
+  | TypedIfz (cond, then_br, else_br, ty) ->
+      TypedIfz (normalize cond, normalize then_br, normalize else_br, ty)
+
+and normalize_clause (xtor_name, ty_vars, tm_vars, body) =
+  (xtor_name, ty_vars, tm_vars, normalize body)
+
+(** Normalize only type instantiations, not term applications.
+    Used under lambdas where we want strong type reduction but WHNF for terms. *)
+and normalize_types_only (tm: typed_term) : typed_term =
+  match tm with
+  | TypedIns (f, ty_arg, k, result_ty) ->
+      let f' = normalize_types_only f in
+      (match f' with
+      | TypedAll ((tv, _k'), body, _forall_ty) ->
+          let sbs = Ident.add tv ty_arg Ident.emptytbl in
+          let reduced = subst_type_in_typed_term sbs body in
+          normalize_types_only reduced
+      | _ -> TypedIns (f', ty_arg, k, result_ty))
+  | TypedAll ((a, k), body, ty) ->
+      TypedAll ((a, k), normalize_types_only body, ty)
+  | TypedLam (x, a, body, ty) ->
+      TypedLam (x, a, normalize_types_only body, ty)
+  | TypedApp (f, arg, ty) ->
+      TypedApp (normalize_types_only f, normalize_types_only arg, ty)
+  | TypedLet (x, t1, t2, ty) ->
+      TypedLet (x, normalize_types_only t1, normalize_types_only t2, ty)
+  | TypedAdd (t1, t2) ->
+      TypedAdd (normalize_types_only t1, normalize_types_only t2)
+  | TypedMatch (scrut, branches, ty) ->
+      TypedMatch (normalize_types_only scrut, 
+        List.map (fun (x, tv, tm, b) -> (x, tv, tm, normalize_types_only b)) branches, ty)
+  | TypedNew (branches, ty) ->
+      TypedNew (List.map (fun (x, tv, tm, b) -> (x, tv, tm, normalize_types_only b)) branches, ty)
+  | TypedCtor (d, c, ty_args, args, ty) ->
+      TypedCtor (d, c, ty_args, List.map normalize_types_only args, ty)
+  | TypedDtor (d, c, ty_args, args, ty) ->
+      TypedDtor (d, c, ty_args, List.map normalize_types_only args, ty)
+  | TypedIfz (cond, then_br, else_br, ty) ->
+      TypedIfz (normalize_types_only cond, normalize_types_only then_br, 
+        normalize_types_only else_br, ty)
+  | TypedInt _ | TypedVar _ | TypedSym _ -> tm
+
 type term_def =
   { name: sym
   ; type_params: (var * typ) list  (* type parameters with their kinds *)
