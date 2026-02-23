@@ -749,8 +749,8 @@ module Transform = struct
                   (xtor.name, [], params, Target.CutCtor (dec, xtor.name, params, Sub.apply h y))
                 ) dec.xtors)
         | None ->
-            (* Fallback: just substitute (shouldn't happen for primitive types) *)
-            Target.CutInt (Sub.apply h x, Sub.apply h y))
+            (* Fallback for type variables: use CutTyped → Axiom *)
+            Target.CutTyped (ty, Sub.apply h x, Sub.apply h y))
 
     | CTm.Var x, CTm.Match (dec, bs) ->
         Target.CutMatch (dec, Sub.apply h x, transform_branches bs h)

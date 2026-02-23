@@ -55,7 +55,7 @@ module TypeSystem(Base: BASE) = struct
     | TMeta of Ident.t
     | Sgn of Path.t * typ list (* Signatures; applied data or codata type *)
     | PromotedCtor of Path.t * Path.t * typ list
-    | Forall of Ident.t * typ * typ (* ∀(x: k). body, has kind - when body : - *)
+    | Forall of Ident.t * typ * typ (* ∀(x: k). body, has kind - when x: k implies body: - *)
 
   let as_typ = fun pol -> Base pol
 
