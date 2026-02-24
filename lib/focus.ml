@@ -96,6 +96,7 @@ and subst_command (ts: TySub.t) (cmd: CTm.command) : CTm.command =
   match cmd with
   | CTm.Cut (ty, lhs, rhs) -> CTm.Cut (subst_type ts ty, subst_term ts lhs, subst_term ts rhs)
   | CTm.Add (m, n, k) -> CTm.Add (subst_term ts m, subst_term ts n, subst_term ts k)
+  | CTm.Sub (m, n, k) -> CTm.Sub (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Ifz (cond, s1, s2) -> CTm.Ifz (subst_term ts cond, subst_command ts s1, subst_command ts s2)
   | CTm.Ret (ty, t) -> CTm.Ret (subst_type ts ty, subst_term ts t)
   | CTm.Call (p, tys, args) -> CTm.Call (p, List.map (subst_type ts) tys, List.map (subst_term ts) args)
@@ -304,6 +305,7 @@ module Target = struct
     | CutTyped of CTy.typ * Ident.t * Ident.t  (* Generic cut with type annotation *)
     | LetIntCns of Ident.t * Ident.t * command * command  (* new k = { v => s1 }; s2 - Int consumer binding *)
     | Add of Ident.t * Ident.t * Ident.t * command
+    | Sub of Ident.t * Ident.t * Ident.t * command
     | Ifz of Ident.t * command * command
     | Call of Path.t * CTy.typ list * Ident.t list
     (* Terminals *)
@@ -384,6 +386,9 @@ module Target = struct
     | Add (x, y, k, cont) ->
         let k' = Ident.fresh () in
         Add (Sub.apply h x, Sub.apply h y, k', rename_command (Sub.add k k' h) cont)
+    | Sub (x, y, k, cont) ->
+        let k' = Ident.fresh () in
+        Sub (Sub.apply h x, Sub.apply h y, k', rename_command (Sub.add k k' h) cont)
     | Ifz (v, s1, s2) ->
         Ifz (Sub.apply h v, rename_command h s1, rename_command h s2)
     | Call (p, tys, args) ->
@@ -592,6 +597,8 @@ module Transform = struct
               Target.LetIntCns (k, v, replace_cutint branch, replace_cutint cont)
           | Target.Add (m, n, r, cont) ->
               Target.Add (m, n, r, replace_cutint cont)
+          | Target.Sub (m, n, r, cont) ->
+              Target.Sub (m, n, r, replace_cutint cont)
           | Target.LetInstantiate (a, kty, body_ty, y, cont) ->
               Target.LetInstantiate (a, kty, body_ty, y, replace_cutint cont)
           | Target.LetNewForall (a, kty, body_ty, body, y, cont) ->
@@ -711,6 +718,14 @@ module Transform = struct
             bind_term k h (fun k_var ->
               let res = Ident.fresh () in
               Target.Add (m_var, n_var, res,
+                Target.CutInt (res, k_var)))))
+
+    | CTm.Sub (m, n, k) ->
+        bind_term m h (fun m_var ->
+          bind_term n h (fun n_var ->
+            bind_term k h (fun k_var ->
+              let res = Ident.fresh () in
+              Target.Sub (m_var, n_var, res,
                 Target.CutInt (res, k_var)))))
 
     | CTm.Ifz (cond, s1, s2) ->
@@ -1006,6 +1021,8 @@ module Collapse = struct
         FTm.NewInt (k, v, collapse_command parity branch_body, collapse_command parity cont)
     | Target.Add (x, y, k, cont) ->
         FTm.Add (x, y, k, collapse_command parity cont)
+    | Target.Sub (x, y, k, cont) ->
+        FTm.Sub (x, y, k, collapse_command parity cont)
     | Target.Ifz (v, s1, s2) ->
         FTm.Ifz (v, collapse_command parity s1, collapse_command parity s2)
     | Target.Call (_path, _tys, _args) ->

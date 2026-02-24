@@ -18,6 +18,7 @@ type command =
   (* Call a defined function with type and term args *)
   | Call of sym * typ list * term list
   | Add of term * term * term
+  | Sub of term * term * term
   | Ifz of term * command * command
   (* Explicit return - terminal command that returns a value *)
   | Ret of typ * term
@@ -401,6 +402,21 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
           (fun c tm -> infer_typ c subs tm) subs in
         Ok ()
   | Add (t1, t2, t3) ->
+      let* (t1_ct, subs') = infer_typ ctx subs t1 in
+      let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
+      let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
+      let int_prd = Prd (Ext Int) in
+      let int_cns = Cns (Ext Int) in
+      (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
+        None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+      | Some subs4 ->
+          (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
+            None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+          | Some _ ->
+              (* t1, t2 should be Prd Int, t3 should be Cns Int *)
+              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
+  | Sub (t1, t2, t3) ->
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in

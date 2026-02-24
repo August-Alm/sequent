@@ -1,3 +1,4 @@
+
 open Common.Identifiers
 
 type name = Ident.t
@@ -169,6 +170,7 @@ and generate_for_term (term: term): unit infer =
 let run (m: unit infer): flow list =
   let (_, _, flows) = m { decl_map = Ident.emptytbl; tparam_map = Ident.emptytbl } in
   flows
+
 (* CycleChecker - finds growing cycles in monomorphization constraints *)
 
 type index = int
@@ -183,7 +185,9 @@ exception CycleException of node list
 (* Map module for nodes *)
 module NodeMap = Map.Make(struct
   type t = node
-  let compare = compare
+  let compare (n, i) (m, j) =
+    let k = Ident.compare n m in
+    if k <> 0 then k else Int.compare i j
 end)
 
 (* BFS implementation *)
@@ -197,7 +201,9 @@ let bfs (start: node) (target: node) (graph: node -> node list option): node lis
         match graph (name, idx) with
         | None -> go visited rest
         | Some neighbors ->
-            let unvisited = List.filter (fun n -> not (List.mem n visited)) neighbors in
+            let unvisited = List.filter (fun (n, i) ->
+              not (List.exists (fun (v, j) -> Ident.equal v n && i = j) visited)
+            ) neighbors in
             go ((name, idx) :: visited) (rest @ unvisited)
   in
   go [] [start]
@@ -391,7 +397,7 @@ let solve_helper (facts: ground_flow list) (rules: flow list): ground_flow list 
 (* Fixpoint operator *)
 let rec fix_point (f: 'a -> 'a) (x: 'a): 'a =
   let x' = f x in
-  if x' = x then x else fix_point f x'
+  if x' = x then x else fix_point f x' (* Use == here? *)
 
 (* Main solver *)
 let solve (cs: flow list): ground_flow list =

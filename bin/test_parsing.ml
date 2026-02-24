@@ -460,6 +460,65 @@ let repeat{a: type}(x: a): stream(a) =
     }
     |};
 
+  run_test
+    ~name:"Complex example"
+    {|
+data option: type -> type where
+  { none: {a} option(a)
+  ; some: {a} a -> option(a)
+  }
+
+code stream: type -> type where
+  { state: {a} stream(a) -> a
+  ; next: {a} stream(a) -> option(stream(a))
+  }
+
+code algebra: type -> type -> type where
+  { nil: {b}{c} algebra(b)(c) -> c
+  ; cons: {b}{c} algebra(b)(c) -> b -> c -> c
+  }
+
+code foldable: type -> type where
+  { fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
+  }
+
+let ints_from(i: int): stream(int) =
+  new { state => i
+      ; next => some{stream(int)}(ints_from(i + 1))
+      }
+
+let nats: stream(int) = ints_from(0)
+
+let take{e}(s: stream(e))(n: int): foldable(e) =
+  new foldable(e)
+  { fold{e}{t}(alg) =>
+      ifz(0) then
+        nil{e}{t}(alg)
+      else
+        match next{e}(s) with
+        { none{_} => nil{e}{t}(alg)
+        ; some{_}(s') =>
+            let s'' =
+              new stream(e)
+              { state => state{e}(s')
+              ; next => next{e}(s)
+              }
+            in
+            let rest = take{e}(s'')(n - 1) in
+            let folded_rest = fold{e}{t}(rest)(alg) in
+            cons{e}{t}(alg)(state{e}(s'))(folded_rest)
+        }
+  }
+
+let sum(l: foldable(int)): int =
+  let alg =
+    new algebra(int)(int)
+    { nil => 0
+    ; cons(h)(t) => h + t
+    }
+  in fold{int}{int}(l)(alg)
+    |};
+
   (* ══════════════════════════════════════════════════════════════════
      Summary
      ══════════════════════════════════════════════════════════════════ *)

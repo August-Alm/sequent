@@ -76,6 +76,8 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       FTm.Lit (n, v, close_ret ret_ty body)
   | FTm.Add (a, b, r, body) -> 
       FTm.Add (a, b, r, close_ret ret_ty body)
+  | FTm.Sub (a, b, r, body) -> 
+      FTm.Sub (a, b, r, close_ret ret_ty body)
   | FTm.NewInt (k, v, branch, cont) ->
       FTm.NewInt (k, v, close_ret ret_ty branch, close_ret ret_ty cont)
   | FTm.Ifz (v, t, e) -> 
@@ -226,6 +228,8 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
                 Printf.sprintf "Call(%s, ...)" (Path.name p)
             | CTm.Add (a, b, r) ->
                 Printf.sprintf "Add(%s, %s, %s)" (pp_core_term a) (pp_core_term b) (pp_core_term r)
+            | CTm.Sub (a, b, r) ->
+                Printf.sprintf "Sub(%s, %s, %s)" (pp_core_term a) (pp_core_term b) (pp_core_term r)
             | CTm.Ifz (cond, t, e) ->
                 Printf.sprintf "Ifz(%s, %s, %s)" (pp_core_term cond) (pp_core_cmd t) (pp_core_cmd e)
             | CTm.Ret (ty, t) ->

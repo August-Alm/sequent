@@ -198,7 +198,10 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   | Add (x, y, r, body) ->
       ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " + " ^ pp_var y ^ ";\n" ^
       pp_cmd ~cfg n body
-
+  (* sub(x, y) { r ⇒ body } *)
+  | Sub (x, y, r, body) ->
+      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " - " ^ pp_var y ^ ";\\n" ^
+      pp_cmd ~cfg n body
   (* new k = { v ⇒ branch }; cont *)
   | NewInt (k, v, branch, cont) ->
       let ind2 = String.make (n + cfg.indent_size) ' ' in

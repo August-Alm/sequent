@@ -4,8 +4,9 @@
 
 (* Token declarations *)
 %token KW_FUN KW_LET KW_IN KW_MATCH KW_WITH KW_NEW KW_DATA KW_CODE KW_WHERE KW_END KW_TYPE
+%token KW_IFZ KW_THEN KW_ELSE
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
-%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR PIPE PLUS
+%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR PIPE PLUS MINUS
 %token <string> IDENT
 %token <int> INT
 %token EOF
@@ -13,8 +14,9 @@
 (* Precedence and associativity - lowest to highest *)
 %nonassoc DBLARROW       (* lowest - lambda body extends as far right as possible *)
 %nonassoc KW_IN          (* let ... in ... *)
+%nonassoc KW_THEN KW_ELSE (* ifz ... then ... else ... *)
 %nonassoc KW_WITH KW_END (* match ... with ... *)
-%left PLUS               (* addition *)
+%left PLUS MINUS         (* addition, subtraction *)
 %right ARROW             (* type arrows *)
 (* Start symbol *)
 %start <Syntax.ast> main_expr
@@ -69,12 +71,16 @@ expr:
     { AST_Let (x, t, u) }
   | t1 = expr PLUS t2 = expr
     { AST_Add (t1, t2) }
+  | t1 = expr MINUS t2 = expr
+    { AST_Sub (t1, t2) }
   | KW_MATCH t = expr KW_WITH LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
     { AST_Match (t, clauses) }
   | KW_NEW LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
     { AST_New (None, clauses) }
   | KW_NEW ty = typ LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
     { AST_New (Some ty, clauses) }
+  | KW_IFZ LPAREN n = expr RPAREN KW_THEN t = expr KW_ELSE u = expr
+    { AST_Ifz (n, t, u) }
 
 expr_app:
   | e = expr_atom { e }

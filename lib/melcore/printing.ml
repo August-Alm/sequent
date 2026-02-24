@@ -188,6 +188,9 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   | Add (t1, t2) ->
       parens (pp_term ~cfg ~lvl t1 ^ " + " ^ pp_term ~cfg ~lvl t2)
   
+  | Sub (t1, t2) ->
+      parens (pp_term ~cfg ~lvl t1 ^ " - " ^ pp_term ~cfg ~lvl t2)
+  
   | Var x -> pp_ident x
   
   | Sym p -> pp_path p
@@ -255,7 +258,7 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
 
 and pp_term_app ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   match tm with
-    Int _ | Var _ | Sym _ | Add _ | App _ | Ins _ | Ctor _ | Dtor _ ->
+    Int _ | Var _ | Sym _ | Add _ | Sub _ | App _ | Ins _ | Ctor _ | Dtor _ ->
       pp_term ~cfg ~lvl tm
   | _ -> parens (pp_term ~cfg ~lvl tm)
 
@@ -282,6 +285,9 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   
   | TypedAdd (t1, t2) ->
       parens (pp_typed_term ~cfg ~lvl t1 ^ " + " ^ pp_typed_term ~cfg ~lvl t2)
+  
+  | TypedSub (t1, t2) ->
+      parens (pp_typed_term ~cfg ~lvl t1 ^ " - " ^ pp_typed_term ~cfg ~lvl t2)
   
   | TypedVar (x, ty) ->
       if cfg.show_types then pp_ident x ^ " : " ^ pp_typ ~cfg ty
@@ -350,7 +356,7 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
 
 and pp_typed_term_app ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   match tm with
-    TypedInt _ | TypedVar _ | TypedSym _ | TypedAdd _ | TypedApp _ 
+    TypedInt _ | TypedVar _ | TypedSym _ | TypedAdd _ | TypedSub _ | TypedApp _ 
   | TypedIns _ | TypedCtor _ | TypedDtor _ -> pp_typed_term ~cfg ~lvl tm
   | _ -> parens (pp_typed_term ~cfg ~lvl tm)
 

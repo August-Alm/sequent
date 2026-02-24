@@ -6,7 +6,7 @@ open Parser
 let whitespace = [%sedlex.regexp? Plus (' ' | '\t' | '\r' | '\n')]
 let digit = [%sedlex.regexp? '0'..'9']
 let letter = [%sedlex.regexp? 'a'..'z' | 'A'..'Z']
-let ident_char = [%sedlex.regexp? letter | digit | '_']
+let ident_char = [%sedlex.regexp? letter | digit | '_' | '\'']
 let ident_start = [%sedlex.regexp? letter | '_']
 let identifier = [%sedlex.regexp? ident_start, Star ident_char]
 let integer = [%sedlex.regexp? Plus digit]
@@ -24,6 +24,9 @@ let keywords = [
   ("where", KW_WHERE);
   ("end", KW_END);
   ("type", KW_TYPE);
+  ("ifz", KW_IFZ);
+  ("then", KW_THEN);
+  ("else", KW_ELSE);
 ]
 
 let keyword_table =
@@ -38,6 +41,7 @@ let rec token lexbuf =
   | "(*" -> comment lexbuf; token lexbuf
   | "---" -> line_comment lexbuf; token lexbuf
   | "->" -> ARROW
+  | "-" -> MINUS
   | "=>" -> DBLARROW
   | "(" -> LPAREN
   | ")" -> RPAREN

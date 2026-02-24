@@ -105,14 +105,20 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
                   | None -> failwith ("Unbound type variable: " ^ x)))))
 
   | AST_TyApp (t, args) ->
-      (* Type application: could be List(int) etc.
-         If t is a type symbol name, we create Sgn(name, args).
-         Otherwise we need to handle it as a higher-kinded application. *)
-      let args' = List.map (typ_of_ast ctx) args in
-      (match t with
+      (* Type application: could be List(int), algebra(b)(c) etc.
+         Handle curried applications by collecting all args.
+         If the head is a type symbol name, we create Sgn(name, all_args). *)
+      let rec collect_ty_app head acc =
+        match head with
+        | AST_TyApp (h, more_args) -> collect_ty_app h (more_args @ acc)
+        | _ -> (head, acc)
+      in
+      let (head, all_args) = collect_ty_app t args in
+      let all_args' = List.map (typ_of_ast ctx) all_args in
+      (match head with
         AST_TyVar name ->
           (match lookup_type_symbol ctx name with
-            Some (path, _pol, _sgn) -> MT.Sgn (path, args')
+            Some (path, _pol, _sgn) -> MT.Sgn (path, all_args')
           | None ->
               (* Higher-kinded type variable application - not yet supported *)
               failwith ("Higher-kinded application not supported: " ^ name))
@@ -183,10 +189,13 @@ let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
         [] -> failwith ("Constructor " ^ xtor.name ^ " must have a return type")
       | main :: rev_args -> (List.rev rev_args, main)
     else
-      (* Codata: first is "this" (main), rest are arguments including result *)
+      (* Codata: first is "this" (main), rest are arguments including result.
+         argument_types is stored reversed (arg0 first where arg0 is the result).
+         Surface: main -> argN -> ... -> arg0
+         Storage: [arg0; ...; argN] = reverse of (rest) *)
       match arg_types with
         [] -> failwith ("Destructor " ^ xtor.name ^ " must have a receiver type")
-      | main :: args -> (args, main)
+      | main :: args -> (List.rev args, main)
   in
   
   (* Wrap arguments as chiral types (in Melcore, mk_producer is identity) *)
@@ -294,6 +303,12 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
   
   | AST_Add (t1, t2) ->
       Trm.Add (term_of_ast ctx t1, term_of_ast ctx t2)
+  
+  | AST_Sub (t1, t2) ->
+      Trm.Sub (term_of_ast ctx t1, term_of_ast ctx t2)
+  
+  | AST_Ifz (n, t, u) ->
+      Trm.Ifz (term_of_ast ctx n, term_of_ast ctx t, term_of_ast ctx u)
   
   | AST_Var x ->
       (* First try term variable *)

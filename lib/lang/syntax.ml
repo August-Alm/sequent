@@ -18,6 +18,10 @@ type ast =
   | AST_Int of int
   (* t + u *)
   | AST_Add of ast * ast
+  (* t - u *)
+  | AST_Sub of ast * ast
+  (* ifz(n) then t else u *)
+  | AST_Ifz of ast * ast * ast
   (* x *)
   | AST_Var of string
   (* t(u) *)
@@ -149,9 +153,14 @@ and typ_atom_to_string = function
 (* Convert term to string *)
 let rec ast_to_string (lvl: int) = function
   | AST_Int n -> string_of_int n
-  | AST_Var x -> x
   | AST_Add (t1, t2) ->
     "(" ^ ast_to_string lvl t1 ^ " + " ^ ast_to_string lvl t2 ^ ")"
+  | AST_Sub (t1, t2) ->
+    "(" ^ ast_to_string lvl t1 ^ " - " ^ ast_to_string lvl t2 ^ ")"
+  | AST_Ifz (n, t, u) ->
+    "ifz(" ^ ast_to_string lvl n ^ ") then " ^ ast_to_string lvl t ^
+    " else " ^ ast_to_string lvl u
+  | AST_Var x -> x
   | AST_App (t, u) ->
     ast_app_to_string lvl t ^ "(" ^ ast_to_string lvl u ^ ")"
   | AST_Ins (t, ty) ->
@@ -190,7 +199,7 @@ let rec ast_to_string (lvl: int) = function
     name ^ ty_args_str ^ tm_args_str
 
 and ast_app_to_string (lvl: int) = function
-  | AST_Int _ | AST_Var _ | AST_Add _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t -> ast_to_string lvl t
+  | AST_Int _ | AST_Var _ | AST_Add _ | AST_Sub _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t -> ast_to_string lvl t
   | t -> "(" ^ ast_to_string lvl t ^ ")"
 
 and type_arg_to_string (x, k_opt) =

@@ -13,6 +13,9 @@ type token =
   | KW_WHERE
   | KW_END
   | KW_TYPE
+  | KW_IFZ
+  | KW_THEN
+  | KW_ELSE
   (* Delimiters *)
   | LPAREN
   | RPAREN
@@ -28,6 +31,7 @@ type token =
   | SEMICOLON
   | EQUAL
   | PLUS
+  | MINUS
   | STAR
   | PIPE
   
@@ -50,6 +54,9 @@ let string_of_token = function
   | KW_WHERE -> "where"
   | KW_END -> "end"
   | KW_TYPE -> "type"
+  | KW_IFZ -> "ifz"
+  | KW_THEN -> "then"
+  | KW_ELSE -> "else"
   | LPAREN -> "("
   | RPAREN -> ")"
   | LBRACE -> "{"
@@ -61,6 +68,7 @@ let string_of_token = function
   | COLON -> ":"
   | EQUAL -> "="
   | PLUS -> "+"
+  | MINUS -> "-"
   | STAR -> "*"
   | PIPE -> "|"
   | SEMICOLON -> ";"

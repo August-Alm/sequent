@@ -15,6 +15,8 @@ type term =
     Int of int
   (* t + u *)
   | Add of term * term
+  (* t - u *)
+  | Sub of term * term
   (* x *)
   | Var of var
   (* name; reference to top-level definition *)
@@ -50,6 +52,7 @@ and branch =
 type typed_term =
     TypedInt of int
   | TypedAdd of typed_term * typed_term
+  | TypedSub of typed_term * typed_term
   | TypedVar of var * typ
   | TypedSym of sym * typ
   | TypedApp of typed_term * typed_term * typ
@@ -72,6 +75,7 @@ let get_type (tm: typed_term) : typ =
   match tm with
     TypedInt _ -> Ext Int
   | TypedAdd (_, _) -> Ext Int
+  | TypedSub (_, _) -> Ext Int
   | TypedVar (_, ty) -> ty
   | TypedSym (_, ty) -> ty
   | TypedApp (_, _, ty) -> ty
@@ -96,6 +100,7 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
   match tm with
     TypedInt n -> TypedInt n
   | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
+  | TypedSub (t1, t2) -> TypedSub (go t1, go t2)
   | TypedVar (x, ty) -> TypedVar (x, go_typ ty)
   | TypedSym (path, ty) -> TypedSym (path, go_typ ty)
   | TypedApp (f, arg, ty) -> TypedApp (go f, go arg, go_typ ty)
@@ -128,6 +133,7 @@ let rec subst_term_in_typed_term (x: Ident.t) (replacement: typed_term) (tm: typ
   match tm with
     TypedInt n -> TypedInt n
   | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
+  | TypedSub (t1, t2) -> TypedSub (go t1, go t2)
   | TypedVar (y, ty) -> 
       if Ident.equal x y then replacement else TypedVar (y, ty)
   | TypedSym (path, ty) -> TypedSym (path, ty)
@@ -224,6 +230,7 @@ let rec normalize (tm: typed_term) : typed_term =
   | TypedVar _ -> tm
   | TypedSym _ -> tm
   | TypedAdd (t1, t2) -> TypedAdd (normalize t1, normalize t2)
+  | TypedSub (t1, t2) -> TypedSub (normalize t1, normalize t2)
   | TypedMatch (scrut, branches, ty) ->
       TypedMatch (normalize scrut, List.map normalize_clause branches, ty)
   | TypedNew (branches, ty) ->
@@ -260,6 +267,8 @@ and normalize_types_only (tm: typed_term) : typed_term =
       TypedLet (x, normalize_types_only t1, normalize_types_only t2, ty)
   | TypedAdd (t1, t2) ->
       TypedAdd (normalize_types_only t1, normalize_types_only t2)
+  | TypedSub (t1, t2) ->
+      TypedSub (normalize_types_only t1, normalize_types_only t2)
   | TypedMatch (scrut, branches, ty) ->
       TypedMatch (normalize_types_only scrut, 
         List.map (fun (x, tv, tm, b) -> (x, tv, tm, normalize_types_only b)) branches, ty)
@@ -467,6 +476,11 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       let* (t', _, sbs) = check ctx sbs t (Ext Int) in
       let* (u', _, sbs) = check ctx sbs u (Ext Int) in
       Ok (TypedAdd (t', u'), Ext Int, sbs)
+
+  | Sub (t, u) ->
+      let* (t', _, sbs) = check ctx sbs t (Ext Int) in
+      let* (u', _, sbs) = check ctx sbs u (Ext Int) in
+      Ok (TypedSub (t', u'), Ext Int, sbs)
 
   | Ifz (cond, then_branch, else_branch) ->
       let* (cond', _, sbs) = check ctx sbs cond (Ext Int) in

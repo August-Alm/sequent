@@ -106,6 +106,7 @@ and cmd_name = function
   | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
   | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
   | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
+  | Sub (a, b, v, _) -> Ident.name a ^ " - " ^ Ident.name b ^ " → " ^ Ident.name v
   | Ifz (v, _, _) -> "ifz " ^ Ident.name v
   | End -> "end"
   | Ret (_, v) -> "ret " ^ Ident.name v
@@ -267,6 +268,18 @@ let step ((cmd, e): config) : config option =
              (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
        | (None, _) -> failwith ("add: unbound " ^ Ident.name v1)
        | (_, None) -> failwith ("add: unbound " ^ Ident.name v2))
+
+  (* (sub) ⟨sub(v1, v2) { v ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → E(v1) - E(v2)⟩ *)
+  | Sub (v1, v2, v, body) ->
+      (match (lookup_opt e v1, lookup_opt e v2) with
+       | (Some (IntVal n1), Some (IntVal n2)) ->
+           let e' = extend e v (IntVal (n1 - n2)) in
+           Some (body, e')
+       | (Some val1, Some val2) ->
+           failwith (Printf.sprintf "sub: expected ints, got %s=%s, %s=%s"
+             (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
+       | (None, _) -> failwith ("sub: unbound " ^ Ident.name v1)
+       | (_, None) -> failwith ("sub: unbound " ^ Ident.name v2))
 
   (* (newint) ⟨new k = { v ⇒ s1 }; s2 ∥ E⟩ → ⟨s2 ∥ E, k → intcns(E, v, s1)⟩ *)
   | NewInt (k, v, branch_body, cont) ->

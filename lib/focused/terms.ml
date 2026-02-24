@@ -94,6 +94,7 @@ type command =
     (* Primitives for integers *)
   | Lit of int * var * command       (* lit n { v ⇒ s } *)
   | Add of var * var * var * command (* add(x, y) { v ⇒ s } *)
+  | Sub of var * var * var * command (* sub(x, y) { v ⇒ s } *)
   | NewInt of var * var * command * command  (* new k = { v ⇒ s1 }; s2 - Int consumer binding, k : Cns Int *)
   | Ifz of var * command * command   (* ifz(v) { sThen; sElse } *)
 
@@ -388,6 +389,22 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* add(x, y) { v => s } *)
   | Add (x, y, v, body) ->
+      let* x_ct = lookup_var ctx x in
+      let* y_ct = lookup_var ctx y in
+      let* x_ty = expect_prd x_ct in
+      let* y_ty = expect_prd y_ct in
+      let int_ty = Ext Int in
+      (match unify x_ty int_ty subs with
+        None -> Error (UnificationFailed (x_ty, int_ty))
+      | Some subs' ->
+          (match unify y_ty int_ty subs' with
+            None -> Error (UnificationFailed (y_ty, int_ty))
+          | Some subs'' ->
+              let v_typ = Prd int_ty in
+              check_command (extend ctx v v_typ) subs'' body))
+
+  (* sub(x, y) { v => s } *)
+  | Sub (x, y, v, body) ->
       let* x_ct = lookup_var ctx x in
       let* y_ct = lookup_var ctx y in
       let* x_ty = expect_prd x_ct in
