@@ -23,13 +23,13 @@ type exe_ctx =
 
 (** Monomorphic type argument - represents a type that may contain variables *)
 type mono_arg = 
-  | MonoExt of ext_type                     (* External types like Int *)
+    MonoExt of ext_type                     (* External types like Int *)
   | MonoVar of Path.t * int                 (* Type variable: (definition path, param index) *)
   | MonoSgn of Path.t * mono_arg list       (* Applied type constructor *)
 
 (** Flow constraint input *)
 type flow_input = 
-  | Vector of mono_arg list   (* Concrete type arguments *)
+    Vector of mono_arg list   (* Concrete type arguments *)
   | Forward of Path.t         (* Forward all instantiations from another definition *)
 
 (** A flow constraint: type arguments flow to a definition's type parameters *)
@@ -79,7 +79,7 @@ let with_current_def (path: Path.t) (m: 'a gen): 'a gen =
 
 let sequence (lst: 'a gen list): 'a list gen =
   let rec go acc = function
-    | [] -> return (List.rev acc)
+      [] -> return (List.rev acc)
     | m :: rest -> let+ a = m in go (a :: acc) rest
   in go [] lst
 
@@ -98,7 +98,7 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
   fun ctx ->
     let rec convert t =
       match t with
-      | Ext ext -> MonoExt ext
+        Ext ext -> MonoExt ext
       | TVar v ->
           (match Ident.find_opt v ctx.tparam_map with
           | Some (def_path, idx) -> MonoVar (def_path, idx)
@@ -136,7 +136,7 @@ let generate_for_typ (t: typ): unit gen =
 (** Generate constraints for a term *)
 let rec generate_for_term (tm: Terms.term): unit gen =
   match tm with
-  | Var _ | Lit _ -> return ()
+    Var _ | Lit _ -> return ()
   
   | Ctor (dec, _xtor, args) ->
       (* Constructor: check if the declaration has type args *)
@@ -171,10 +171,42 @@ let rec generate_for_term (tm: Terms.term): unit gen =
 and generate_for_branch ((_xtor, _tyvars, _tmvars, cmd): Terms.branch): unit gen =
   generate_for_command cmd
 
+(** Find the definition path if this term contains a Call returning a forall type.
+    This handles patterns like: MuPrd(∀a.T, k, Call(f, [], [Var k])) *)
+and find_forall_call (tm: Terms.term): Path.t option =
+  match tm with
+    Terms.MuPrd (_typ, _var, Terms.Call (def_path, [], _args)) ->
+      (* A MuPrd wrapping a Call with no type args - likely polymorphic call *)
+      Some def_path
+  | Terms.MuPrd (_typ, _var, cmd) ->
+      (* Check for Call inside the command *)
+      find_forall_call_in_cmd cmd
+  | _ -> None
+
+and find_forall_call_in_cmd (cmd: Terms.command): Path.t option =
+  match cmd with
+    Terms.Call (def_path, [], _args) -> Some def_path
+  | Terms.Cut (_typ, producer, _consumer) -> find_forall_call producer
+  | _ -> None
+
 (** Generate constraints for a command *)
 and generate_for_command (cmd: Terms.command): unit gen =
   match cmd with
-  | Cut (_typ, producer, consumer) ->
+    Cut (_typ, producer, consumer) ->
+      (* Check for the pattern: ⟨... Call(f, [], ...) ... | InstantiateDtor(T)⟩
+         This means f is being instantiated at type T. *)
+      let+ () = 
+        (match consumer with
+          Terms.InstantiateDtor ty_arg ->
+            (match find_forall_call producer with
+              Some def_path ->
+                (* Found it! Emit a constraint: ty_arg flows to def_path *)
+                let+ mono_arg = typ_to_mono_arg ty_arg in
+                emit [{ input = Vector [mono_arg]; dst = def_path }]
+            | None -> 
+                return ())
+        | _ -> return ())
+      in
       let+ () = generate_for_term producer in
       generate_for_term consumer
   
@@ -266,7 +298,7 @@ end)
 let bfs (start: node) (target: node) (graph: node -> node list option): node list option =
   let rec go visited queue =
     match queue with
-    | [] -> None
+      [] -> None
     | node :: _ when node = target -> 
         Some (List.rev (target :: visited))
     | (path, idx) :: rest ->
@@ -303,14 +335,13 @@ let metas_to_fun (metas: forward_edge list): node -> node list option =
   
   fun (path, index) ->
     match Hashtbl.find_opt map path with
-    | Some dst_paths -> 
-        Some (List.map (fun p -> (p, index)) dst_paths)
+      Some dst_paths -> Some (List.map (fun p -> (p, index)) dst_paths)
     | None -> None
 
 (** Extract edges from a mono argument at top level (stable edges) *)
 let rec arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge list =
   match src with
-  | MonoExt _ -> []
+    MonoExt _ -> []
   | MonoVar (src_path, src_index) -> 
       [{ edge_src = (src_path, src_index); edge_dst = (dst, index); edge_type = Stable }]
   | MonoSgn (_, targs) -> 
@@ -319,7 +350,7 @@ let rec arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge lis
 (** Extract edges from nested arguments (growing edges) *)
 and inner_arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge list =
   match src with
-  | MonoSgn (_, targs) ->
+    MonoSgn (_, targs) ->
       List.concat_map (fun arg -> inner_arg_to_edges arg dst index) targs
   | MonoExt _ -> []
   | MonoVar (src_path, src_index) ->
@@ -328,7 +359,7 @@ and inner_arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge l
 (** Convert a flow to edges and/or a meta-edge *)
 let flow_to_edges (flow: flow): mono_edge list option * forward_edge option =
   match flow.input with
-  | Vector args ->
+    Vector args ->
       let edges = List.mapi (fun index arg ->
         arg_to_edges arg flow.dst index
       ) args |> List.concat in
@@ -349,17 +380,16 @@ let find_growing_cycle (flows: flow list): node list option =
   
   let full_fun node =
     match NodeMap.find_opt node graph_map with
-    | Some neighbors -> Some neighbors
-    | None -> meta_fun node
+      Some neighbors -> Some neighbors | None -> meta_fun node
   in
   
   let cycles = List.concat_map (fun edge ->
     match bfs edge.edge_dst edge.edge_src full_fun with
-    | Some cycle -> [cycle] | None -> []
+      Some cycle -> [cycle] | None -> []
   ) growing_edges in
   
   match cycles with
-  | [] -> None
+    [] -> None
   | cycles -> Some (List.fold_left (fun acc c ->
       if List.length c < List.length acc then c else acc
     ) (List.hd cycles) (List.tl cycles))
@@ -370,7 +400,7 @@ let find_growing_cycle (flows: flow list): node list option =
 
 (** Ground (fully instantiated) type argument *)
 type ground_arg =
-  | GroundExt of ext_type
+    GroundExt of ext_type
   | GroundSgn of Path.t * ground_arg list
 
 (** A ground instantiation: specific type args for a definition *)
@@ -382,43 +412,41 @@ type ground_flow =
 (** Get all type variable references in a mono arg *)
 let rec get_type_vars (arg: mono_arg): (Path.t * int) list =
   match arg with
-  | MonoExt _ -> []
+    MonoExt _ -> []
   | MonoVar (path, idx) -> [(path, idx)]
   | MonoSgn (_, targs) -> List.concat_map get_type_vars targs
 
 (** Convert mono arg to ground arg if possible *)
 let rec mono_arg_as_ground (arg: mono_arg): ground_arg option =
   match arg with
-  | MonoExt ext -> Some (GroundExt ext)
+    MonoExt ext -> Some (GroundExt ext)
   | MonoVar _ -> None
   | MonoSgn (name, targs) ->
       let rec collect_grounds acc = function
-        | [] -> Some (List.rev acc)
+          [] -> Some (List.rev acc)
         | t :: rest ->
             match mono_arg_as_ground t with
-            | Some g -> collect_grounds (g :: acc) rest
+              Some g -> collect_grounds (g :: acc) rest
             | None -> None
       in
       match collect_grounds [] targs with
-      | Some gs -> Some (GroundSgn (name, gs))
-      | None -> None
+        Some gs -> Some (GroundSgn (name, gs)) | None -> None
 
 (** Convert ground arg back to mono arg *)
 let rec ground_arg_as_mono (arg: ground_arg): mono_arg =
   match arg with
-  | GroundExt ext -> MonoExt ext
+    GroundExt ext -> MonoExt ext
   | GroundSgn (name, args) -> MonoSgn (name, List.map ground_arg_as_mono args)
 
 (** Convert flow input to ground if all args are ground *)
 let flow_input_as_ground (input: flow_input): ground_arg list option =
   match input with
-  | Vector args ->
+    Vector args ->
       let rec collect acc = function
-        | [] -> Some (List.rev acc)
+          [] -> Some (List.rev acc)
         | t :: rest ->
             match mono_arg_as_ground t with
-            | Some g -> collect (g :: acc) rest
-            | None -> None
+              Some g -> collect (g :: acc) rest | None -> None
       in
       collect [] args
   | Forward _ -> None
@@ -426,11 +454,11 @@ let flow_input_as_ground (input: flow_input): ground_arg list option =
 (** Partially instantiate a mono arg using a ground flow *)
 let rec partially_instantiate (arg: mono_arg) (fact: ground_flow): mono_arg =
   match arg with
-  | MonoExt ext -> MonoExt ext
+    MonoExt ext -> MonoExt ext
   | MonoVar (path, index) ->
       if Path.equal path fact.dst then
         match List.nth_opt fact.src index with
-        | Some g -> ground_arg_as_mono g
+          Some g -> ground_arg_as_mono g
         | None -> MonoVar (path, index)
       else
         MonoVar (path, index)
@@ -440,14 +468,13 @@ let rec partially_instantiate (arg: mono_arg) (fact: ground_flow): mono_arg =
 (** Instantiate a flow rule using known ground facts *)
 let rec instantiate_rule (rule: flow) (facts: ground_flow list): ground_flow list =
   match rule.input with
-  | Vector args ->
+    Vector args ->
       let vars = List.concat_map get_type_vars args in
       (match vars with
-      | [] ->
+        [] ->
           (* Already ground *)
           (match flow_input_as_ground rule.input with
-          | Some src -> [{ src; dst = rule.dst }]
-          | None -> [])
+            Some src -> [{ src; dst = rule.dst }] | None -> [])
       | (tvar_path, _) :: _ ->
           (* Instantiate the first type variable *)
           List.concat_map (fun fact ->
@@ -461,10 +488,8 @@ let rec instantiate_rule (rule: flow) (facts: ground_flow list): ground_flow lis
   | Forward src ->
       (* Forward all facts from src to dst *)
       List.filter_map (fun fact ->
-        if Path.equal fact.dst src then 
-          Some { fact with dst = rule.dst }
-        else 
-          None
+        if Path.equal fact.dst src then Some { fact with dst = rule.dst }
+        else None
       ) facts
 
 (** One step of fixpoint iteration *)
@@ -488,7 +513,7 @@ let solve (constraints: flow list): ground_flow list =
   
   List.iter (fun flow ->
     match flow_input_as_ground flow.input with
-    | Some ground_src -> facts := { src = ground_src; dst = flow.dst } :: !facts
+      Some ground_src -> facts := { src = ground_src; dst = flow.dst } :: !facts
     | None -> rules := flow :: !rules
   ) constraints;
   
@@ -500,27 +525,26 @@ let solve (constraints: flow list): ground_flow list =
 
 (** Result of monomorphization analysis *)
 type analysis_result =
-  | Solvable of ground_flow list
+    Solvable of ground_flow list
   | HasGrowingCycle of node list
 
 (** Analyze an execution context for monomorphization *)
 let analyze (exe: exe_ctx): analysis_result =
   let constraints = generate_constraints exe in
   match find_growing_cycle constraints with
-  | Some cycle -> HasGrowingCycle cycle
+    Some cycle -> HasGrowingCycle cycle
   | None -> Solvable (solve constraints)
 
 (** Check if constraints can be solved (no growing cycles) *)
 let can_solve (exe: exe_ctx): bool =
   let constraints = generate_constraints exe in
   match find_growing_cycle constraints with
-  | Some _ -> false
-  | None -> true
+    Some _ -> false | None -> true
 
 (** Pretty-print a ground argument *)
 let rec ground_arg_to_string (arg: ground_arg): string =
   match arg with
-  | GroundExt Int -> "int"
+    GroundExt Int -> "int"
   | GroundSgn (name, []) -> Path.name name
   | GroundSgn (name, args) ->
       Path.name name ^ "(" ^ 
@@ -529,7 +553,7 @@ let rec ground_arg_to_string (arg: ground_arg): string =
 (** Pretty-print a ground flow *)
 let ground_flow_to_string (flow: ground_flow): string =
   let args_str = match flow.src with
-    | [] -> "()"
+      [] -> "()"
     | args -> "(" ^ String.concat ", " (List.map ground_arg_to_string args) ^ ")"
   in
   Path.name flow.dst ^ args_str
@@ -537,7 +561,7 @@ let ground_flow_to_string (flow: ground_flow): string =
 (** Pretty-print analysis result *)
 let result_to_string (result: analysis_result): string =
   match result with
-  | HasGrowingCycle cycle ->
+    HasGrowingCycle cycle ->
       "Growing cycle detected: " ^ 
       String.concat " -> " (List.map (fun (p, i) -> 
         Path.name p ^ "[" ^ string_of_int i ^ "]"

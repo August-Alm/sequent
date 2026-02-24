@@ -69,7 +69,7 @@ type mono_result =
 (** Convert ground_arg to a Core typ *)
 let rec ground_arg_to_typ (arg: Monomorphization.ground_arg): typ =
   match arg with
-  | Monomorphization.GroundExt Int -> Ext Int
+    Monomorphization.GroundExt Int -> Ext Int
   | Monomorphization.GroundSgn (name, args) ->
       Sgn (name, List.map ground_arg_to_typ args)
 
@@ -143,7 +143,7 @@ let generate_codata_for_def
 (** Apply type substitution throughout a term *)
 let rec subst_term (subst: typ Ident.tbl) (tm: T.term): T.term =
   match tm with
-  | T.Var _ | T.Lit _ -> tm
+    T.Var _ | T.Lit _ -> tm
   
   | T.Ctor (dec, xtor, args) ->
       let dec' = subst_dec subst dec in
@@ -179,40 +179,41 @@ let rec subst_term (subst: typ Ident.tbl) (tm: T.term): T.term =
 
 and subst_branch (subst: typ Ident.tbl) ((xtor, tvars, tmvars, cmd): T.branch): T.branch =
   (* Remove bound type vars from substitution *)
-  let subst' = List.fold_left (fun s tv -> Ident.filter (fun k _ -> not (Ident.equal k tv)) s) subst tvars in
+  let subst' = List.fold_left (fun s tv ->
+    Ident.filter (fun k _ -> not (Ident.equal k tv)) s
+  ) subst tvars in
   (xtor, tvars, tmvars, subst_command subst' cmd)
 
-and subst_command (subst: typ Ident.tbl) (cmd: T.command): T.command =
+and subst_command (sbs: typ Ident.tbl) (cmd: T.command): T.command =
   match cmd with
-  | T.Cut (typ, producer, consumer) ->
-      T.Cut (apply_fresh_subst subst typ, subst_term subst producer, subst_term subst consumer)
+  | T.Cut (typ, p, c) ->
+      T.Cut (apply_fresh_subst sbs typ, subst_term sbs p, subst_term sbs c)
   
-  | T.Call (path, type_args, term_args) ->
-      T.Call (path, List.map (apply_fresh_subst subst) type_args, 
-              List.map (subst_term subst) term_args)
-  
+  | T.Call (path, typs, args) ->
+      T.Call (path, List.map (apply_fresh_subst sbs) typs, List.map (subst_term sbs) args)
+
   | T.Add (t1, t2, t3) ->
-      T.Add (subst_term subst t1, subst_term subst t2, subst_term subst t3)
+      T.Add (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
   
   | T.Sub (t1, t2, t3) ->
-      T.Sub (subst_term subst t1, subst_term subst t2, subst_term subst t3)
+      T.Sub (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
   
   | T.Ifz (cond, then_cmd, else_cmd) ->
-      T.Ifz (subst_term subst cond, subst_command subst then_cmd, subst_command subst else_cmd)
+      T.Ifz (subst_term sbs cond, subst_command sbs then_cmd, subst_command sbs else_cmd)
   
   | T.Ret (typ, tm) ->
-      T.Ret (apply_fresh_subst subst typ, subst_term subst tm)
+      T.Ret (apply_fresh_subst sbs typ, subst_term sbs tm)
   
   | T.End -> T.End
 
-and subst_dec (subst: typ Ident.tbl) (dec: dec): dec =
+and subst_dec (sbs: typ Ident.tbl) (dec: dec): dec =
   { dec with
-    param_kinds = List.map (apply_fresh_subst subst) dec.param_kinds
-  ; type_args = List.map (apply_fresh_subst subst) dec.type_args
+    param_kinds = List.map (apply_fresh_subst sbs) dec.param_kinds
+  ; type_args = List.map (apply_fresh_subst sbs) dec.type_args
   ; xtors = List.map (fun x -> 
       { x with 
-        argument_types = List.map (apply_subst_chiral subst) x.argument_types
-      ; main = apply_fresh_subst subst x.main
+        argument_types = List.map (apply_subst_chiral sbs) x.argument_types
+      ; main = apply_fresh_subst sbs x.main
       }) dec.xtors
   }
 
@@ -228,7 +229,7 @@ type transform_ctx =
 (** Transform a term, handling call sites to monomorphized definitions *)
 let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term =
   match tm with
-  | T.Var _ | T.Lit _ -> tm
+    T.Var _ | T.Lit _ -> tm
   
   | T.Ctor (dec, xtor, args) ->
       T.Ctor (dec, xtor, List.map (transform_term ctx) args)
@@ -254,19 +255,20 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term =
   | T.InstantiateDtor typ ->
       T.InstantiateDtor typ
 
-and transform_branch (ctx: transform_ctx) ((xtor, tvars, tmvars, cmd): T.branch): T.branch =
+and transform_branch
+    (ctx: transform_ctx) ((xtor, tvars, tmvars, cmd): T.branch): T.branch =
   (xtor, tvars, tmvars, transform_command ctx cmd)
 
 (** Transform a command, replacing calls to polymorphic definitions *)
 and transform_command (ctx: transform_ctx) (cmd: T.command): T.command =
   match cmd with
-  | T.Cut (typ, producer, consumer) ->
+    T.Cut (typ, producer, consumer) ->
       T.Cut (typ, transform_term ctx producer, transform_term ctx consumer)
   
   | T.Call (def_path, type_args, term_args) ->
       (* Check if the called definition was monomorphized *)
       (match Path.find_opt def_path ctx.mono_infos with
-      | None ->
+        None ->
           (* Not monomorphized, keep as-is but transform args *)
           T.Call (def_path, type_args, List.map (transform_term ctx) term_args)
       
@@ -280,7 +282,7 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command =
           (* Build the current instantiation from type_args *)
           let current_inst = List.map (fun t ->
             match t with
-            | Ext Int -> Monomorphization.GroundExt Int
+              Ext Int -> Monomorphization.GroundExt Int
             | Sgn (name, []) -> Monomorphization.GroundSgn (name, [])
             | _ -> failwith ("complex type instantiation not yet supported: " ^ 
                            Path.name def_path)
@@ -289,9 +291,8 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command =
           (* Find the matching instantiation index *)
           let idx = 
             match List.find_index (fun i -> i = current_inst) info.instantiations with
-            | Some i -> i
-            | None -> failwith ("no matching instantiation for call to " ^ 
-                               Path.name def_path)
+              Some i -> i
+            | None -> failwith ("no matching instantiation for call to " ^ Path.name def_path)
           in
           
           let dtor_path = dtor_name_for_inst info.generated_codata.name idx in
@@ -395,8 +396,7 @@ let monomorphize (exe: Monomorphization.exe_ctx): mono_result =
         List.fold_left (fun acc (flow: Monomorphization.ground_flow) ->
           let existing = 
             match Path.find_opt flow.dst acc with
-            | Some lst -> lst
-            | None -> []
+              Some lst -> lst | None -> []
           in
           Path.add flow.dst (flow.src :: existing) acc
         ) Path.emptytbl flows
@@ -410,8 +410,7 @@ let monomorphize (exe: Monomorphization.exe_ctx): mono_result =
         |> List.map (fun (path, (def: T.definition)) ->
             let instantiations = 
               match Path.find_opt path flows_by_def with
-              | Some insts -> List.sort_uniq compare insts
-              | None -> []
+                Some insts -> List.sort_uniq compare insts | None -> []
             in
             let (codata, _codata_path) = 
               generate_codata_for_def def instantiations in
@@ -433,7 +432,7 @@ let monomorphize (exe: Monomorphization.exe_ctx): mono_result =
       (* Transform all definitions *)
       let transformed_defs = Path.to_list exe.defs |> List.map (fun (path, def) ->
         match Path.find_opt path mono_infos with
-        | Some info -> transform_definition ctx def info
+          Some info -> transform_definition ctx def info
         | None -> 
             (* Non-polymorphic definition: just transform calls *)
             { def with body = transform_command ctx def.body }

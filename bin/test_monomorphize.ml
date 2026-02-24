@@ -57,12 +57,14 @@ let rec pp_core_term (tm: CTm.term) : string =
   | CTm.Var v -> Ident.name v
   | CTm.Lit n -> string_of_int n
   | CTm.Ctor (dec, xtor, args) ->
-      Printf.sprintf "%s.%s(%s)" 
-        (Path.name dec.CTy.name) (Path.name xtor)
+      let _ = dec in  (* dec context is implicit in xtor path *)
+      Printf.sprintf "%s(%s)" 
+        (Path.name xtor)
         (String.concat ", " (List.map pp_core_term args))
   | CTm.Dtor (dec, xtor, args) ->
-      Printf.sprintf ".%s.%s(%s)"
-        (Path.name dec.CTy.name) (Path.name xtor)
+      let _ = dec in  (* dec context is implicit in xtor path *)
+      Printf.sprintf "%s(%s)"
+        (Path.name xtor)
         (String.concat ", " (List.map pp_core_term args))
   | CTm.Match (dec, branches) ->
       Printf.sprintf "match<%s> { %s }"
@@ -253,8 +255,7 @@ let run_test ~name (source: string) =
               print_endline "Encoding to Core:";
               let core_defs_result =
                 try
-                  let encode_ctx : Sequent.Encode.encode_ctx = 
-                    { types = CTy.empty_context } in
+                  let encode_ctx = Sequent.Encode.make_encode_ctx type_defs in
                   let core_defs = typed_defs |> List.map (fun (_path, typed_def) ->
                     Sequent.Encode.encode_term_def encode_ctx typed_def
                   ) in
@@ -280,14 +281,16 @@ let run_test ~name (source: string) =
                   let mono_result =
                     try
                       (* Use first definition as main, rest as defs *)
-                      let (main, defs) = match core_defs with
-                        | [] -> failwith "No definitions"
-                        | [d] -> (d, Path.emptytbl)
-                        | d :: rest -> 
-                            let tbl = List.fold_left (fun acc def ->
-                              Path.add def.CTm.path def acc
-                            ) Path.emptytbl rest in
-                            (d, tbl)
+                      let main = List.find (fun def ->
+                        Path.name def.CTm.path = "main"
+                      ) core_defs in
+                      let defs =
+                        List.filter (fun def ->
+                          Path.name def.CTm.path <> "main"
+                        ) core_defs
+                        |> List.fold_left (fun acc def ->
+                          Path.add def.CTm.path def acc
+                        ) Path.emptytbl
                       in
                       let exe : Mono.exe_ctx = { main; defs } in
                       let result = MonoX.monomorphize exe in
@@ -444,7 +447,7 @@ let () =
   (* Test 1: Simple non-polymorphic function - from surface syntax *)
   run_test ~name:"Non-polymorphic function (surface)"
     {|
-let double(x: int): int = x + x
+let main(x: int): int = x + x
     |};
   
   (* Test 2: Direct Core test - polymorphic identity with explicit type args in Call *)
@@ -556,6 +559,99 @@ let double(x: int): int = x + x
       (exe, "  const{a}(x, y, k) = ⟨x | k⟩\n  test1(k) = const{int}(1, 2, k)\n  test2(k) = const{bool}(true, 0, k)")
     );
   
+  (* Test 4: Complicated *)
+  run_test ~name:"Complicated (from surface syntax)"
+    {|
+data option: type -> type where
+  { none: {a} option(a)
+  ; some: {a} a -> option(a)
+  }
+
+code stream: type -> type where
+  { state: {a} stream(a) -> a
+  ; next: {a} stream(a) -> option(stream(a))
+  }
+
+code algebra: type -> type -> type where
+  { nil: {b}{c} algebra(b)(c) -> c
+  ; cons: {b}{c} algebra(b)(c) -> b -> c -> c
+  }
+
+code foldable: type -> type where
+  { fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
+  }
+
+let ints_from(i: int): stream(int) =
+  new { state => i
+      ; next => some{stream(int)}(ints_from(i + 1))
+      }
+
+let nats: stream(int) = ints_from(0)
+
+let take{e}(s: stream(e))(n: int): foldable(e) =
+  new foldable(e)
+  { fold{e}{t}(alg) =>
+      ifz(0) then
+        nil{e}{t}(alg)
+      else
+        match next{e}(s) with
+        { none{_} => nil{e}{t}(alg)
+        ; some{_}(s') =>
+            let s'' =
+              new stream(e)
+              { state => state{e}(s')
+              ; next => next{e}(s)
+              }
+            in
+            let rest = take{e}(s'')(n - 1) in
+            let folded_rest = fold{e}{t}(rest)(alg) in
+            cons{e}{t}(alg)(state{e}(s'))(folded_rest)
+        }
+  }
+
+let main(l: foldable(int)): int =
+  let alg =
+    new algebra(int)(int)
+    { nil => 0
+    ; cons(h)(t) => h + t
+    }
+  in fold{int}{int}(l)(alg)
+    |};
+
+  (* Test 5: Russian doll *)
+  run_test ~name:"Russian doll (from surface syntax)"
+    {|
+data box: type -> type where
+  { wrap: {a} a -> box(a)
+  }
+
+let f{a}(x: a): a =
+  let _ = f{box(a)}(wrap{a}(x)) in x
+
+let main: int = f{int}(42)
+    |};
+
+  (* Test 6: Endless type *)
+  run_test ~name:"Endless type (from surface syntax)"
+    {|
+data two: type -> type where
+  { both: {b} b -> b -> two(b)
+  }
+
+data tree: type -> type where
+  { leaf: {a} a -> tree(a)
+  ; branch: {a} tree(two(a)) -> tree(a)
+  }
+
+let main: int =
+  let t = leaf{int}(123) in
+  match t with
+  { leaf{_}(x) => x
+  ; branch{_}(_) => 0
+  }
+    |};
+  
+
   (* Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Results: %d/%d tests passed\n" !pass_count !test_count;

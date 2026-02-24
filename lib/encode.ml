@@ -87,6 +87,12 @@ type encode_ctx =
   { types: CTy.context   (* Type-level context with declarations *)
   }
 
+(** Build an encoding context from Melcore type declarations *)
+let make_encode_ctx (melcore_decs: MTy.dec list) : encode_ctx =
+  let core_decs = List.map encode_dec melcore_decs in
+  let types = List.fold_left CTy.add_dec CTy.empty_context core_decs in
+  { types }
+
 (** Get an instantiated declaration for a symbol with given type arguments *)
 let get_instantiated_dec (ctx: encode_ctx) (sym: Path.t) (type_args: CTy.typ list) : CTy.dec =
   match Path.find_opt sym ctx.types.decs with

@@ -462,6 +462,56 @@ let instantiate_xtor (xtor: xtor) (type_args: typ list)
   let inst_main = apply_fresh_subst combined xtor.main in
   (fresh_exist, inst_args, inst_main)
 
+(** Instantiate an xtor for destructor calls, where type_args includes
+    both quantified and existential type arguments.
+    Returns (inst_args, inst_main) with all type params substituted. *)
+let instantiate_dtor (xtor: xtor) (type_args: typ list)
+    : typ list * typ =
+  let n_quant = List.length xtor.quantified in
+  let n_exist = List.length xtor.existentials in
+  if List.length type_args <> n_quant + n_exist then
+    failwith (Printf.sprintf "instantiate_dtor: expected %d type args, got %d"
+      (n_quant + n_exist) (List.length type_args))
+  else
+    let quant_args = List.filteri (fun i _ -> i < n_quant) type_args in
+    let exist_args = List.filteri (fun i _ -> i >= n_quant) type_args in
+    let quant_subst = 
+      List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
+        Ident.emptytbl xtor.quantified quant_args
+    in
+    let exist_subst =
+      List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
+        quant_subst xtor.existentials exist_args
+    in
+    let inst_args = List.map (apply_fresh_subst exist_subst) xtor.argument_types in
+    let inst_main = apply_fresh_subst exist_subst xtor.main in
+    (inst_args, inst_main)
+
+(** Instantiate an xtor for constructor calls, where type_args includes
+    both quantified and existential type arguments.
+    Returns (inst_args, inst_main) with all type params substituted. *)
+let instantiate_ctor (xtor: xtor) (type_args: typ list)
+    : typ list * typ =
+  let n_quant = List.length xtor.quantified in
+  let n_exist = List.length xtor.existentials in
+  if List.length type_args <> n_quant + n_exist then
+    failwith (Printf.sprintf "instantiate_ctor: expected %d type args, got %d"
+      (n_quant + n_exist) (List.length type_args))
+  else
+    let quant_args = List.filteri (fun i _ -> i < n_quant) type_args in
+    let exist_args = List.filteri (fun i _ -> i >= n_quant) type_args in
+    let quant_subst = 
+      List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
+        Ident.emptytbl xtor.quantified quant_args
+    in
+    let exist_subst =
+      List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
+        quant_subst xtor.existentials exist_args
+    in
+    let inst_args = List.map (apply_fresh_subst exist_subst) xtor.argument_types in
+    let inst_main = apply_fresh_subst exist_subst xtor.main in
+    (inst_args, inst_main)
+
 (* ========================================================================= *)
 (* Bidirectional Type Inference                                              *)
 (* ========================================================================= *)
@@ -589,11 +639,12 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       (match find_xtor dec xtor_name with
       | None -> Error (UnboundXtor (dec_name, xtor_name))
       | Some xtor ->
-          (* Check type argument arity *)
-          if List.length type_args <> List.length xtor.quantified then
+          (* For constructor calls, type_args includes both quantified AND existential args *)
+          let expected_ty_args = List.length xtor.quantified + List.length xtor.existentials in
+          if List.length type_args <> expected_ty_args then
             Error (TypeArgArityMismatch
               { xtor = xtor_name
-              ; expected = List.length xtor.quantified
+              ; expected = expected_ty_args
               ; got = List.length type_args })
           else if List.length term_args <> List.length xtor.argument_types then
             Error (XtorArityMismatch
@@ -601,7 +652,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
               ; expected = List.length xtor.argument_types
               ; got = List.length term_args })
           else
-            let _, inst_args, inst_main = instantiate_xtor xtor type_args in
+            let inst_args, inst_main = instantiate_ctor xtor type_args in
             let* (typed_args, sbs) = check_args ctx sbs inst_args term_args in
             Ok (TypedCtor (dec_name, xtor_name, type_args, typed_args, inst_main), inst_main, sbs))
 
@@ -610,21 +661,23 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       (match find_xtor dec xtor_name with
       | None -> Error (UnboundXtor (dec_name, xtor_name))
       | Some xtor ->
-          if List.length type_args <> List.length xtor.quantified then
+          (* For destructor calls, type_args includes both quantified AND existential args *)
+          let expected_ty_args = List.length xtor.quantified + List.length xtor.existentials in
+          if List.length type_args <> expected_ty_args then
             Error (TypeArgArityMismatch
               { xtor = xtor_name
-              ; expected = List.length xtor.quantified
+              ; expected = expected_ty_args
               ; got = List.length type_args })
           else
             (* For destructors:
-               Surface: dtor: {qi's} main -> argN -> ... -> arg0
+               Surface: dtor: {qi's}{ei's} main -> argN -> ... -> arg0
                Domain:  argument_types = [arg0; ...; argN], main = "this" type
-               AST:     Dtor(_, _, [qi's], [this; tN; ...; t1]) : arg0
+               AST:     Dtor(_, _, [qi's; ei's], [this; tN; ...; t1]) : arg0
                
                So term_args = [this; tN; ...; t1]
                Expected types = [main; argN; ...; arg1] = main :: (reverse (tail argument_types))
                Result type = arg0 = head of argument_types *)
-            let _, inst_args, inst_main = instantiate_xtor xtor type_args in
+            let inst_args, inst_main = instantiate_dtor xtor type_args in
             let (result_ty, regular_args) = match inst_args with
               | [] -> (inst_main, [])  (* No arguments - result is main *)
               | arg0 :: rest -> (arg0, List.rev rest)
@@ -711,11 +764,12 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
         (match find_xtor dec xtor_name with
         | None -> Error (UnboundXtor (dec.name, xtor_name))
         | Some xtor ->
-            (* Check arity: ty_vars bind the quantified type params *)
-            if List.length ty_vars <> List.length xtor.quantified then
+            (* Check arity: ty_vars bind ALL type params (quantified + existential) *)
+            let expected_ty_vars = List.length xtor.quantified + List.length xtor.existentials in
+            if List.length ty_vars <> expected_ty_vars then
               Error (TypeArgArityMismatch
                 { xtor = xtor_name
-                ; expected = List.length xtor.quantified
+                ; expected = expected_ty_vars
                 ; got = List.length ty_vars })
             else if List.length tm_vars <> List.length xtor.argument_types then
               Error (XtorArityMismatch
@@ -723,9 +777,9 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 ; expected = List.length xtor.argument_types
                 ; got = List.length tm_vars })
             else
-              (* For pattern matching, we freshen quantified vars rather than
+              (* For pattern matching, we freshen all type params rather than
                  substituting with known types. Pass [] to trigger freshening. *)
-              let _, inst_args, inst_main = instantiate_xtor xtor [] in
+              let fresh_exist, inst_args, inst_main = instantiate_xtor xtor [] in
 
               (* Unify the xtor's main type with the scrutinee type.
                  This determines what the quantified vars should be.
@@ -734,11 +788,29 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
               let* sbs = unify_or_error inst_main (Sgn (dec.name, type_args)) sbs in
               (* Apply substitution to get instantiated argument types *)
               let inst_args' = List.map (apply_subst sbs) inst_args in
-              (* Bind pattern ty_vars to the now-determined xtor quantified types.
-                 The fresh metas in inst_args' have been solved by unification. *)
-              let ctx' = extend_tyvars ctx
-                (List.map2 (fun v (_, k) -> (v, k)) ty_vars xtor.quantified)
-              in
+              
+              (* Build type bindings for pattern type vars:
+                 - Quantified vars: bind to the original declaration params 
+                   (which get unified with scrutinee type args)
+                 - Existential vars: bind to fresh metas *)
+              let n_quant = List.length xtor.quantified in
+              let quant_tyvars = List.filteri (fun i _ -> i < n_quant) ty_vars in
+              let exist_tyvars = List.filteri (fun i _ -> i >= n_quant) ty_vars in
+              
+              (* Quantified type vars get their kinds from the xtor *)
+              let quant_bindings = List.map2 (fun v (_, k) -> (v, k)) 
+                quant_tyvars xtor.quantified in
+              (* Existential type vars also get kinds, but their types are fresh metas *)
+              let exist_bindings = List.map2 (fun v (_, k) -> (v, k))
+                exist_tyvars xtor.existentials in
+              
+              let ctx' = extend_tyvars ctx (quant_bindings @ exist_bindings) in
+              
+              (* Add substitutions mapping pattern exist vars to fresh metas *)
+              let sbs = List.fold_left2 (fun s pattern_var (fresh_var, _) ->
+                Ident.add pattern_var (TVar fresh_var) s
+              ) sbs exist_tyvars fresh_exist in
+              
               let ctx' = extend_vars ctx'
                 (List.combine tm_vars inst_args')
               in
@@ -759,26 +831,23 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
         | None -> Error (UnboundXtor (dec.name, xtor_name))
         | Some xtor ->
             (* For codata introduction (new/comatch):
-               The quantified type params are inferred from the codata type
-               being constructed, not from explicit type binders in branches.
+               ty_vars bind BOTH quantified AND existential type params.
                
-               For example, with stream(a) and head: {b: type} stream(b) -> b,
-               we unify stream(b) with stream(a) to get b=a.
-               
-               ty_vars in the branch are optional explicit bindings, but most
-               commonly empty in new expressions. *)
-            let quant_arity = List.length xtor.quantified in
-            if ty_vars <> [] && List.length ty_vars <> quant_arity then
+               For example, with foldable(d) and fold: {d}{r} foldable(d) -> algebra(d)(r) -> r,
+               a new branch like { fold{e}{t}(alg) => ... } binds e to d (quantified)
+               and t to r (existential). *)
+            let total_arity = List.length xtor.quantified + List.length xtor.existentials in
+            if ty_vars <> [] && List.length ty_vars <> total_arity then
               Error (TypeArgArityMismatch
                 { xtor = xtor_name
-                ; expected = quant_arity
+                ; expected = total_arity
                 ; got = List.length ty_vars })
             else
               (* Instantiate xtor with fresh metas for quantified vars *)
-              let _, inst_args, inst_main = instantiate_xtor xtor [] in
+              let fresh_exist, inst_args, inst_main = instantiate_xtor xtor [] in
               (* Unify main type with the codata type being constructed.
                  This determines what the quantified vars should be.
-                 For stream: head's main is stream(?b), unified with stream(a) → ?b=a *)
+                 For foldable: fold's main is foldable(?d), unified with foldable(e) → ?d=e *)
               let* sbs = unify_or_error inst_main (Sgn (dec.name, type_args)) sbs in
               let inst_args' = List.map (apply_subst sbs) inst_args in
               
@@ -797,11 +866,14 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                   ; expected = List.length param_types
                   ; got = List.length tm_vars })
               else
-                (* If ty_vars are provided, bind them; otherwise use inferred types *)
+                (* If ty_vars are provided, bind them to quantified + existential params *)
+                let all_type_params = xtor.quantified @ xtor.existentials in
                 let ctx' = if ty_vars <> [] then
                   extend_tyvars ctx
-                    (List.map2 (fun v (_, k) -> (v, k)) ty_vars xtor.quantified)
-                else ctx
+                    (List.map2 (fun v (_, k) -> (v, k)) ty_vars all_type_params)
+                else 
+                  (* Also bind the fresh existentials in context *)
+                  extend_tyvars ctx fresh_exist
                 in
                 let ctx' = extend_vars ctx' (List.combine tm_vars param_types) in
                 let* (body', _, sbs) = check ctx' sbs body result_ty in
@@ -827,8 +899,10 @@ let check_definition (ctx: tc_context) (def: term_def)
   (* Add term parameters to context *)
   let ctx = extend_vars ctx def.term_params in
   (* Check body against declared return type *)
-  let* (body', _, _) =
+  let* (body', _, sbs) =
     check ctx Ident.emptytbl def.body def.return_type in
+  (* Apply final substitution to resolve all meta-variables in types *)
+  let body' = subst_type_in_typed_term sbs body' in
   Ok
     { name = def.name
     ; type_params = def.type_params

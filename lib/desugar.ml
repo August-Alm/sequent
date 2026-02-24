@@ -165,6 +165,22 @@ let collect_type_symbols (defs: ast_defs) : conv_ctx =
   ) empty_ctx defs.type_defs
 
 (* Convert an xtor declaration to internal representation. *)
+
+(* Helper: collect free type variables (as Ident.t) in a type *)
+let rec free_type_vars_in_typ (t: MT.typ) : Ident.t list =
+  match t with
+  | MT.Base _ -> []
+  | MT.Ext _ -> []
+  | MT.TVar v -> [v]
+  | MT.TMeta _ -> []
+  | MT.Arrow (t1, t2) -> free_type_vars_in_typ t1 @ free_type_vars_in_typ t2
+  | MT.Sgn (_, args) -> List.concat_map free_type_vars_in_typ args
+  | MT.PromotedCtor (_, _, args) -> List.concat_map free_type_vars_in_typ args
+  | MT.Forall (v, k, body) -> 
+      let fv = free_type_vars_in_typ body in
+      List.filter (fun x -> not (Ident.equal x v)) fv @
+      free_type_vars_in_typ k
+
 let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
   (* Build context with type parameters *)
   let params, ctx' =
@@ -201,13 +217,21 @@ let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
   (* Wrap arguments as chiral types (in Melcore, mk_producer is identity) *)
   let chiral_args = List.map mk_producer arguments in
   
-  (* Use the main type directly from the AST. This correctly handles GADTs
-    where constructors specify concrete type arguments (e.g., lit: int -> expr(int)
-    has main = Sgn(expr, [Sgn(int, [])]), not Sgn(expr, [])). *)
-  (* For now, no existentials - all type params are universals *)
+  (* Split params into quantified vs existentials:
+     - quantified: params that appear free in the main type (determine the declaration's type args)
+     - existentials: params that don't appear in main type (independently chosen by the xtor)
+     
+     For example, in: fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
+     - main = foldable(d), so d is quantified
+     - r doesn't appear in main, so r is existential *)
+  let main_free_vars = free_type_vars_in_typ main_from_ast in
+  let is_quantified (v, _k) = List.exists (Ident.equal v) main_free_vars in
+  let quantified = List.filter is_quantified params in
+  let existentials = List.filter (fun p -> not (is_quantified p)) params in
+  
   { MT.name = Path.of_string xtor.name
-  ; quantified = params
-  ; existentials = []
+  ; quantified = quantified
+  ; existentials = existentials
   ; argument_types = chiral_args
   ; main = main_from_ast
   }
