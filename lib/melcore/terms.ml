@@ -298,6 +298,9 @@ type typed_term_def =
   ; body: typed_term
   }
 
+let normalize_def (def: typed_term_def) : typed_term_def =
+  { def with body = normalize def.body }
+
 type definitions = term_def Path.tbl
 type typed_definitions = typed_term_def Path.tbl
 

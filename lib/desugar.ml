@@ -540,7 +540,7 @@ type desugar_result =
   ; term_defs: Trm.definitions
   }
 
-(* Main entry point: desugar all definitions *)
+(** Main entry point: desugar all definitions *)
 let desugar (defs: ast_defs) : desugar_result =
   (* Phase 1: collect type symbols *)
   let ctx = collect_type_symbols defs in

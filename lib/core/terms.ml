@@ -93,6 +93,13 @@ type 'a check_result = ('a, check_error) result
 (* Type Checking Context and Helpers                                         *)
 (* ========================================================================= *)
 
+(* Create an initial context from type declarations and term definitions *)
+let make_tc_context (type_defs: dec Path.tbl) (defs: definition Path.tbl) : context =
+  let tyctx = List.fold_left (fun ctx ((p, dec): (Path.t * dec)) ->
+    { ctx with decs = Path.add p dec ctx.decs }
+  ) empty_context (Path.to_list type_defs) in
+  { types = tyctx; term_vars = Ident.emptytbl; defs = defs }
+
 (** Lookup a definition by path *)
 let lookup_def (ctx: context) (p: Path.t) : definition check_result =
   match Path.find_opt p ctx.defs with
@@ -446,3 +453,8 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
       Ok ()
   | End ->
       Ok ()
+
+let check_def (ctx: context) (def: definition) : definition check_result =
+  let ctx' = List.fold_left (fun c (v, ct) -> extend c v ct) ctx def.term_params in
+  let* _ = check_command ctx' Ident.emptytbl def.body in
+  Ok (def)

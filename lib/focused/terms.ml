@@ -77,6 +77,15 @@ type command =
       Cut: pass producer v to consumer k at primitive type τ. *)
   | Axiom of Common.Types.ext_type * var * var
 
+    (* jump s  
+
+      Θ(l) = Γ
+      ---------- [JUMP]
+      Γ ⊢ jump l 
+    
+    Jump: Go to top-level definition/label *)
+  | Jump of sym * (var list)
+
     (* Primitives for integers *)
   | Lit of int * var * command       (* lit n { v ⇒ s } *)
   | Add of var * var * var * command (* add(x, y) { v ⇒ s } *)
@@ -112,8 +121,15 @@ type 'a check_result = ('a, check_error) result
 (* Type Checking Context and Helpers                                         *)
 (* ========================================================================= *)
 
+type definition =
+  { path: sym
+  ; term_params: (var * chiral_typ) list
+  ; body: command
+  }
+
 type context =
   { types: Types.FocusedTypes.context
+  ; defs: definition Path.tbl
   ; term_vars: chiral_typ Ident.tbl
   }
 

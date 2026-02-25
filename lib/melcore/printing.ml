@@ -404,3 +404,82 @@ let typed_term_to_string = pp_typed_term ~cfg:default_config ~lvl:0
 let xtor_to_string = pp_xtor ~cfg:default_config
 let term_def_to_string = pp_term_def ~cfg:default_config
 let typed_term_def_to_string = pp_typed_term_def ~cfg:default_config
+
+(* ========================================================================= *)
+(* Error Printing                                                            *)
+(* ========================================================================= *)
+
+(** Pretty-print a kind error *)
+let pp_kind_error ?(cfg=default_config) (err: Types.MelcoreTypes.kind_error) : string =
+  match err with
+  | Unbound_type_variable v ->
+      "unbound type variable: " ^ pp_ident v
+  | Unbound_meta_variable v ->
+      "unbound meta variable: ?" ^ pp_ident v
+  | Unknown_data_type p ->
+      "unknown data type: " ^ pp_path p
+  | Unknown_promoted_ctor (dec, ctor) ->
+      "unknown promoted constructor: '" ^ pp_path dec ^ "." ^ pp_path ctor
+  | Not_a_promoted_type p ->
+      "not a promoted type: " ^ pp_path p
+  | Invalid_kind k ->
+      "invalid kind: " ^ pp_typ ~cfg k
+  | Kind_mismatch { expected; actual; in_type } ->
+      "kind mismatch in " ^ pp_typ ~cfg in_type ^
+      ": expected " ^ pp_kind ~cfg expected ^
+      ", got " ^ pp_kind ~cfg actual
+  | Arity_mismatch { kind; num_args } ->
+      let kind_str = match kind with
+        | Some k -> pp_kind ~cfg k
+        | None -> "<unknown>"
+      in
+      "arity mismatch: kind " ^ kind_str ^
+      " applied to " ^ string_of_int num_args ^ " arguments"
+  | Arrow_domain_not_typ t ->
+      "arrow domain is not a type: " ^ pp_typ ~cfg t
+  | Arrow_codomain_not_typ t ->
+      "arrow codomain is not a type: " ^ pp_typ ~cfg t
+  | Too_many_arguments { kind; extra_args } ->
+      "too many arguments for kind " ^ pp_kind ~cfg kind ^
+      ": extra args " ^
+      String.concat ", " (List.map (pp_typ ~cfg) extra_args)
+
+let kind_error_to_string = pp_kind_error ~cfg:default_config
+
+(** Pretty-print a type check error *)
+let pp_check_error ?(cfg=default_config) (err: check_error) : string =
+  match err with
+  | UnboundVariable v ->
+      "unbound variable: " ^ pp_ident v
+  | UnboundSymbol s ->
+      "unbound symbol: " ^ pp_path s
+  | UnboundDeclaration s ->
+      "unbound declaration: " ^ pp_path s
+  | UnboundXtor (dec, xtor) ->
+      "unbound constructor " ^ pp_path xtor ^ " in " ^ pp_path dec
+  | TypeMismatch { expected; actual } ->
+      "type mismatch: expected " ^ pp_typ ~cfg expected ^
+      ", got " ^ pp_typ ~cfg actual
+  | ExpectedFun t ->
+      "expected function type, got " ^ pp_typ ~cfg t
+  | ExpectedForall t ->
+      "expected forall type, got " ^ pp_typ ~cfg t
+  | ExpectedData t ->
+      "expected data type, got " ^ pp_typ ~cfg t
+  | ExpectedCodata t ->
+      "expected codata type, got " ^ pp_typ ~cfg t
+  | XtorArityMismatch { xtor; expected; got } ->
+      "constructor " ^ pp_path xtor ^
+      " expects " ^ string_of_int expected ^ " arguments, got " ^ string_of_int got
+  | TypeArgArityMismatch { xtor; expected; got } ->
+      "constructor " ^ pp_path xtor ^
+      " expects " ^ string_of_int expected ^ " type arguments, got " ^ string_of_int got
+  | NonExhaustive { dec; missing } ->
+      "non-exhaustive pattern match on " ^ pp_path dec ^
+      ": missing " ^ String.concat ", " (List.map pp_path missing)
+  | UnificationFailed (t1, t2) ->
+      "unification failed: " ^ pp_typ ~cfg t1 ^ " ≠ " ^ pp_typ ~cfg t2
+  | KindError ke ->
+      "kind error: " ^ pp_kind_error ~cfg ke
+
+let check_error_to_string = pp_check_error ~cfg:default_config

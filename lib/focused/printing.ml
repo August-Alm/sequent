@@ -48,7 +48,7 @@ let pp_sym (x: sym) : string = Path.name x
 
 let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   match t with
-  | Base _ -> "Type"
+  | Base _ -> "type"
   | Arrow (k1, k2) ->
       let s1 = match k1 with
         | Arrow _ -> parens (pp_typ ~cfg ~nested:true k1)
@@ -56,7 +56,7 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       in
       let arrow = if cfg.unicode then " → " else " -> " in
       s1 ^ arrow ^ pp_typ ~cfg ~nested:false k2
-  | Ext Int -> "Int"
+  | Ext Int -> "int"
   | TVar id -> Ident.name id
   | TMeta id -> "?" ^ Ident.name id
   | Sgn (name, []) -> pp_sym name
@@ -184,9 +184,9 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
 
   (* =========== Terminals =========== *)
 
-  (* ret[ty] v *)
+  (* ret{ty} v *)
   | Ret (ty, v) ->
-      let ty_ann = if cfg.show_types then "[" ^ pp_typ ty ^ "]" else "" in
+      let ty_ann = if cfg.show_types then "{" ^ pp_typ ty ^ "}" else "" in
       ind ^ "ret" ^ ty_ann ^ " " ^ pp_var v
 
   (* end *)

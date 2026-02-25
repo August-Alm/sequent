@@ -210,8 +210,8 @@ and generate_for_command (cmd: Terms.command): unit gen =
   match cmd with
     Cut (_typ, producer, consumer) ->
       (* Check for instantiation patterns:
-         1. Direct: ⟨... Call(f, [], ...) ... | InstantiateDtor(T)⟩
-         2. Via Match: ⟨MuPrd(_, _, Call(f, [], ...)) | Match { ... InstantiateDtor(T) }⟩ *)
+        1. Direct: ⟨... Call(f, [], ...) ... | InstantiateDtor(T)⟩
+        2. Via Match: ⟨MuPrd(_, _, Call(f, [], ...)) | Match { ... InstantiateDtor(T) }⟩ *)
       let+ () = 
         (match find_forall_call producer with
           Some def_path ->
@@ -556,32 +556,3 @@ let can_solve (exe: exe_ctx): bool =
   let constraints = generate_constraints exe in
   match find_growing_cycle constraints with
     Some _ -> false | None -> true
-
-(** Pretty-print a ground argument *)
-let rec ground_arg_to_string (arg: ground_arg): string =
-  match arg with
-    GroundExt Int -> "int"
-  | GroundSgn (name, []) -> Path.name name
-  | GroundSgn (name, args) ->
-      Path.name name ^ "(" ^ 
-      String.concat ", " (List.map ground_arg_to_string args) ^ ")"
-
-(** Pretty-print a ground flow *)
-let ground_flow_to_string (flow: ground_flow): string =
-  let args_str = match flow.src with
-      [] -> "()"
-    | args -> "(" ^ String.concat ", " (List.map ground_arg_to_string args) ^ ")"
-  in
-  Path.name flow.dst ^ args_str
-
-(** Pretty-print analysis result *)
-let result_to_string (result: analysis_result): string =
-  match result with
-    HasGrowingCycle cycle ->
-      "Growing cycle detected: " ^ 
-      String.concat " -> " (List.map (fun (p, i) -> 
-        Path.name p ^ "[" ^ string_of_int i ^ "]"
-      ) cycle)
-  | Solvable flows ->
-      "Solvable with instantiations:\n" ^
-      String.concat "\n" (List.map (fun f -> "  " ^ ground_flow_to_string f) flows)

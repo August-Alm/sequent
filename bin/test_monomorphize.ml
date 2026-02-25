@@ -279,26 +279,26 @@ let run_test ~name (source: string) =
                   (* 5. Create execution context and monomorphize *)
                   print_endline "Monomorphization:";
                   let mono_result =
-                    try
-                      (* Use first definition as main, rest as defs *)
-                      let main = List.find (fun def ->
-                        Path.name def.CTm.path = "main"
-                      ) core_defs in
-                      let defs =
-                        List.filter (fun def ->
-                          Path.name def.CTm.path <> "main"
-                        ) core_defs
-                        |> List.fold_left (fun acc def ->
-                          Path.add def.CTm.path def acc
-                        ) Path.emptytbl
-                      in
-                      let exe : Spec.exe_ctx = { main; defs } in
-                      let result = Mono.monomorphize exe in
-                      print_endline "  OK";
-                      Some result
-                    with e ->
-                      fail (Printf.sprintf "Monomorphize error: %s" (Printexc.to_string e));
-                      None
+                    (* Use first definition as main, rest as defs *)
+                    let main = List.find (fun def ->
+                      Path.name def.CTm.path = "main"
+                    ) core_defs in
+                    let defs =
+                      List.filter (fun def ->
+                        Path.name def.CTm.path <> "main"
+                      ) core_defs
+                      |> List.fold_left (fun acc def ->
+                        Path.add def.CTm.path def acc
+                      ) Path.emptytbl
+                    in
+                    let exe : Spec.exe_ctx = { main; defs } in
+                    match Mono.monomorphize exe with
+                    | Ok result ->
+                        print_endline "  OK";
+                        Some result
+                    | Error err ->
+                        fail (Printf.sprintf "Monomorphize error: %s" (Core.Printing.mono_error_to_string err));
+                        None
                   in
                   print_newline ();
                   
@@ -381,13 +381,13 @@ let run_core_test ~name
     (* Run monomorphization *)
     print_endline "Monomorphization:";
     let mono_result =
-      try
-        let result = Mono.monomorphize exe in
-        print_endline "  OK";
-        Some result
-      with e ->
-        fail (Printf.sprintf "Error: %s" (Printexc.to_string e));
-        None
+      match Mono.monomorphize exe with
+      | Ok result ->
+          print_endline "  OK";
+          Some result
+      | Error err ->
+          fail (Printf.sprintf "Error: %s" (Core.Printing.mono_error_to_string err));
+          None
     in
     print_newline ();
     
