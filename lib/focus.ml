@@ -68,7 +68,7 @@ let subst_xtor (ts: TySub.t) (x: CTy.xtor) : CTy.xtor =
 (** Apply type substitution to a declaration *)
 let subst_dec (ts: TySub.t) (d: CTy.dec) : CTy.dec =
   { name = d.name
-  ; polarity = d.polarity
+  ; data_sort = d.data_sort
   ; param_kinds = List.map (subst_type ts) d.param_kinds
   ; type_args = List.map (subst_type ts) d.type_args
   ; xtors = List.map (subst_xtor ts) d.xtors
@@ -205,7 +205,7 @@ let collapse_chiral (ct: CTy.chiral_typ) : FTy.chiral_typ =
       if is_negative t then FB.Prd (focus_type t) else FB.Cns (focus_type t)
 
 (** Collapse an xtor - chirality flip is determined per-argument by argument type *)
-let collapse_xtor (_is_neg: bool) (x: CTy.xtor) : FTy.xtor =
+let collapse_xtor (x: CTy.xtor) : FTy.xtor =
   { name = x.name
   ; quantified = List.map (fun (v, k) -> (v, focus_type k)) x.quantified
   ; existentials = List.map (fun (v, k) -> (v, focus_type k)) x.existentials
@@ -216,12 +216,11 @@ let collapse_xtor (_is_neg: bool) (x: CTy.xtor) : FTy.xtor =
 (** Collapse a declaration: convert Core dec to Focused dec with chirality flipping.
     This is analogous to simple.ml's collapse_sig applied to each xtor. *)
 let collapse_dec (d: CTy.dec) : FTy.dec =
-  let is_neg = (d.polarity = CB.Neg) in
   { name = d.name
-  ; polarity = FB.Typ
+  ; data_sort = d.data_sort
   ; param_kinds = List.map focus_type d.param_kinds
   ; type_args = List.map focus_type d.type_args
-  ; xtors = List.map (collapse_xtor is_neg) d.xtors
+  ; xtors = List.map collapse_xtor d.xtors
   }
 
 (** Get an instantiated Core declaration *)
@@ -247,7 +246,7 @@ let focus_xtor (x: CTy.xtor) : FTy.xtor =
 
 let focus_dec (d: CTy.dec) : FTy.dec =
   { name = d.name
-  ; polarity = FB.Typ
+  ; data_sort = d.data_sort
   ; param_kinds = List.map focus_type d.param_kinds
   ; type_args = List.map focus_type d.type_args
   ; xtors = List.map focus_xtor d.xtors
@@ -320,7 +319,7 @@ module Target = struct
   let int_xtor_sym = Path.of_primitive 998 "int_val"
   let int_dec : CTy.dec = 
     { name = Path.of_primitive 999 "int_consumer"
-    ; polarity = CB.Pos  (* positive/data - consumers receive values *)
+    ; data_sort = Common.Types.Data
     ; param_kinds = []
     ; type_args = []
     ; xtors = [{ name = int_xtor_sym
@@ -488,7 +487,7 @@ module Transform = struct
                The key insight: we create LetComatch/LetMatch that BINDS result_k,
                then in the body, alpha gets substituted to result_k by h'. *)
             (match get_instantiated_dec_from_type ty with
-            | Some dec when dec.polarity = CB.Neg ->
+            | Some dec when dec.data_sort = Codata ->
                 (* Negative type (like fun): create comatch that receives codata *)
                 Target.LetNewForall (a', k_ty, body_ty,
                   Target.LetComatch (dec, 
@@ -500,17 +499,11 @@ module Transform = struct
                     (* Pass the ORIGINAL body - substitution h' maps alpha to result_k *)
                     transform_command body h'),
                   v, k v)
-            | Some dec ->
-                (* Positive type: create match that receives data *)
+            | Some _dec ->
+                (* Positive type (data): no eta-expansion needed.
+                   The body produces a data value which flows directly to result_k. *)
                 Target.LetNewForall (a', k_ty, body_ty,
-                  Target.LetMatch (dec,
-                    List.map (fun (xtor: CTy.xtor) ->
-                      let params = List.map (fun _ -> Ident.fresh ()) xtor.argument_types in
-                      (xtor.name, [], params, Target.CutCtor (dec, xtor.name, params, result_k))
-                    ) dec.xtors,
-                    result_k,
-                    (* Pass the ORIGINAL body - substitution h' maps alpha to result_k *)
-                    transform_command body h'),
+                  transform_command body h',
                   v, k v)
             | None ->
                 (* Non-signature type - just use substitution *)
@@ -748,7 +741,7 @@ module Transform = struct
            at negative type creates CutComatch. *)
         (match get_instantiated_dec_from_type ty with
         | Some dec ->
-            if dec.polarity = CB.Neg then
+            if dec.data_sort = Codata then
               (* Negative (codata): create CutComatch with eta-expanded branches *)
               Target.CutComatch (dec,
                 List.map (fun (xtor: CTy.xtor) ->
@@ -893,7 +886,7 @@ module Transform = struct
               | CTm.Var x ->
                   (* Variable: eta-expand based on type *)
                   (match get_instantiated_dec_from_type ty with
-                  | Some dec when dec.polarity = CB.Neg ->
+                  | Some dec when dec.data_sort = Codata ->
                       let inner_v = Ident.fresh () in
                       Target.LetComatch (dec,
                         List.map (fun (xtor: CTy.xtor) ->

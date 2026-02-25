@@ -76,15 +76,13 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   | Sgn (name, []) -> pp_path name
   | Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
       (* Depolarize to show user-level types *)
-      let dom' = Types.depolarize_domain dom in
-      let cod' = Types.depolarize_codomain cod in
-      let dom_str = match dom' with
+      let dom_str = match dom with
           Sgn (s, [_; _]) when Path.equal s Common.Types.Prim.fun_sym ->
-            parens (pp_typ ~cfg ~nested:true dom')
-        | Forall _ -> parens (pp_typ ~cfg ~nested:true dom')
-        | _ -> pp_typ ~cfg ~nested:true dom'
+            parens (pp_typ ~cfg ~nested:true dom)
+        | Forall _ -> parens (pp_typ ~cfg ~nested:true dom)
+        | _ -> pp_typ ~cfg ~nested:true dom
       in
-      let inner = dom_str ^ " -> " ^ pp_typ ~cfg ~nested:false cod' in
+      let inner = dom_str ^ " -> " ^ pp_typ ~cfg ~nested:false cod in
       if nested then parens inner else inner
   | Sgn (name, args) ->
       let name_str = pp_path name in
@@ -98,9 +96,8 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       base ^ String.concat "" args_str
   | Forall (x, k, body) ->
       (* Depolarize body to show user-level type *)
-      let body' = Types.depolarize_codomain body in
       let k_str = if cfg.show_kinds then ": " ^ pp_kind ~cfg k else "" in
-      let inner = braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg ~nested:false body' in
+      let inner = braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg ~nested:false body in
       if nested then parens inner else inner
 
 and pp_typ_base ?(cfg=default_config) (t: typ) : string =
@@ -160,7 +157,7 @@ let pp_xtor ?(cfg=default_config) (x: xtor) : string =
 (* ========================================================================= *)
 
 let pp_dec_full ?(cfg=default_config) ?(lvl=0) (d: dec) : string =
-  let is_data = (d.polarity = Types.MelcoreBase.Pos) in
+  let is_data = (d.data_sort = Data) in
   let keyword = if is_data then "data" else "code" in
   let name = pp_path d.name in
   let kind_str =

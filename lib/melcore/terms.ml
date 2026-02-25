@@ -4,7 +4,6 @@
 *)
 
 open Common.Identifiers
-open Types.MelcoreBase
 open Types.MelcoreTypes
 
 type var = Ident.t
@@ -392,8 +391,7 @@ let expect_fun (sbs: subst) (t: typ) : (typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
   | Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
-      (* Return user-visible (depolarized) types *)
-      Ok (Types.depolarize_domain dom, Types.depolarize_codomain cod)
+      Ok (dom, cod) 
   | TMeta _ ->
       (* Unify with fresh function type *)
       let a = fresh_meta () in
@@ -407,7 +405,7 @@ let expect_forall (sbs: subst) (t: typ)
     : (Ident.t * typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Forall (x, k, body) -> Ok (x, k, Types.depolarize_codomain body)
+  | Forall (x, k, body) -> Ok (x, k, body)
   | _ -> Error (ExpectedForall t')
 
 (** Check that a type is a data type (positive polarity) *)
@@ -417,7 +415,7 @@ let expect_data (ctx: tc_context) (sbs: subst) (t: typ)
   match t' with
   | Sgn (name, args) ->
       let* dec = lookup_dec ctx name in
-      if dec.polarity = Pos then Ok (dec, args)
+      if dec.data_sort = Data then Ok (dec, args)
       else Error (ExpectedData t')
   | _ -> Error (ExpectedData t')
 
@@ -428,7 +426,7 @@ let expect_codata (ctx: tc_context) (sbs: subst) (t: typ)
   match t' with
   | Sgn (name, args) ->
       let* dec = lookup_dec ctx name in
-      if dec.polarity = Neg then Ok (dec, args)
+      if dec.data_sort = Codata then Ok (dec, args)
       else Error (ExpectedCodata t')
   | _ -> Error (ExpectedCodata t')
 
@@ -547,12 +545,12 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       (* Build polymorphic type: ∀a1..an. t1 -> ... -> tm -> ret *)
       let base_ty =
         List.fold_right (fun (_, arg_ty) acc ->
-          Types.mk_fun ctx.tyctx arg_ty acc
+          Sgn (Common.Types.Prim.fun_sym, [arg_ty; acc])
         ) def.term_params def.return_type
       in
       let ty =
         List.fold_right (fun (v, k) acc ->
-          Types.mk_forall ctx.tyctx v k acc
+          Forall (v, k, acc)
         ) def.type_params base_ty
       in
       Ok (TypedSym (p, ty), ty, sbs)
@@ -582,13 +580,13 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
         match ann with Some t -> t | None -> fresh_meta () in
       let ctx' = extend_var ctx x arg_ty in
       let* (body', body_ty, sbs) = infer ctx' sbs body in
-      let fun_ty = Types.mk_fun ctx.tyctx arg_ty body_ty in
+      let fun_ty = Sgn (Common.Types.Prim.fun_sym, [arg_ty; body_ty]) in
       Ok (TypedLam (x, arg_ty, body', fun_ty), fun_ty, sbs)
 
   | All ((x, k), body) ->
       let ctx' = extend_tyvar ctx x k in
       let* (body', body_ty, sbs) = infer ctx' sbs body in
-      let all_ty = Types.mk_forall ctx.tyctx x k body_ty in
+      let all_ty = Forall (x, k, body_ty) in
       Ok (TypedAll ((x, k), body', all_ty), all_ty, sbs)
 
   | Let (x, rhs, body) ->
@@ -701,7 +699,7 @@ and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
       let* (dom, cod) = expect_fun sbs expected in
       let ctx' = extend_var ctx x dom in
       let* (body', _, sbs) = check ctx' sbs body cod in
-      let fun_ty = Types.mk_fun ctx.tyctx dom cod in
+      let fun_ty = Sgn (Common.Types.Prim.fun_sym, [dom; cod]) in
       Ok (TypedLam (x, dom, body', fun_ty), fun_ty, sbs)
 
   | Match (scrut, branches) ->

@@ -128,7 +128,7 @@ let generate_codata_for_def
   
   let codata_dec = 
     { name = codata_name
-    ; polarity = Neg  (* Codata is negative *)
+    ; data_sort = Codata
     ; param_kinds = []
     ; type_args = []
     ; xtors

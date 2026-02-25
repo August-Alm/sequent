@@ -13,6 +13,8 @@ module MT = Melcore.Types.MelcoreTypes
 module Trm = Melcore.Terms
 module StringMap = Utility.StringMap
 
+type data_sort = Common.Types.data_sort
+
 (* ===== CONTEXT FOR DESUGARING ===== *)
 
 (* During desugaring we track:
@@ -23,9 +25,9 @@ module StringMap = Utility.StringMap
 type conv_ctx =
   { type_vars: Ident.t StringMap.t
   ; term_vars: Ident.t StringMap.t
-  ; type_symbols: (Path.t * polarity * MT.dec Lazy.t) StringMap.t
+  ; type_symbols: (Path.t * data_sort * MT.dec Lazy.t) StringMap.t
   ; type_aliases: ast_typ StringMap.t  (* type aliases map to their definition *)
-  ; xtor_symbols: (Path.t * MT.xtor * polarity) StringMap.t  (* dec_path, xtor, polarity *)
+  ; xtor_symbols: (Path.t * MT.xtor * data_sort) StringMap.t  (* dec_path, xtor, data_sort *)
   ; term_symbols: Path.t StringMap.t
   }
 
@@ -66,16 +68,16 @@ let lookup_term_symbol ctx name = StringMap.find_opt name ctx.term_symbols
 (* ===== KIND CONVERSION ===== *)
 
 (* In the new type system, kinds are represented as types:
-   Base Pos = kind of positive (data) types
-   Base Neg = kind of negative (codata) types
+   Base Typ = kind of inhabitable types
    Arrow = higher kinds *)
-let default_kind = MT.Base Pos  (* Default to positive kind *)
+let default_kind = MT.Base Typ 
 
 let rec kind_of_ast : ast_kind -> MT.typ = function
     AST_KStar -> default_kind
   | AST_KArrow (k1, k2) -> MT.Arrow (kind_of_ast k1, kind_of_ast k2)
 
-(* Extract parameter kinds from a kind (e.g., type -> type -> type gives [Base Pos; Base Pos]) *)
+(* Extract parameter kinds from a kind (e.g., type -> type -> type
+  gives [Base Typ; Base Typ]) *)
 let rec params_of_kind : ast_kind -> MT.typ list = function
     AST_KStar -> []
   | AST_KArrow (k1, k2) -> kind_of_ast k1 :: params_of_kind k2
@@ -155,13 +157,13 @@ let collect_type_symbols (defs: ast_defs) : conv_ctx =
         let path = Path.of_string dec.name in
         let params = params_of_kind dec.kind in
         (* Create placeholder - will be replaced in build_signatures *)
-        let sgn = lazy { MT.name = path; polarity = Pos; param_kinds = params; type_args = []; xtors = [] } in
-        add_type_symbol ctx dec.name path Pos sgn
+        let sgn = lazy { MT.name = path; data_sort = Data; param_kinds = params; type_args = []; xtors = [] } in
+        add_type_symbol ctx dec.name path Data sgn
     | AST_TyCode dec ->
         let path = Path.of_string dec.name in
         let params = params_of_kind dec.kind in
-        let sgn = lazy { MT.name = path; polarity = Neg; param_kinds = params; type_args = []; xtors = [] } in
-        add_type_symbol ctx dec.name path Neg sgn
+        let sgn = lazy { MT.name = path; data_sort = Codata; param_kinds = params; type_args = []; xtors = [] } in
+        add_type_symbol ctx dec.name path Codata sgn
   ) empty_ctx defs.type_defs
 
 (* Convert an xtor declaration to internal representation. *)
@@ -181,7 +183,7 @@ let rec free_type_vars_in_typ (t: MT.typ) : Ident.t list =
       List.filter (fun x -> not (Ident.equal x v)) fv @
       free_type_vars_in_typ k
 
-let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
+let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (xtor: ast_xtor) : MT.xtor =
   (* Build context with type parameters *)
   let params, ctx' =
     List.fold_left (fun (acc, ctx_acc) (x, k_opt) ->
@@ -199,19 +201,21 @@ let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
     For codata types: parent(params) -> args -> result
     The last type in term_args is the main/result type *)
   let arguments, main_from_ast =
-    if is_data then
+    match ds with
+    | Common.Types.Data ->
+      (* Data: all args are arguments, main is parent(params) *)
       (* Data: all but last are arguments, last is main (must be parent applied to type args) *)
-      match List.rev arg_types with
+      (match List.rev arg_types with
         [] -> failwith ("Constructor " ^ xtor.name ^ " must have a return type")
-      | main :: rev_args -> (List.rev rev_args, main)
-    else
+      | main :: rev_args -> (List.rev rev_args, main))
+    | Common.Types.Codata ->
       (* Codata: first is "this" (main), rest are arguments including result.
          argument_types is stored reversed (arg0 first where arg0 is the result).
          Surface: main -> argN -> ... -> arg0
          Storage: [arg0; ...; argN] = reverse of (rest) *)
-      match arg_types with
+      (match arg_types with
         [] -> failwith ("Destructor " ^ xtor.name ^ " must have a receiver type")
-      | main :: args -> (List.rev args, main)
+      | main :: args -> (List.rev args, main))
   in
   
   (* Wrap arguments as chiral types (in Melcore, mk_producer is identity) *)
@@ -239,16 +243,15 @@ let xtor_of_ast (ctx: conv_ctx) (is_data: bool) (xtor: ast_xtor) : MT.xtor =
 (* Build a signature with self-referential lazy.
   Uses OCaml's recursive value binding to create a lazy that references itself. *)
 let build_recursive_signature 
-    (ctx: conv_ctx) (path: Path.t) (dec: ast_type_dec) (is_data: bool) 
+    (ctx: conv_ctx) (path: Path.t) (dec: ast_type_dec) (ds: Common.Types.data_sort) 
     : MT.dec Lazy.t =
   let params = params_of_kind dec.kind in
-  let pol = if is_data then Pos else Neg in
   (* Create a recursive lazy that contains itself *)
   let rec lazy_sgn = lazy begin
     (* Create a modified context where this type maps to our recursive lazy *)
-    let ctx = add_type_symbol ctx dec.name path pol lazy_sgn in
-    let xtors = List.map (xtor_of_ast ctx is_data) dec.clauses in
-    {MT.name = path; polarity = pol; param_kinds = params; type_args = []; xtors = xtors}
+    let ctx = add_type_symbol ctx dec.name path ds lazy_sgn in
+    let xtors = List.map (xtor_of_ast ctx ds) dec.clauses in
+    {MT.name = path; data_sort = ds; param_kinds = params; type_args = []; xtors = xtors}
   end in
   lazy_sgn
 
@@ -264,23 +267,22 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
             Some x -> x
           | None -> failwith ("Type symbol not found: " ^ dec.name)
         in
-        let lazy_sgn = build_recursive_signature ctx path dec true in
-        add_type_symbol ctx dec.name path Pos lazy_sgn
+        let lazy_sgn = build_recursive_signature ctx path dec Common.Types.Data in
+        add_type_symbol ctx dec.name path Data lazy_sgn
     | AST_TyCode dec ->
         let (path, _, _) =
           match lookup_type_symbol ctx dec.name with
             Some x -> x
           | None -> failwith ("Type symbol not found: " ^ dec.name)
         in
-        let lazy_sgn = build_recursive_signature ctx path dec false in
-        add_type_symbol ctx dec.name path Neg lazy_sgn
+        let lazy_sgn = build_recursive_signature ctx path dec Common.Types.Codata in
+        add_type_symbol ctx dec.name path Codata lazy_sgn
   ) ctx defs.type_defs in
   
   (* Register xtors by forcing the signatures (now safe with recursive lazy) *)
   List.fold_left (fun ctx tdef ->
     match tdef with
       AST_TyAlias _ -> ctx
-    
     | AST_TyData dec ->
         let (_, _, lazy_sgn) =
           match lookup_type_symbol ctx dec.name with
@@ -289,9 +291,8 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
         in
         let sgn = Lazy.force lazy_sgn in
         List.fold_left (fun ctx (xtor: MT.xtor) ->
-          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Pos
+          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Data
         ) ctx sgn.xtors
-    
     | AST_TyCode dec ->
         let (_, _, lazy_sgn) =
           match lookup_type_symbol ctx dec.name with
@@ -300,7 +301,7 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
         in
         let sgn = Lazy.force lazy_sgn in
         List.fold_left (fun ctx (xtor: MT.xtor) ->
-          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Neg
+          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Codata
         ) ctx sgn.xtors
   ) ctx defs.type_defs
 
@@ -345,8 +346,8 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
           | None ->
               (* Then try as a nullary constructor/destructor *)
               (match lookup_xtor_symbol ctx x with
-                Some (dec_path, xtor, Pos) -> Trm.Ctor (dec_path, xtor.name, [], [])
-              | Some (dec_path, xtor, Neg) -> Trm.Dtor (dec_path, xtor.name, [], [])
+                Some (dec_path, xtor, Data) -> Trm.Ctor (dec_path, xtor.name, [], [])
+              | Some (dec_path, xtor, Codata) -> Trm.Dtor (dec_path, xtor.name, [], [])
               | None -> failwith ("Unbound variable: " ^ x))))
   
   | AST_App _ | AST_Ins _ ->
@@ -378,12 +379,12 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
               | None ->
                   (* Check if head is a constructor/destructor *)
                   (match lookup_xtor_symbol ctx x with
-                  | Some (dec_path, xtor, pol) ->
+                  | Some (dec_path, xtor, ds) ->
                       let ty_args' = List.map (typ_of_ast ctx) ty_args in
                       let tm_args' = List.map (term_of_ast ctx) tm_args in
-                      (match pol with
-                        Pos -> Trm.Ctor (dec_path, xtor.name, ty_args', tm_args')
-                      | Neg -> Trm.Dtor (dec_path, xtor.name, ty_args', tm_args'))
+                      (match ds with
+                        Data -> Trm.Ctor (dec_path, xtor.name, ty_args', tm_args')
+                      | Codata -> Trm.Dtor (dec_path, xtor.name, ty_args', tm_args'))
                   | None -> failwith ("Unbound: " ^ x))))
       | _ ->
           (* General case: head is not a simple variable *)
@@ -445,20 +446,20 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
       | None ->
           (* Constructor or destructor *)
           (match lookup_xtor_symbol ctx name with
-            Some (dec_path, xtor, pol) ->
+            Some (dec_path, xtor, ds) ->
               (* Apply type arguments to instantiate xtor's universal params.
                 xtor.quantified are the universals, ty_args are the instantiations. *)
               let ty_args' = List.map (typ_of_ast ctx) ty_args in
               let args' = List.map (term_of_ast ctx) tm_args in
-              (match pol with
-                Pos -> Trm.Ctor (dec_path, xtor.name, ty_args', args')
-              | Neg -> Trm.Dtor (dec_path, xtor.name, ty_args', args'))
+              (match ds with
+                Data -> Trm.Ctor (dec_path, xtor.name, ty_args', args')
+              | Codata -> Trm.Dtor (dec_path, xtor.name, ty_args', args'))
           | None -> failwith ("Unknown constructor/destructor: " ^ name)))
 
 and branch_of_clause
     (ctx: conv_ctx) (xtor_name, ty_binders, tm_binders, body) : Trm.branch =
   (* Look up the xtor *)
-  let (_dec_path, xtor, _pol) =
+  let (_dec_path, xtor, _ds) =
     match lookup_xtor_symbol ctx xtor_name with
       Some x -> x
     | None -> failwith ("Unknown xtor in pattern: " ^ xtor_name)

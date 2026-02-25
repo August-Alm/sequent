@@ -40,6 +40,8 @@ end
 (* External types are always positive *)
 type ext_type = Int
 
+type data_sort = Data | Codata
+
 module TypeSystem(Base: BASE) = struct
 
   open Identifiers
@@ -64,6 +66,11 @@ module TypeSystem(Base: BASE) = struct
   let strip_chirality = Base.strip_chirality
 
   let chiral_map = Base.chiral_map
+
+  let polarity_of_data_sort = function
+      Data -> Base.data_polarity | Codata -> Base.code_polarity
+    
+  let data_sort_as_typ ds = as_typ (polarity_of_data_sort ds)
 
   (* Constructor or destructor
     In the Melcore language, a destructor syntactically declared as
@@ -93,7 +100,7 @@ module TypeSystem(Base: BASE) = struct
   *)
   type dec =
     { name: Path.t
-    ; polarity: Base.polarity
+    ; data_sort: data_sort
     ; param_kinds: typ list
     ; type_args: typ list  (* Instantiation arguments, empty for uninstantiated *)
     ; xtors: xtor list
@@ -263,7 +270,7 @@ module TypeSystem(Base: BASE) = struct
   (* Check if a declaration can serve as a DataKind (if all constructors
     are promotable). Only data types are promotable. *)
   let is_dec_promotable (dec: dec) : bool =
-    (Base.eq_polarity dec.polarity Base.data_polarity) &&
+    (Base.eq_polarity (polarity_of_data_sort dec.data_sort) Base.data_polarity) &&
     List.for_all (is_promotable dec.name) dec.xtors
 
   (* Helper to sequence result checks over a list *)
@@ -329,7 +336,7 @@ module TypeSystem(Base: BASE) = struct
         let* dec = path_find name ctx.decs (Unknown_data_type name) in
         let full_kind = List.fold_right (fun k acc ->
           Arrow (k, acc)
-        ) dec.param_kinds (as_typ dec.polarity)
+        ) dec.param_kinds (data_sort_as_typ dec.data_sort)
         in
         apply_args ctx full_kind args
     | PromotedCtor (data_name, ctor_name, args) ->
@@ -388,8 +395,8 @@ module TypeSystem(Base: BASE) = struct
 
   (* Check that a constructor or destructor is well-kinded *)
   let check_xtor_well_kinded
-      (ctx: context) (pol: Base.polarity) (xtor: xtor) : bool =
-    let ty_ctx =
+        (ctx: context) (ds: data_sort) (xtor: xtor) : bool =
+      let ty_ctx =
       List.fold_left (fun acc (v, k) ->
           { acc with typ_vars = Ident.add v k acc.typ_vars }
         ) ctx (xtor.quantified @ xtor.existentials)
@@ -402,7 +409,7 @@ module TypeSystem(Base: BASE) = struct
       (* Argument types must be inhabitable (kind + or -) *)
       is_inhabitable ty_ctx (strip_chirality ct)
     ) xtor.argument_types &&
-    Result.is_ok (check_kind ty_ctx xtor.main (as_typ pol))
+    Result.is_ok (check_kind ty_ctx xtor.main (data_sort_as_typ ds))
 
   (* Check that a declaration is well-kinded *)
   let check_dec_well_kinded (ctx: context) (dec: dec) : bool =
@@ -411,7 +418,7 @@ module TypeSystem(Base: BASE) = struct
         Result.is_ok (valid_kind ctx k)
       ) dec.param_kinds in
     let ctors_valid =
-      List.for_all (check_xtor_well_kinded ctx dec.polarity) dec.xtors in
+      List.for_all (check_xtor_well_kinded ctx dec.data_sort) dec.xtors in
     param_kinds_valid && ctors_valid
 
   (* Build PromotedCtorInfo for a promotable constructor *)
@@ -546,7 +553,7 @@ module TypeSystem(Base: BASE) = struct
       ) dec.xtors
     in
     { name = dec.name
-    ; polarity = dec.polarity
+    ; data_sort = dec.data_sort
     ; param_kinds = []  (* No more params after instantiation *)
     ; type_args = type_args  (* Store the instantiation arguments *)
     ; xtors = reachable_xtors
@@ -576,7 +583,7 @@ module TypeSystem(Base: BASE) = struct
   
   let fun_dec =
     { name = Prim.fun_sym
-    ; polarity = Base.code_polarity
+    ; data_sort = Codata
     ; param_kinds = [as_typ Base.data_polarity; as_typ Base.code_polarity]
     ; type_args = []  (* Uninstantiated *)
     ; xtors = [ apply_xtor ]
@@ -598,7 +605,7 @@ module TypeSystem(Base: BASE) = struct
   
   let raise_dec =
     { name = Prim.raise_sym
-    ; polarity = Base.data_polarity
+    ; data_sort = Data
     ; param_kinds = [as_typ Base.code_polarity]
     ; type_args = []  (* Uninstantiated *)
     ; xtors = [ thunk_xtor ]
@@ -620,7 +627,7 @@ module TypeSystem(Base: BASE) = struct
 
   let lower_dec =
     { name = Prim.lower_sym
-    ; polarity = Base.code_polarity
+    ; data_sort = Codata
     ; param_kinds = [as_typ Base.data_polarity]
     ; type_args = []  (* Uninstantiated *)
     ; xtors = [ return_xtor ]

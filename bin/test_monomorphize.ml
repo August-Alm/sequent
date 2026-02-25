@@ -130,7 +130,7 @@ let pp_definition (def: CTm.definition) : string =
     (pp_core_cmd def.body)
 
 let pp_dec (dec: CTy.dec) : string =
-  let pol_str = match dec.polarity with CB.Pos -> "data" | CB.Neg -> "codata" in
+  let pol_str = match dec.data_sort with Data -> "data" | Codata -> "code" in
   let xtors_str = dec.xtors |> List.map (fun (x: CTy.xtor) ->
     let quant_str = match x.quantified with
       | [] -> ""
@@ -525,7 +525,7 @@ let main(x: int): int = x + x
       let true_ctor = Path.of_string "true" in
       let bool_dec : CTy.dec = 
         { name = bool_path
-        ; polarity = CB.Pos
+        ; data_sort = Data
         ; param_kinds = []
         ; type_args = []
         ; xtors = [{ name = true_ctor; quantified = []; existentials = []; argument_types = []; main = bool_ty }]

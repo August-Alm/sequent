@@ -175,12 +175,19 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
       let normalized_term = MTm.normalize typed_term in
       
       (* 4. Encode to Core *)
-      let encode_ctx : Encode.encode_ctx = { types = CTy.empty_context } in
+      let encode_ctx : Encode.encode_ctx =
+        let sorts =
+          CTy.empty_context.decs
+          |> Path.to_list
+          |> List.map (fun (p, d) -> (p, d.CTy.data_sort))
+          |> Path.of_list
+        in
+        { types = CTy.empty_context; data_sorts = sorts } in
       print_endline "Core Encoding:";
       let core_result =
         try
           let core_term = Encode.encode_term encode_ctx normalized_term in
-          let core_ty = Encode.encode_type inferred_ty in
+          let core_ty = Encode.encode_type encode_ctx.data_sorts inferred_ty in
           Printf.printf "  ✓ Melcore type: %s\n" (MPrint.typ_to_string inferred_ty);
           Printf.printf "        raw: %s\n" (raw_typ inferred_ty);
           Printf.printf "    Core type raw: %s\n" (raw_core_typ core_ty);
@@ -363,9 +370,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
    ════════════════════════════════════════════════════════════════════════════ *)
 
 let int_ty : MTy.typ = MTy.Ext Int
-(* Use mk_fun to properly polarize: Int (positive) in codomain becomes Lower(Int) *)
-let arrow (a: MTy.typ) (b: MTy.typ) : MTy.typ = 
-  Melcore.Types.mk_fun MTy.empty_context a b
+let arrow (a: MTy.typ) (b: MTy.typ) : MTy.typ = Sgn (Common.Types.Prim.fun_sym, [a; b])
 
 (* ════════════════════════════════════════════════════════════════════════════
    Test Cases (mirroring test_pcf.ml)
@@ -725,7 +730,7 @@ let () =
   let a = Ident.mk "a" in
   let at = MTy.TVar a in
   let x = Ident.mk "x" in
-  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Pos), MTm.Lam (x, Some at, MTm.Var x)) in
+  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Typ), MTm.Lam (x, Some at, MTm.Var x)) in
   run_test
     ~name:"{a}. a -> a: λx:a. x"
     ~manual_repr:"λ{a} x:a. x"
@@ -739,7 +744,7 @@ let () =
   let a = Ident.mk "a" in
   let at = MTy.TVar a in
   let x = Ident.mk "x" in
-  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Pos), MTm.Lam (x, Some at, MTm.Var x)) in
+  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Typ), MTm.Lam (x, Some at, MTm.Var x)) in
   let id_int = MTm.Ins (id_poly, int_ty) in
   let id_int_app = MTm.App (id_int, MTm.Int 5) in
   run_test
@@ -781,7 +786,7 @@ let () =
   let a = Ident.mk "a" in
   let at = MTy.TVar a in
   let x = Ident.mk "x" in
-  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Pos), MTm.Lam (x, Some at, MTm.Var x)) in
+  let id_poly = MTm.All ((a, MTy.Base Melcore.Types.MelcoreBase.Typ), MTm.Lam (x, Some at, MTm.Var x)) in
   let id_int = MTm.Ins (id_poly, int_ty) in
   let id_poly_expr = MTm.App (id_int, MTm.Add (MTm.Int 5, MTm.Int 3)) in
   run_test
