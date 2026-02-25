@@ -150,6 +150,11 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       else
         ind ^ "axiom" ^ ty_ann ^ "(" ^ pp_var v ^ ", " ^ pp_var k ^ ")"
 
+  (* jump l(args) *)
+  | Jump (label, args) ->
+      let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
+      ind ^ "jump " ^ pp_sym label ^ args_str
+
   (* =========== Primitives =========== *)
 
   (* lit n { v ⇒ body } *)
@@ -202,6 +207,43 @@ let pp_command ?(cfg=default_config) (cmd: command) : string =
 
 let command_to_string (cmd: command) : string =
   pp_command ~cfg:default_config cmd
+
+(* ========================================================================= *)
+(* Error Printing                                                            *)
+(* ========================================================================= *)
+
+let pp_check_error ?(cfg=default_config) (err: check_error) : string =
+  match err with
+  | UnboundVariable v ->
+      "unbound variable: " ^ pp_var v
+  | UnboundDeclaration p ->
+      "unbound declaration: " ^ pp_sym p
+  | UnboundDefinition p ->
+      "unbound definition: " ^ pp_sym p
+  | UnboundXtor (dec, xtor) ->
+      "unbound constructor " ^ pp_sym xtor ^ " in " ^ pp_sym dec
+  | UnificationFailed (t1, t2) ->
+      "unification failed: " ^ pp_typ ~cfg t1 ^ " ≠ " ^ pp_typ ~cfg t2
+  | ChiralityMismatch { expected_chirality; actual } ->
+      let exp = match expected_chirality with `Prd -> "producer" | `Cns -> "consumer" in
+      let act = match actual with Prd _ -> "producer" | Cns _ -> "consumer" in
+      "chirality mismatch: expected " ^ exp ^ ", got " ^ act
+  | XtorArityMismatch { xtor; expected; got } ->
+      "constructor " ^ pp_sym xtor ^
+      " expects " ^ string_of_int expected ^ " arguments, got " ^ string_of_int got
+  | TypeVarArityMismatch { xtor; expected; got } ->
+      "constructor " ^ pp_sym xtor ^
+      " expects " ^ string_of_int expected ^ " type arguments, got " ^ string_of_int got
+  | NonExhaustiveMatch { dec_name; missing } ->
+      "non-exhaustive pattern match on " ^ pp_sym dec_name ^
+      ": missing " ^ String.concat ", " (List.map pp_sym missing)
+  | ArityMismatch { expected; got } ->
+      "arity mismatch: expected " ^ string_of_int expected ^
+      " arguments, got " ^ string_of_int got
+  | ExpectedSignature t ->
+      "expected signature type, got " ^ pp_typ ~cfg t
+
+let check_error_to_string = pp_check_error ~cfg:default_config
 
 let command_to_string_typed (cmd: command) : string =
   pp_command ~cfg:{default_config with show_types = true} cmd

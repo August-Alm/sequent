@@ -57,7 +57,8 @@ type mono_info =
 
 (** Result of monomorphization *)
 type mono_result =
-  { definitions: Terms.definition list
+  { main: Terms.definition
+  ; definitions: Terms.definition list
   ; new_declarations: dec list
   ; mono_infos: mono_info Path.tbl      (* keyed by original definition path *)
   }
@@ -350,7 +351,7 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
       def foo{a}(x: T[a], k: R[a]) = body
     
     Becomes:
-      def foo.mono(u: Cns foo.For) =
+      def foo.mono(u: cns foo.For) =
         ⟨Comatch(foo.For, [
             inst_0(x, k) => body[t0/a]
             inst_1(x, k) => body[t1/a]
@@ -468,7 +469,9 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
       let new_decs = Path.to_list mono_infos 
         |> List.map (fun (_, info) -> info.generated_codata) in
       
-      Ok { definitions = transformed_main :: transformed_defs
-         ; new_declarations = new_decs
-         ; mono_infos
-         }
+      Ok
+        { main = transformed_main
+        ; definitions = transformed_defs
+        ; new_declarations = new_decs
+        ; mono_infos
+        }

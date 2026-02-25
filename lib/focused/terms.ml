@@ -106,6 +106,7 @@ and branch = sym * (var list) * (var list) * command
 type check_error =
     UnboundVariable of var
   | UnboundDeclaration of Path.t
+  | UnboundDefinition of Path.t
   | UnboundXtor of Path.t * Path.t
   | UnificationFailed of typ * typ
   | ChiralityMismatch of { expected_chirality: [`Prd | `Cns]; actual: chiral_typ }
@@ -133,10 +134,22 @@ type context =
   ; term_vars: chiral_typ Ident.tbl
   }
 
+(** Create an initial context from type declarations and term definitions *)
+let make_tc_context (type_defs: dec Path.tbl) (defs: definition Path.tbl) : context =
+  let tyctx = List.fold_left (fun ctx ((p, dec): (Path.t * dec)) ->
+    { ctx with decs = Path.add p dec ctx.decs }
+  ) empty_context (Path.to_list type_defs) in
+  { types = tyctx; term_vars = Ident.emptytbl; defs = defs }
+
 (** Lookup a declaration (data/codata type) by path *)
 let lookup_dec (ctx: context) (p: Path.t) : (dec, check_error) result =
   match Path.find_opt p ctx.types.decs with
     Some d -> Ok d | None -> Error (UnboundDeclaration p)
+
+(** Lookup a definition (top-level label) by path *)
+let lookup_def (ctx: context) (p: Path.t) : (definition, check_error) result =
+  match Path.find_opt p ctx.defs with
+    Some d -> Ok d | None -> Error (UnboundDefinition p)
 
 (** Find an xtor in a declaration *)
 let find_xtor (dec: dec) (xtor_name: Path.t) : xtor option =
@@ -411,6 +424,40 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
         None -> Error (UnificationFailed (v_ty, ty))
       | Some _ -> Ok ())
 
+  (* jump l(args) - jump to top-level definition with arguments *)
+  | Jump (label, args) ->
+      let* def = lookup_def ctx label in
+      (* Check arity *)
+      if List.length args <> List.length def.term_params then
+        Error (ArityMismatch {
+          expected = List.length def.term_params;
+          got = List.length args
+        })
+      else
+        (* Check each argument has the expected type *)
+        let rec check_args subs params args =
+          match params, args with
+          | [], [] -> Ok ()
+          | (_, exp_ct) :: params', arg :: args' ->
+              let* arg_ct = lookup_var ctx arg in
+              let exp_ty = strip_chirality exp_ct in
+              let arg_ty = strip_chirality arg_ct in
+              (match unify exp_ty arg_ty subs with
+              | None -> Error (UnificationFailed (exp_ty, arg_ty))
+              | Some subs' ->
+                  (* Check chirality matches *)
+                  (match exp_ct, arg_ct with
+                  | Prd _, Prd _ | Cns _, Cns _ ->
+                      check_args subs' params' args'
+                  | _ -> Error (ChiralityMismatch
+                      { expected_chirality =
+                          (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
+                      ; actual = arg_ct
+                      })))
+          | _ -> assert false
+        in
+        check_args subs def.term_params args
+
   | End -> Ok ()
 
 (** Helper: check that term variables have expected xtor argument types *)
@@ -455,3 +502,8 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
       | _ -> assert false
     in
     check_args subs expected vars
+
+let check_def (ctx: context) (def: definition) : definition check_result =
+  let ctx' = List.fold_left (fun c (v, ct) -> extend c v ct) ctx def.term_params in
+  let* _ = check_command ctx' Ident.emptytbl def.body in
+  Ok def

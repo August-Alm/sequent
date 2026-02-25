@@ -457,4 +457,4 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
 let check_def (ctx: context) (def: definition) : definition check_result =
   let ctx' = List.fold_left (fun c (v, ct) -> extend c v ct) ctx def.term_params in
   let* _ = check_command ctx' Ident.emptytbl def.body in
-  Ok (def)
+  Ok def

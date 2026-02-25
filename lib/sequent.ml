@@ -7,5 +7,6 @@ module Cut = Cut
 module Focus = Focus
 module Encode = Encode
 module Desugar = Desugar
+module Pipeline = Pipeline
 module Simple = Simple
 module Pcf = Pcf

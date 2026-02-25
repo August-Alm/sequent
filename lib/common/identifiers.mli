@@ -18,6 +18,7 @@ module Ident: sig
   val find_opt: t -> 'a tbl -> 'a option
   val filter: (t -> 'a -> bool) -> 'a tbl -> 'a tbl
   val remove: t -> 'a tbl -> 'a tbl
+  val map_tbl: ('a -> 'b) -> 'a tbl -> 'b tbl
   val join: 'a tbl -> 'a tbl -> 'a tbl
   val of_list: (t * 'a) list -> 'a tbl
   val to_list: 'a tbl -> (t * 'a) list
@@ -44,6 +45,7 @@ module Path: sig
   val find: t -> 'a tbl -> 'a
   val find_opt: t -> 'a tbl -> 'a option
   val filter: (t -> 'a -> bool) -> 'a tbl -> 'a tbl
+  val map_tbl: ('a -> 'b) -> 'a tbl -> 'b tbl
   val join: 'a tbl -> 'a tbl -> 'a tbl
   val of_list: (t * 'a) list -> 'a tbl
   val to_list: 'a tbl -> (t * 'a) list

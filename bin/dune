@@ -1,6 +1,6 @@
 (executables
- (names test_parsing test_nat test_simple test_pcf test_melcore test_monomorphize)
- (public_names test_parsing test_nat test_simple test_pcf test_melcore test_monomorphize)
+ (names test_parsing test_simple test_pcf test_melcore test_monomorphize test_pipeline)
+ (public_names test_parsing test_simple test_pcf test_melcore test_monomorphize test_pipeline)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 

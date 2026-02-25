@@ -194,8 +194,7 @@ let rec focus_type (t: CTy.typ) : FTy.typ =
   | CTy.PromotedCtor (d, c, args) -> FTy.PromotedCtor (d, c, List.map focus_type args)
   | CTy.Forall (x, k, body) -> FTy.Forall (x, focus_type k, focus_type body)
 
-(** Collapse chirality: flip based on the INNER TYPE's polarity.
-    Like simple.ml: Lhs (Neg _) → Rhs, Rhs (Neg _) → Lhs.
+(** Collapse chirality: flip based on the inner type's polarity.
     This is the key insight: chirality flips when the wrapped type is negative. *)
 let collapse_chiral (ct: CTy.chiral_typ) : FTy.chiral_typ =
   match ct with
@@ -322,16 +321,19 @@ module Target = struct
     ; data_sort = Common.Types.Data
     ; param_kinds = []
     ; type_args = []
-    ; xtors = [{ name = int_xtor_sym
-               ; quantified = []
-               ; existentials = []
-               ; argument_types = [CB.Prd (CTy.Ext Common.Types.Int)]  (* Producer of Int *)
-               ; main = CTy.Ext Common.Types.Int }]
+    ; xtors = [
+        { name = int_xtor_sym
+        ; quantified = []
+        ; existentials = []
+        ; argument_types = [CB.Prd (CTy.Ext Common.Types.Int)]  (* Producer of Int *)
+        ; main = CTy.Ext Common.Types.Int
+        }
+      ]
     }
 
   (** Apply renaming to a command *)
   let rec rename_command (h: Sub.t) : command -> command = function
-    | LetCtor (dec, c, args, x, cont) ->
+      LetCtor (dec, c, args, x, cont) ->
         let x' = Ident.fresh () in
         LetCtor (dec, c, List.map (Sub.apply h) args, x',
           rename_command (Sub.add x x' h) cont)
@@ -440,7 +442,7 @@ module Transform = struct
   and bind_term (term: CTm.term) (h: Sub.t)
       (k: Ident.t -> Target.command) : Target.command =
     match term with
-    | CTm.Var x ->
+      CTm.Var x ->
         k (Sub.apply h x)
 
     | CTm.Ctor (dec, c, args) ->
@@ -469,16 +471,16 @@ module Transform = struct
 
     | CTm.NewForall (a, k_ty, body_ty, body) ->
         (* The body is typically Cut[ty](producer, Var alpha) where alpha is the
-           return continuation for the polymorphic value.
-           
-           We need to bind alpha in the transformed code. The strategy:
-           1. Extract alpha from the body pattern Cut(_, _, Var alpha)
-           2. Use substitution to map alpha to a bound variable
-           3. Create appropriate structure to handle the result *)
+          return continuation for the polymorphic value.
+          
+          We need to bind alpha in the transformed code. The strategy:
+          1. Extract alpha from the body pattern Cut(_, _, Var alpha)
+          2. Use substitution to map alpha to a bound variable
+          3. Create appropriate structure to handle the result *)
         let v = Ident.fresh () in
         let a' = Ident.fresh () in
         (match body with
-        | CTm.Cut (ty, _producer, CTm.Var alpha) ->
+          CTm.Cut (ty, _producer, CTm.Var alpha) ->
             (* Create a result consumer that will receive the produced value *)
             let result_k = Ident.fresh () in
             (* Map the type variable and the continuation variable alpha -> result_k *)
@@ -487,7 +489,7 @@ module Transform = struct
                The key insight: we create LetComatch/LetMatch that BINDS result_k,
                then in the body, alpha gets substituted to result_k by h'. *)
             (match get_instantiated_dec_from_type ty with
-            | Some dec when dec.data_sort = Codata ->
+              Some dec when dec.data_sort = Codata ->
                 (* Negative type (like fun): create comatch that receives codata *)
                 Target.LetNewForall (a', k_ty, body_ty,
                   Target.LetComatch (dec, 
@@ -529,11 +531,11 @@ module Transform = struct
   and transform_mu_prd (ty: CTy.typ) (x: Ident.t) (s: CTm.command) (h: Sub.t)
       (k: Ident.t -> Target.command) : Target.command =
     match ty with
-    | CTy.Sgn (_, _) ->
+      CTy.Sgn (_, _) ->
         (* For signature types, create LetMatch following simple.ml's MuLhsPos pattern.
            Each branch: when constructor n with params, let bound = Cn(params); k bound *)
         (match get_instantiated_dec_from_type ty with
-        | Some dec ->
+          Some dec ->
             let bound = Ident.fresh () in
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let params = List.map (fun _ -> Ident.fresh ()) xtor.argument_types in
@@ -560,7 +562,7 @@ module Transform = struct
         (* Replace CutInt(v, x') with k(v), and create Int consumers where x' is passed *)
         let rec replace_cutint cmd =
           match cmd with
-          | Target.CutInt (v, a) when Ident.equal a x' -> k v
+            Target.CutInt (v, a) when Ident.equal a x' -> k v
           | Target.CutInt (v, a) -> Target.CutInt (v, a)
           | Target.CutTyped (ty, v, a) -> Target.CutTyped (ty, v, a)
           (* CutDtor where x' is an argument - x' is being passed as an Int consumer.
@@ -601,7 +603,16 @@ module Transform = struct
           | Target.CutNewForall (a, kty, body_ty, body, y) ->
               Target.CutNewForall (a, kty, body_ty, replace_cutint body, y)
           | Target.Call (path, tys, args) ->
-              Target.Call (path, tys, args)
+              (* Call where x' is an argument - x' is being passed as the return continuation.
+                 Create an Int consumer binding via LetIntCns to capture the result. *)
+              if List.exists (Ident.equal x') args then
+                let int_consumer = Ident.fresh () in
+                let result_v = Ident.fresh () in
+                let new_args = List.map (fun a -> if Ident.equal a x' then int_consumer else a) args in
+                Target.LetIntCns (int_consumer, result_v, k result_v,
+                  Target.Call (path, tys, new_args))
+              else
+                Target.Call (path, tys, args)
           | Target.Ifz (cond, s1, s2) ->
               Target.Ifz (cond, replace_cutint s1, replace_cutint s2)
           | Target.Ret (dec, v) -> Target.Ret (dec, v)
@@ -622,7 +633,7 @@ module Transform = struct
   and transform_mu_cns (ty: CTy.typ) (a: Ident.t) (s: CTm.command) (h: Sub.t)
       (k: Ident.t -> Target.command) : Target.command =
     match ty with
-    | CTy.Sgn (_, _) ->
+      CTy.Sgn (_, _) ->
         (* For signature types, create a LetComatch following simple.ml's pattern.
            Each branch responds to a destructor by binding result and calling k. *)
         (match get_instantiated_dec_from_type ty with
@@ -657,7 +668,7 @@ module Transform = struct
   and bind_terms (terms: CTm.term list) (h: Sub.t)
       (k: Ident.t list -> Target.command) : Target.command =
     match terms with
-    | [] -> k []
+      [] -> k []
     | t :: rest ->
         bind_term t h (fun v ->
           bind_terms rest h (fun vs -> k (v :: vs)))
@@ -666,7 +677,7 @@ module Transform = struct
   and transform_command (cmd: CTm.command) (h: Sub.t) : Target.command =
     match cmd with
     (* Cut at a signature type - pass the type for eta-expansion *)
-    | CTm.Cut ((CTy.Sgn (_, _) as ty), lhs, rhs) ->
+      CTm.Cut ((CTy.Sgn (_, _) as ty), lhs, rhs) ->
         transform_cut_sgn ty lhs rhs h
 
     (* Cut at Forall type *)
@@ -735,12 +746,12 @@ module Transform = struct
   (** Transform cut at signature type - extract dec from terms or eta-expand *)
   and transform_cut_sgn (ty: CTy.typ) (lhs: CTm.term) (rhs: CTm.term) (h: Sub.t) : Target.command =
     match lhs, rhs with
-    | CTm.Var x, CTm.Var y ->
+      CTm.Var x, CTm.Var y ->
         (* Both variables - need to eta-expand based on polarity.
            Like simple.ml: Var-Var at positive type creates CutMatch,
            at negative type creates CutComatch. *)
         (match get_instantiated_dec_from_type ty with
-        | Some dec ->
+          Some dec ->
             if dec.data_sort = Codata then
               (* Negative (codata): create CutComatch with eta-expanded branches *)
               Target.CutComatch (dec,
@@ -834,7 +845,7 @@ module Transform = struct
   and transform_cut_forall (a: Ident.t) (k_ty: CTy.typ) (body_ty: CTy.typ)
       (lhs: CTm.term) (rhs: CTm.term) (h: Sub.t) : Target.command =
     match lhs, rhs with
-    | CTm.Var x, CTm.Var y ->
+      CTm.Var x, CTm.Var y ->
         let a' = Ident.fresh () in
         Target.CutNewForall (a', k_ty, body_ty,
           Target.CutInstantiate (a', k_ty, body_ty, Sub.apply h x),
@@ -868,10 +879,10 @@ module Transform = struct
         let h' = Sub.add av av' h in
         let body_cmd = 
           match cmd with
-          | CTm.Cut (ty, producer, CTm.Var _alpha) ->
+            CTm.Cut (ty, producer, CTm.Var _alpha) ->
               (* Build the producer value and bind it *)
               (match producer with
-              | CTm.Comatch (dec, bs) ->
+                CTm.Comatch (dec, bs) ->
                   (* Codata producer: build it with LetComatch, then End *)
                   let inner_v = Ident.fresh () in
                   Target.LetComatch (dec, transform_branches bs h', inner_v, 
@@ -886,7 +897,7 @@ module Transform = struct
               | CTm.Var x ->
                   (* Variable: eta-expand based on type *)
                   (match get_instantiated_dec_from_type ty with
-                  | Some dec when dec.data_sort = Codata ->
+                    Some dec when dec.data_sort = Codata ->
                       let inner_v = Ident.fresh () in
                       Target.LetComatch (dec,
                         List.map (fun (xtor: CTy.xtor) ->
@@ -1006,7 +1017,10 @@ module Collapse = struct
     | Target.Add (x, y, k, cont) -> FTm.Add (x, y, k, collapse_command parity cont)
     | Target.Sub (x, y, k, cont) -> FTm.Sub (x, y, k, collapse_command parity cont)
     | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command parity s1, collapse_command parity s2)
-    | Target.Call (_path, _tys, _args) -> FTm.End
+
+    | Target.Call (path, [], args) -> FTm.Jump (path, args)
+    | Target.Call (_path, _tys, _args) ->
+        failwith "Unexpected type arguments in Call -- should have been monomorphized"
     | Target.Ret (ty, x) -> FTm.Ret (focus_type ty, x)
     | Target.End -> FTm.End
 
@@ -1017,3 +1031,15 @@ end
 
 (** Top-level entry point *)
 let focus_command = Collapse.focus_command
+
+(** Top-level entry point *)
+let focus_def (def: CTm.definition) : FTm.definition =
+  { path = def.path
+  ; term_params = List.map (fun (a, k_ty) ->
+        (a, collapse_chiral k_ty)
+      ) def.term_params
+  ; body = focus_command def.body
+  }
+
+let focus_decs (decs: CTy.dec Path.tbl) : FTy.dec Path.tbl =
+  Path.map_tbl collapse_dec decs

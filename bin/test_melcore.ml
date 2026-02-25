@@ -171,7 +171,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
           |> List.map (fun (p, d) -> (p, d.CTy.data_sort))
           |> Path.of_list
         in
-        { types = CTy.empty_context; data_sorts = sorts } in
+        { Encode.types = CTy.empty_context; data_sorts = sorts; defs = Path.emptytbl } in
       print_endline "Core Encoding:";
       let core_result =
         try
@@ -279,17 +279,17 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
               
               (* Check expected result if provided *)
               (match expected_result, eval_result with
-               | Some expected, Some (Some (Machine.IntVal actual)) when expected = actual ->
-                   Printf.printf "  ✓ Expected %d, got %d\n" expected actual
-               | Some expected, Some (Some (Machine.IntVal actual)) ->
-                   fail (Printf.sprintf "Expected %d, got %d" expected actual)
-               | Some expected, Some None ->
-                   fail (Printf.sprintf "Expected %d, got no result" expected)
-               | Some expected, None ->
-                   fail (Printf.sprintf "Expected %d, evaluation failed" expected)
-               | Some expected, Some (Some v) ->
-                   fail (Printf.sprintf "Expected int %d, got %s" expected (Machine.pp_value v))
-               | None, _ -> ());  (* No expected result specified *)
+              | Some expected, Some (Some (Machine.IntVal actual)) when expected = actual ->
+                  Printf.printf "  ✓ Expected %d, got %d\n" expected actual
+              | Some expected, Some (Some (Machine.IntVal actual)) ->
+                  fail (Printf.sprintf "Expected %d, got %d" expected actual)
+              | Some expected, Some None ->
+                  fail (Printf.sprintf "Expected %d, got no result" expected)
+              | Some expected, None ->
+                  fail (Printf.sprintf "Expected %d, evaluation failed" expected)
+              | Some expected, Some (Some v) ->
+                  fail (Printf.sprintf "Expected int %d, got %s" expected (Machine.pp_value v))
+              | None, _ -> ());  (* No expected result specified *)
               print_newline ();
               
               (* 6. Focused type checking *)
@@ -311,39 +311,42 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
               in
               let focused_tc_ctx : FTm.context = 
                 { types = FTy.empty_context
+                ; defs = Path.emptytbl
                 ; term_vars = Ident.add ret ret_chiral Ident.emptytbl
                 } in
               (match FTm.check_command focused_tc_ctx Ident.emptytbl closed with
-               | Ok () -> print_endline "  ✓ OK"
-               | Error e -> 
-                   let err_msg = match e with
-                     | FTm.UnboundVariable v -> 
-                         Printf.sprintf "Unbound variable: %s" (Ident.name v)
-                     | FTm.UnboundDeclaration p -> 
-                         Printf.sprintf "Unbound declaration: %s" (Path.name p)
-                     | FTm.UnboundXtor (d, x) -> 
-                         Printf.sprintf "Unbound xtor %s in %s" (Path.name x) (Path.name d)
-                     | FTm.UnificationFailed (t1, t2) -> 
-                         Printf.sprintf "Unification failed: %s vs %s" 
-                           (FPrint.typ_to_string t1) (FPrint.typ_to_string t2)
-                     | FTm.ChiralityMismatch { expected_chirality; actual } ->
-                         let exp = match expected_chirality with `Prd -> "producer" | `Cns -> "consumer" in
-                         let act = match actual with FB.Prd _ -> "producer" | FB.Cns _ -> "consumer" in
-                         Printf.sprintf "Chirality mismatch: expected %s, got %s" exp act
-                     | FTm.XtorArityMismatch { xtor; expected; got } ->
-                         Printf.sprintf "Xtor %s arity mismatch: expected %d, got %d" 
-                           (Path.name xtor) expected got
-                     | FTm.TypeVarArityMismatch { xtor; expected; got } ->
-                         Printf.sprintf "Type var arity mismatch for %s: expected %d, got %d" 
-                           (Path.name xtor) expected got
-                     | FTm.NonExhaustiveMatch { dec_name; missing=_ } ->
-                         Printf.sprintf "Non-exhaustive match on %s" (Path.name dec_name)
-                     | FTm.ArityMismatch { expected; got } ->
-                         Printf.sprintf "Arity mismatch: expected %d, got %d" expected got
-                     | FTm.ExpectedSignature t ->
-                         Printf.sprintf "Expected signature type, got %s" (FPrint.typ_to_string t)
-                   in
-                   fail err_msg));
+              | Ok () -> print_endline "  ✓ OK"
+              | Error e -> 
+                  let err_msg = match e with
+                    | FTm.UnboundVariable v -> 
+                        Printf.sprintf "Unbound variable: %s" (Ident.name v)
+                    | FTm.UnboundDeclaration p -> 
+                        Printf.sprintf "Unbound declaration: %s" (Path.name p)
+                    | FTm.UnboundDefinition p -> 
+                        Printf.sprintf "Unbound definition: %s" (Path.name p)
+                    | FTm.UnboundXtor (d, x) -> 
+                        Printf.sprintf "Unbound xtor %s in %s" (Path.name x) (Path.name d)
+                    | FTm.UnificationFailed (t1, t2) -> 
+                        Printf.sprintf "Unification failed: %s vs %s" 
+                          (FPrint.typ_to_string t1) (FPrint.typ_to_string t2)
+                    | FTm.ChiralityMismatch { expected_chirality; actual } ->
+                        let exp = match expected_chirality with `Prd -> "producer" | `Cns -> "consumer" in
+                        let act = match actual with FB.Prd _ -> "producer" | FB.Cns _ -> "consumer" in
+                        Printf.sprintf "Chirality mismatch: expected %s, got %s" exp act
+                    | FTm.XtorArityMismatch { xtor; expected; got } ->
+                        Printf.sprintf "Xtor %s arity mismatch: expected %d, got %d" 
+                          (Path.name xtor) expected got
+                    | FTm.TypeVarArityMismatch { xtor; expected; got } ->
+                        Printf.sprintf "Type var arity mismatch for %s: expected %d, got %d" 
+                          (Path.name xtor) expected got
+                    | FTm.NonExhaustiveMatch { dec_name; missing=_ } ->
+                        Printf.sprintf "Non-exhaustive match on %s" (Path.name dec_name)
+                    | FTm.ArityMismatch { expected; got } ->
+                        Printf.sprintf "Arity mismatch: expected %d, got %d" expected got
+                    | FTm.ExpectedSignature t ->
+                        Printf.sprintf "Expected signature type, got %s" (FPrint.typ_to_string t)
+                  in
+                  fail err_msg));
   
   (* Final verdict *)
   print_newline ();

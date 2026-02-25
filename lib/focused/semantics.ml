@@ -21,24 +21,27 @@ type value =
   | IntVal of int                           (** Literal integers *)
 
 (** Environment maps variables to values *)
-and env = value Ident.tbl
+and env =
+  { values: value Ident.tbl
+  ; defs: Terms.definition Path.tbl  (* Needed for jump semantics *)
+  }
 
 (** Configuration: command + environment *)
 type config = command * env
 
-let empty_env : env = Ident.emptytbl
+let empty_env : env = { values = Ident.emptytbl; defs = Path.emptytbl }
 
 (* ========================================================================= *)
 (* Environment Operations                                                    *)
 (* ========================================================================= *)
 
 let lookup (e: env) (x: var) : value =
-  match Ident.find_opt x e with
+  match Ident.find_opt x e.values with
     Some v -> v
   | None -> failwith ("unbound variable: " ^ Ident.name x)
 
 let lookup_opt (e: env) (x: var) : value option =
-  Ident.find_opt x e
+  Ident.find_opt x e.values
 
 let lookup_int (e: env) (x: var) : int =
   match lookup e x with
@@ -46,7 +49,7 @@ let lookup_int (e: env) (x: var) : int =
   | _ -> failwith ("expected int value for: " ^ Ident.name x)
 
 let extend (e: env) (x: var) (v: value) : env =
-  Ident.add x v e
+  { e with values = Ident.add x v e.values }
 
 (** Build sub-environment containing only specified variables *)
 let sub_env (e: env) (vars: var list) : env =
@@ -54,7 +57,7 @@ let sub_env (e: env) (vars: var list) : env =
 
 (** Merge two environments (e2 values override e1 on conflicts) *)
 let merge_env (e1: env) (e2: env) : env =
-  List.fold_left (fun acc (x, v) -> extend acc x v) e1 (Ident.to_list e2)
+  List.fold_left (fun acc (x, v) -> extend acc x v) e1 (Ident.to_list e2.values)
 
 (* ========================================================================= *)
 (* Branch Selection                                                          *)
@@ -86,7 +89,7 @@ let pp_value = function
   | IntVal n -> string_of_int n
 
 let pp_env (e: env) : string =
-  let bindings = Ident.to_list e in
+  let bindings = Ident.to_list e.values in
   String.concat ", " (List.map (fun (x, v) -> Ident.name x ^ " → " ^ pp_value v) bindings)
 
 let rec pp_config ((cmd, e): config) : string =
@@ -104,6 +107,7 @@ and cmd_name = function
   | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
   | Sub (a, b, v, _) -> Ident.name a ^ " - " ^ Ident.name b ^ " → " ^ Ident.name v
   | Ifz (v, _, _) -> "ifz " ^ Ident.name v
+  | Jump (label, _) -> "jump " ^ pp_sym label
   | End -> "end"
   | Ret (_, v) -> "ret " ^ Ident.name v
 
@@ -133,7 +137,7 @@ let step ((cmd, e): config) : config option =
       (match lookup e v with
        | DataVal (m, e0) ->
            let (_, _, params, branch_body) = select_branch m branches in
-           let e0_list = List.rev (Ident.to_list e0) in
+           let e0_list = List.rev (Ident.to_list e0.values) in
            let e' = List.fold_left2 (fun acc p (_, val0) -> extend acc p val0) e params e0_list in
            Some (branch_body, e')
        | IntVal n ->
@@ -170,14 +174,14 @@ let step ((cmd, e): config) : config option =
                      Some (branch_body, e'))
             | DataVal (m, e1) ->
                 let (_, _, params, branch_body) = select_branch m branches in
-                let e1_list = List.rev (Ident.to_list e1) in
+                let e1_list = List.rev (Ident.to_list e1.values) in
                 let e' = List.fold_left2 (fun acc p (_, val0) -> extend acc p val0) e0 params e1_list in
                 Some (branch_body, e')
             | _ -> failwith "axiom: expected data or int on the left")
        | Some (FunVal (e0, px, py, s)) ->
            (match lookup e v1 with
             | DataVal (_, e1) ->
-                let e1_list = List.rev (Ident.to_list e1) in
+                let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v_x); (_, v_y)] ->
                      let e' = extend (extend (merge_env e0 e) px v_x) py v_y in
@@ -189,7 +193,7 @@ let step ((cmd, e): config) : config option =
        | Some (ThunkVal (e0, px, s)) ->
            (match lookup e v1 with
             | DataVal (_, e1) ->
-                let e1_list = List.rev (Ident.to_list e1) in
+                let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v0)] ->
                      let e' = extend (merge_env e0 e) px v0 in
@@ -199,7 +203,7 @@ let step ((cmd, e): config) : config option =
        | Some (ReturnVal (e0, px, s)) ->
            (match lookup e v1 with
             | DataVal (_, e1) ->
-                let e1_list = List.rev (Ident.to_list e1) in
+                let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v0)] ->
                      let e' = extend (merge_env e0 e) px v0 in
@@ -251,6 +255,23 @@ let step ((cmd, e): config) : config option =
       if n = 0 then Some (then_cmd, e)
       else Some (else_cmd, e)
 
+  (* (jump) ⟨jump l(args) ∥ E⟩ → ⟨body ∥ E'⟩ where E' binds params to E(args) 
+     Look up definition l, bind its parameters to the argument values *)
+  | Jump (label, args) ->
+      (match Path.find_opt label e.defs with
+      | None -> failwith ("undefined label: " ^ Path.name label)
+      | Some def ->
+          (* Build new environment binding params to arg values.
+             For each arg, try to look it up. If unbound, it's a continuation
+             variable that we track specially. *)
+          let param_names = List.map fst def.term_params in
+          let e' = List.fold_left2 
+            (fun acc param_name arg_val -> extend acc param_name arg_val)
+            { e with values = Ident.emptytbl }  (* Start fresh but keep defs *)
+            param_names (List.map (lookup e) args)
+          in
+          Some (def.body, e'))
+
   (* =========== Terminals =========== *)
   | End -> None
   | Ret _ -> None
@@ -281,7 +302,7 @@ let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * 
   let (cmd, e) = cfg in
   if trace then 
     Printf.printf "    [%d] %s | env has %d bindings\n"
-      steps (cmd_name cmd) (List.length (Ident.to_list e));
+      steps (cmd_name cmd) (List.length (Ident.to_list e.values));
   match step cfg with
   | None -> (cfg, steps)
   | Some cfg' -> run ~trace ~steps:(steps + 1) ~max_steps cfg'
