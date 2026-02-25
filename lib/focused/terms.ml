@@ -36,12 +36,7 @@ type command =
       
       Constructs a producer of T using constructor m. *)
     (* v, instantiated dec, m, xi's, s *)
-    Let of var* dec * sym * (var list) * command
-
-    (* `Let` for the xtor of the built-in signature `Forall(a, k, t)`:
-      let v = instantiate{k, t}[ty_arg]; s 
-      This provides a type argument ty_arg and creates a producer of Forall *)
-  | LetInstantiate of var * var * typ * typ * command (* v, a, k, body_ty, s *)
+    Let of var * dec * sym * (var list) * command
 
     (* switch v {m1(y1, ...) ⇒ s1, ...}
        
@@ -53,9 +48,6 @@ type command =
     (* v, instantiated dec, branches *)
   | Switch of var * dec * branch list
 
-    (* switch v {instantiate_k[a] ⇒ s} *)
-  | SwitchForall of var * var * typ * command (* v, a, k, s *)
-
     (* new v = {m1(y1, ...) ⇒ s1, ...}; s
        
       for each m ∈ T: Γ, yi : Ai ⊢ si    Γ, v : cns T ⊢ s
@@ -65,9 +57,6 @@ type command =
       Creates a consumer of T via copattern matching. *)
     (* v, instantiated dec, branches, s *)
   | New of var * dec * branch list * command
-
-    (* new v = {instantiate_k_t[a] ⇒ s1}; s2 *)
-  | NewForall of var * var * typ * command * command (* v, a, k, s1, s2 *)
 
     (* invoke v m(x1, ...)
        
@@ -79,17 +68,14 @@ type command =
     (* v, instantiated dec, m, xi's *)
   | Invoke of var * dec * sym * (var list)
 
-    (* invoke v instantiate_k[ty_arg] *)
-  | InvokeInstantiate of var * typ * typ (* v, ty_arg, k *)
-
     (* ⟨v | k⟩
        
       Γ(v) = prd τ    Γ(k) = cns τ
       ----------------------------- [AXIOM]
       Γ ⊢ ⟨v | k⟩
       
-      Cut: pass producer v to consumer k at type τ. *)
-  | Axiom of typ * var * var
+      Cut: pass producer v to consumer k at primitive type τ. *)
+  | Axiom of Common.Types.ext_type * var * var
 
     (* Primitives for integers *)
   | Lit of int * var * command       (* lit n { v ⇒ s } *)
@@ -292,13 +278,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
             let v_typ = Prd inst_main in
             check_command (extend ctx v v_typ) subs' body)
 
-  (* let v = instantiate{k, body_ty}[a]; s *)
-  | LetInstantiate (v, a, k, body_ty, body) ->
-      (* Creates producer of Forall(a, k, body_ty) *)
-      let v_typ = Prd (Forall (a, k, body_ty)) in
-      let ctx' = extend_tyvar ctx a k in
-      check_command (extend ctx' v v_typ) subs body
-
   (* switch v {...} -- dec is pre-instantiated *)
   | Switch (v, dec, branches) ->
       let* v_ct = lookup_var ctx v in
@@ -311,19 +290,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       | Some subs' ->
           check_branches ctx dec branches check_command subs')
 
-  (* switch v {instantiate_k[a] => s}
-     Switch always expects v to be a producer. *)
-  | SwitchForall (v, a, k, body) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_prd v_ct in
-      (* v should be Prd (Forall(_, k, _)) - we use fresh meta for body *)
-      let body_meta = TMeta (Ident.fresh ()) in
-      (match unify v_ty (Forall (a, k, body_meta)) subs with
-        None -> Error (UnificationFailed (v_ty, Forall (a, k, body_meta)))
-      | Some subs' ->
-          let ctx' = extend_tyvar ctx a k in
-          check_command ctx' subs' body)
-
   (* new v = {...}; s -- dec is pre-instantiated *)
   | New (v, dec, branches, body) ->
       let* _ =
@@ -331,16 +297,6 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       in
       let v_typ = Cns (Sgn (dec.name, dec.type_args)) in
       check_command (extend ctx v v_typ) subs body
-
-  (* new v = {instantiate{k}[a] => s1}; s2 *)
-  | NewForall (v, a, k, branch_body, continuation) ->
-      (* Check the branch body with type var a: k in scope *)
-      let ctx_branch = extend_tyvar ctx a k in
-      let* _ = check_command ctx_branch subs branch_body in
-      (* The body type is inferred from usage - use fresh meta *)
-      let body_meta = TMeta (Ident.fresh ()) in
-      let v_typ = Cns (Forall (a, k, body_meta)) in
-      check_command (extend ctx v v_typ) subs continuation
 
   (* invoke v m(xi's) -- dec is pre-instantiated *)
   | Invoke (v, dec, xtor_name, term_vars) ->
@@ -358,28 +314,17 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               check_xtor_args ctx xtor_name inst_args term_vars subs'
               |> Result.map (fun _ -> ())))
 
-  (* invoke v instantiate_k[ty_arg] *)
-  | InvokeInstantiate (v, _ty_arg, k) ->
-      let* v_ct = lookup_var ctx v in
-      let* v_ty = expect_cns v_ct in
-      (* v should be Cns (Forall(a, k, body)) for some a, body *)
-      let a = Ident.fresh () in
-      let body_meta = TMeta (Ident.fresh ()) in
-      (match unify v_ty (Forall (a, k, body_meta)) subs with
-        None -> Error (UnificationFailed (v_ty, Forall (a, k, body_meta)))
-      | Some _ -> Ok ())
-
   (* ⟨v | k⟩ at ty *)
   | Axiom (ty, v, k) ->
       let* v_ct = lookup_var ctx v in
       let* k_ct = lookup_var ctx k in
       let* v_ty = expect_prd v_ct in
       let* k_ty = expect_cns k_ct in
-      (match unify v_ty ty subs with
-        None -> Error (UnificationFailed (v_ty, ty))
+      (match unify v_ty (Ext ty) subs with
+        None -> Error (UnificationFailed (v_ty, Ext ty))
       | Some subs' ->
-          (match unify k_ty ty subs' with
-            None -> Error (UnificationFailed (k_ty, ty))
+          (match unify k_ty (Ext ty) subs' with
+            None -> Error (UnificationFailed (k_ty, Ext ty))
           | Some _ -> Ok ()))
 
   (* lit n { v => s } *)

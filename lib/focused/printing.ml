@@ -113,7 +113,6 @@ and pp_branches ?(cfg=default_config) (indent_level: int) (branches: branch list
 and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   let ind = indent n in
   match cmd with
-  (* =========== Let forms =========== *)
   
   (* let v = m(args); body *)
   | Let (v, dec, x, args, body) ->
@@ -122,30 +121,12 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       ind ^ "let " ^ pp_var v ^ " = " ^ pp_sym x ^ args_str ^ dec_str ^ ";\n" ^
       pp_cmd ~cfg n body
 
-  (* let v = instantiate[a]{k, t}; body *)
-  | LetInstantiate (v, a, k, t, body) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ k ^ ", " ^ pp_typ t ^ "}" else "" in
-      ind ^ "let " ^ pp_var v ^ " = instantiate[" ^ pp_var a ^ "]" ^ tys_str ^ ";\n" ^
-      pp_cmd ~cfg n body
-
-  (* =========== Switch forms =========== *)
-
   (* switch v { branches } *)
   | Switch (v, dec, branches) ->
       let ty_ann = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       ind ^ "switch " ^ pp_var v ^ ty_ann ^ " {\n" ^
       pp_branches ~cfg (n + cfg.indent_size) branches ^ "\n" ^
       ind ^ "}"
-
-  (* switch v { instantiate[a]{k} ⇒ s } *)
-  | SwitchForall (v, a, k, s) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ k ^ "}" else "" in
-      ind ^ "switch " ^ pp_var v ^ " {\n" ^
-      ind ^ "  instantiate[" ^ pp_var a ^ "]" ^ ty_str ^ " ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s ^ "\n" ^
-      ind ^ "}"
-
-  (* =========== New forms =========== *)
 
   (* new v = { branches }; body *)
   | New (v, dec, branches, body) ->
@@ -155,33 +136,15 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       ind ^ "};\n" ^
       pp_cmd ~cfg n body
 
-  (* new v = { instantiate[a]{k} ⇒ s1 }; s2 *)
-  | NewForall (v, a, k, s1, s2) ->
-      let ty_str = if cfg.show_types then "{" ^ pp_typ k ^ "}" else "" in
-      ind ^ "new " ^ pp_var v ^ " = {\n" ^
-      ind ^ "  instantiate[" ^ pp_var a ^ "]" ^ ty_str ^ " ⇒\n" ^
-      pp_cmd ~cfg (n + cfg.indent_size * 2) s1 ^ "\n" ^
-      ind ^ "};\n" ^
-      pp_cmd ~cfg n s2
-
-  (* =========== Invoke forms =========== *)
-
   (* invoke v m(args) *)
   | Invoke (v, dec, x, args) ->
       let dec_str = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
       ind ^ pp_var v ^ "." ^ pp_sym x ^ args_str ^ dec_str
 
-  (* invoke v instantiate{ty, k} *)
-  | InvokeInstantiate (v, ty, k) ->
-      let tys_str = if cfg.show_types then "{" ^ pp_typ ty ^ ", " ^ pp_typ k ^ "}" else "" in
-      ind ^ pp_var v ^ ".instantiate" ^ tys_str
-
-  (* =========== Axiom =========== *)
-
   (* ⟨v | k⟩ *)
   | Axiom (ty, v, k) ->
-      let ty_ann = if cfg.show_types then "[" ^ pp_typ ty ^ "]" else "" in
+      let ty_ann = if cfg.show_types then "[" ^ pp_typ (Ext ty) ^ "]" else "" in
       if cfg.unicode then
         ind ^ "⟨" ^ pp_var v ^ " | " ^ pp_var k ^ "⟩" ^ ty_ann
       else

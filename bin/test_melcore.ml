@@ -42,11 +42,6 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       (match args with
         v :: _ -> FTm.Ret (ret_ty, v)
       | [] -> cmd)
-  (* Handle SwitchForall on ret: convert to NewForall + Ret *)
-  | FTm.SwitchForall (k, a, kind, body) when Ident.name k = "ret" ->
-      let v = Ident.fresh () in
-      let forall_ty = FTy.Forall (a, kind, ret_ty) in (* TODO: proper body type *)
-      FTm.NewForall (v, a, kind, close_ret ret_ty body, FTm.Ret (forall_ty, v))
   (* Handle Switch on ret for signature types (including Fun, Raise, Lower): convert to New + Ret *)
   | FTm.Switch (k, sg, branches) when Ident.name k = "ret" ->
       let v = Ident.fresh () in
@@ -56,22 +51,16 @@ let rec close_ret (ret_ty: FTy.typ) (cmd: FTm.command) : FTm.command =
       FTm.New (v, sg, branches', FTm.Ret (ret_ty, v))
   | FTm.Let (v, dec, xtor, args, body) -> 
       FTm.Let (v, dec, xtor, args, close_ret ret_ty body)
-  | FTm.LetInstantiate (v, a, k, ty, body) ->
-      FTm.LetInstantiate (v, a, k, ty, close_ret ret_ty body)
   | FTm.New (v, sg, branches, body) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
       FTm.New (v, sg, branches', close_ret ret_ty body)
-  | FTm.NewForall (v, a, k, body, cont) ->
-      FTm.NewForall (v, a, k, close_ret ret_ty body, close_ret ret_ty cont)
   | FTm.Switch (x, sg, branches) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret ret_ty b)
       ) branches in
       FTm.Switch (x, sg, branches')
-  | FTm.SwitchForall (k, a, kind, body) ->
-      FTm.SwitchForall (k, a, kind, close_ret ret_ty body)
   | FTm.Lit (n, v, body) -> 
       FTm.Lit (n, v, close_ret ret_ty body)
   | FTm.Add (a, b, r, body) -> 

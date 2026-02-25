@@ -12,8 +12,8 @@ open Terms
 
 (** Runtime values in the abstract machine *)
 type value =
-  | DataVal of sym * env          (** {m; E} - constructor m with captured environment *)
-  | CodataVal of env * branch list(** {E; bs} - branches with captured environment *)
+  | DataVal of sym * env            (** {m; E} - constructor m with captured environment *)
+  | CodataVal of env * branch list  (** {E; bs} - branches with captured environment *)
   | FunVal of env * var * var * command     (** {E; x, y ⇒ s} - function value *)
   | ForallVal of env * var * command        (** {E; a ⇒ s} - polymorphic value *)
   | ThunkVal of env * var * command         (** {E; x ⇒ s} - thunk value *)
@@ -95,14 +95,10 @@ let rec pp_config ((cmd, e): config) : string =
 
 and cmd_name = function
   | Let (v, _, x, _, _) -> "let " ^ Ident.name v ^ " = " ^ pp_sym x ^ "(...)"
-  | LetInstantiate (v, _, _, _, _) -> "let " ^ Ident.name v ^ " = instantiate[...]"
   | Switch (v, _, _) -> "switch " ^ Ident.name v
-  | SwitchForall (v, _, _, _) -> "switch " ^ Ident.name v ^ " {instantiate...}"
   | New (v, _, _, _) -> "new " ^ Ident.name v
-  | NewForall (v, _, _, _, _) -> "new " ^ Ident.name v ^ " {instantiate...}"
   | NewInt (k, _, _, _) -> "new " ^ Ident.name k ^ " {int...}"
   | Invoke (v, _, x, _) -> Ident.name v ^ "." ^ pp_sym x
-  | InvokeInstantiate (v, _, _) -> Ident.name v ^ ".instantiate[...]"
   | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
   | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
   | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
@@ -118,8 +114,6 @@ and cmd_name = function
 (** Single step of the abstract machine. Returns None if stuck or terminal. *)
 let step ((cmd, e): config) : config option =
   match cmd with
-  (* =========== Let forms =========== *)
-  
   (* (let) ⟨let v = m(args); s ∥ E⟩ → ⟨s ∥ E, v → {m; E|args}⟩ 
      Constructs a data value with the xtor name and captured args *)
   | Let (v, _, m, args, body) ->
@@ -127,26 +121,11 @@ let step ((cmd, e): config) : config option =
       let e' = extend e v (DataVal (m, e0)) in
       Some (body, e')
 
-  (* (let-instantiate) Constructs Forall value - type argument is erased *)
-  | LetInstantiate (v, _, _, _, body) ->
-      let inst_sym = Path.of_string "instantiate" in
-      let e' = extend e v (DataVal (inst_sym, empty_env)) in
-      Some (body, e')
-
-  (* =========== New forms =========== *)
-
   (* (new) ⟨new v = {bs}; s ∥ E⟩ → ⟨s ∥ E, v → {E; bs}⟩
      Creates a codata value: captures current env, branches bind params when invoked *)
   | New (v, _, branches, body) ->
       let e' = extend e v (CodataVal (e, branches)) in
       Some (body, e')
-
-  (* (new-forall) Creates a Forall codata value *)
-  | NewForall (v, a, _, s1, s2) ->
-      let e' = extend e v (ForallVal (e, a, s1)) in
-      Some (s2, e')
-
-  (* =========== Switch forms =========== *)
 
   (* (switch) ⟨switch v {bs} ∥ E⟩
      Destructure data value v, select matching branch, bind params *)
@@ -165,14 +144,6 @@ let step ((cmd, e): config) : config option =
                 Some (branch_body, e'))
        | _ -> failwith "switch: expected data value")
 
-  (* (switch-forall) Destructure Forall value - types are erased *)
-  | SwitchForall (v, _, _, s) ->
-      (match lookup e v with
-       | DataVal _ | ForallVal _ -> Some (s, e)
-       | _ -> failwith "switch-forall: expected forall value")
-
-  (* =========== Invoke forms =========== *)
-
   (* (invoke) ⟨v.m(args) ∥ E, v → {E0; bs}⟩ → ⟨b ∥ E0[params↦E(args)]⟩
      Invokes a codata value: find matching branch, bind args to params *)
   | Invoke (v, _, m, args) ->
@@ -184,19 +155,6 @@ let step ((cmd, e): config) : config option =
            let e' = List.fold_left2 extend e_merged params arg_vals in
            Some (branch_body, e')
        | _ -> failwith "invoke: expected codata value")
-
-  (* (invoke-instantiate) Instantiate a Forall codata value - type erased *)
-  | InvokeInstantiate (v, _, _) ->
-      (match lookup e v with
-       | ForallVal (e0, _, s) ->
-           Some (s, merge_env e0 e)
-       | CodataVal (e0, branches) ->
-           let inst_sym = Path.of_string "instantiate" in
-           let (_, _, _, branch_body) = select_branch inst_sym branches in
-           Some (branch_body, merge_env e0 e)
-       | _ -> failwith "invoke-instantiate: expected forall value")
-
-  (* =========== Axiom =========== *)
 
   (* (axiom) ⟨⟨v | k⟩ ∥ E⟩ - interaction between data and codata *)
   | Axiom (_, v1, v2) ->

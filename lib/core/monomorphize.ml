@@ -43,7 +43,7 @@ module T = Terms
 (* ========================================================================= *)
 
 (** A specific instantiation of type parameters *)
-type instantiation = Monomorphization.ground_arg list
+type instantiation = Specialization.ground_arg list
 
 (** Information about a polymorphic definition's monomorphization *)
 type mono_info = 
@@ -67,10 +67,10 @@ type mono_result =
 (* ========================================================================= *)
 
 (** Convert ground_arg to a Core typ *)
-let rec ground_arg_to_typ (arg: Monomorphization.ground_arg): typ =
+let rec ground_arg_to_typ (arg: Specialization.ground_arg): typ =
   match arg with
-    Monomorphization.GroundExt Int -> Ext Int
-  | Monomorphization.GroundSgn (name, args) ->
+    Specialization.GroundExt Int -> Ext Int
+  | Specialization.GroundSgn (name, args) ->
       Sgn (name, List.map ground_arg_to_typ args)
 
 (** Generate destructor name for an instantiation *)
@@ -282,8 +282,8 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command =
           (* Build the current instantiation from type_args *)
           let current_inst = List.map (fun t ->
             match t with
-              Ext Int -> Monomorphization.GroundExt Int
-            | Sgn (name, []) -> Monomorphization.GroundSgn (name, [])
+              Ext Int -> Specialization.GroundExt Int
+            | Sgn (name, []) -> Specialization.GroundSgn (name, [])
             | _ -> failwith ("complex type instantiation not yet supported: " ^ 
                            Path.name def_path)
           ) type_args in
@@ -382,18 +382,18 @@ let transform_definition
 (* ========================================================================= *)
 
 (** Monomorphize an execution context *)
-let monomorphize (exe: Monomorphization.exe_ctx): mono_result =
+let monomorphize (exe: Specialization.exe_ctx): mono_result =
   (* First, run the flow analysis *)
-  match Monomorphization.analyze exe with
-  | Monomorphization.HasGrowingCycle cycle ->
+  match Specialization.analyze exe with
+  | Specialization.HasGrowingCycle cycle ->
       failwith ("Cannot monomorphize: growing cycle detected at " ^
                 String.concat " -> " (List.map (fun (p, i) -> 
                   Path.name p ^ "[" ^ string_of_int i ^ "]") cycle))
   
-  | Monomorphization.Solvable flows ->
+  | Specialization.Solvable flows ->
       (* Group flows by destination definition *)
       let flows_by_def = 
-        List.fold_left (fun acc (flow: Monomorphization.ground_flow) ->
+        List.fold_left (fun acc (flow: Specialization.ground_flow) ->
           let existing = 
             match Path.find_opt flow.dst acc with
               Some lst -> lst | None -> []

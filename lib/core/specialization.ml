@@ -1,8 +1,8 @@
 (**
-  module: Core.Monomorphization
-  description: Monomorphization analysis for the Core language.
+  module: Core.Specialization
+  description: Type specialization analysis for the Core language.
   
-  This module implements flow-based monomorphization analysis to determine
+  This module implements flow-based type specialization analysis to determine
   all concrete type instantiations needed for a program, and to detect
   non-terminating (growing) cycles that would cause infinite specialization.
 *)
@@ -113,10 +113,9 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
       | Arrow (t1, t2) ->
           (* Function types: encode as a special signature *)
           MonoSgn (Path.of_string "->", [convert t1; convert t2])
-      | Forall (_v, k, body) ->
-          (* Polymorphic types - for now, just convert the body *)
-          (* In full generality, this would need special handling *)
-          MonoSgn (Path.of_string "forall", [convert k; convert body])
+      | Forall (_v, _k, body) ->
+          (* Polymorphic types - just convert the body, ignore the kind *)
+          MonoSgn (Path.of_string "forall", [convert body])
       | Base _ | PromotedCtor _ ->
           (* These are kind-level, shouldn't appear in term types *)
           failwith "Unexpected kind-level type in monomorphization"
@@ -189,23 +188,40 @@ and find_forall_call_in_cmd (cmd: Terms.command): Path.t option =
   | Terms.Cut (_typ, producer, _consumer) -> find_forall_call producer
   | _ -> None
 
+(** Find InstantiateDtor inside a term, including nested in Match branches.
+    This handles patterns like: Match { ... ⟨var | InstantiateDtor(T)⟩ } *)
+and find_instantiate_dtor (tm: Terms.term): typ option =
+  match tm with
+    Terms.InstantiateDtor ty -> Some ty
+  | Terms.Match (_, branches) ->
+      (* Look inside Match branches for InstantiateDtor *)
+      List.find_map (fun (_, _, _, cmd) ->
+        find_instantiate_dtor_cmd cmd
+      ) branches
+  | _ -> None
+
+and find_instantiate_dtor_cmd (cmd: Terms.command): typ option =
+  match cmd with
+    Terms.Cut (_, _, consumer) -> find_instantiate_dtor consumer
+  | _ -> None
+
 (** Generate constraints for a command *)
 and generate_for_command (cmd: Terms.command): unit gen =
   match cmd with
     Cut (_typ, producer, consumer) ->
-      (* Check for the pattern: ⟨... Call(f, [], ...) ... | InstantiateDtor(T)⟩
-         This means f is being instantiated at type T. *)
+      (* Check for instantiation patterns:
+         1. Direct: ⟨... Call(f, [], ...) ... | InstantiateDtor(T)⟩
+         2. Via Match: ⟨MuPrd(_, _, Call(f, [], ...)) | Match { ... InstantiateDtor(T) }⟩ *)
       let+ () = 
-        (match consumer with
-          Terms.InstantiateDtor ty_arg ->
-            (match find_forall_call producer with
-              Some def_path ->
-                (* Found it! Emit a constraint: ty_arg flows to def_path *)
+        (match find_forall_call producer with
+          Some def_path ->
+            (* Producer calls a polymorphic function. Look for InstantiateDtor *)
+            (match find_instantiate_dtor consumer with
+              Some ty_arg ->
                 let+ mono_arg = typ_to_mono_arg ty_arg in
                 emit [{ input = Vector [mono_arg]; dst = def_path }]
-            | None -> 
-                return ())
-        | _ -> return ())
+            | None -> return ())
+        | None -> return ())
       in
       let+ () = generate_for_term producer in
       generate_for_term consumer

@@ -17,8 +17,8 @@ module MPrint = Melcore.Printing
 module CTy = Core.Types.CoreTypes
 module CB = Core.Types.CoreBase
 module CTm = Core.Terms
-module Mono = Core.Monomorphization
-module MonoX = Core.Monomorphize
+module Spec = Core.Specialization
+module Mono = Core.Monomorphize
 
 open Common.Identifiers
 
@@ -292,8 +292,8 @@ let run_test ~name (source: string) =
                           Path.add def.CTm.path def acc
                         ) Path.emptytbl
                       in
-                      let exe : Mono.exe_ctx = { main; defs } in
-                      let result = MonoX.monomorphize exe in
+                      let exe : Spec.exe_ctx = { main; defs } in
+                      let result = Mono.monomorphize exe in
                       print_endline "  OK";
                       Some result
                     with e ->
@@ -314,21 +314,21 @@ let run_test ~name (source: string) =
                       end;
                       
                       (* Print mono_infos *)
-                      if not (Path.is_empty result.MonoX.mono_infos) then begin
+                      if not (Path.is_empty result.Mono.mono_infos) then begin
                         print_endline "Mono Infos:";
-                        Path.to_list result.MonoX.mono_infos |> List.iter (fun (path, (info: MonoX.mono_info)) ->
+                        Path.to_list result.Mono.mono_infos |> List.iter (fun (path, (info: Mono.mono_info)) ->
                           Printf.printf "  %s:\n" (Path.name path);
-                          Printf.printf "    mono_path: %s\n" (Path.name info.MonoX.mono_path);
+                          Printf.printf "    mono_path: %s\n" (Path.name info.Mono.mono_path);
                           Printf.printf "    instantiations: %d\n" 
-                            (List.length info.MonoX.instantiations);
+                            (List.length info.Mono.instantiations);
                           List.iteri (fun i inst ->
                             let inst_str = inst |> List.map (fun arg ->
                               match arg with
-                              | Mono.GroundExt Int -> "int"
-                              | Mono.GroundSgn (p, _) -> Path.name p
+                              | Spec.GroundExt Int -> "int"
+                              | Spec.GroundSgn (p, _) -> Path.name p
                             ) |> String.concat ", " in
                             Printf.printf "      [%d]: %s\n" i inst_str
-                          ) info.MonoX.instantiations
+                          ) info.Mono.instantiations
                         );
                         print_newline ()
                       end;
@@ -352,7 +352,7 @@ let run_test ~name (source: string) =
 
 (* Direct Core test: manually build a polymorphic definition and call it *)
 let run_core_test ~name 
-    (make_test: unit -> (Mono.exe_ctx * string)) =
+    (make_test: unit -> (Spec.exe_ctx * string)) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
@@ -373,8 +373,8 @@ let run_core_test ~name
     
     (* Print definitions *)
     print_endline "Core Definitions:";
-    Printf.printf "%s\n\n" (pp_definition exe.Mono.main);
-    Path.to_list exe.Mono.defs |> List.iter (fun (_, def) ->
+    Printf.printf "%s\n\n" (pp_definition exe.Spec.main);
+    Path.to_list exe.Spec.defs |> List.iter (fun (_, def) ->
       Printf.printf "%s\n\n" (pp_definition def)
     );
     
@@ -382,7 +382,7 @@ let run_core_test ~name
     print_endline "Monomorphization:";
     let mono_result =
       try
-        let result = MonoX.monomorphize exe in
+        let result = Mono.monomorphize exe in
         print_endline "  OK";
         Some result
       with e ->
@@ -395,29 +395,29 @@ let run_core_test ~name
     | None -> ()
     | Some result ->
         (* Print new declarations *)
-        if result.MonoX.new_declarations <> [] then begin
+        if result.Mono.new_declarations <> [] then begin
           print_endline "Generated Codata Types:";
           List.iter (fun dec ->
             Printf.printf "%s\n\n" (pp_dec dec)
-          ) result.MonoX.new_declarations
+          ) result.Mono.new_declarations
         end;
         
         (* Print mono_infos *)
-        if not (Path.is_empty result.MonoX.mono_infos) then begin
+        if not (Path.is_empty result.Mono.mono_infos) then begin
           print_endline "Mono Infos:";
-          Path.to_list result.MonoX.mono_infos |> List.iter (fun (path, (info: MonoX.mono_info)) ->
+          Path.to_list result.Mono.mono_infos |> List.iter (fun (path, (info: Mono.mono_info)) ->
             Printf.printf "  %s:\n" (Path.name path);
-            Printf.printf "    mono_path: %s\n" (Path.name info.MonoX.mono_path);
+            Printf.printf "    mono_path: %s\n" (Path.name info.Mono.mono_path);
             Printf.printf "    instantiations: %d\n" 
-              (List.length info.MonoX.instantiations);
+              (List.length info.Mono.instantiations);
             List.iteri (fun i inst ->
               let inst_str = inst |> List.map (fun arg ->
                 match arg with
-                | Mono.GroundExt Int -> "int"
-                | Mono.GroundSgn (p, _) -> Path.name p
+                | Spec.GroundExt Int -> "int"
+                | Spec.GroundSgn (p, _) -> Path.name p
               ) |> String.concat ", " in
               Printf.printf "      [%d]: %s\n" i inst_str
-            ) info.MonoX.instantiations
+            ) info.Mono.instantiations
           );
           print_newline ()
         end;
@@ -426,7 +426,7 @@ let run_core_test ~name
         print_endline "Transformed Definitions:";
         List.iter (fun def ->
           Printf.printf "%s\n\n" (pp_definition def)
-        ) result.MonoX.definitions;
+        ) result.Mono.definitions;
         
         if !test_passed then begin
           print_endline "PASS ✓";
@@ -480,7 +480,7 @@ let main(x: int): int = x + x
         ; body = CTm.Call (id_path, [CTy.Ext Int], [CTm.Lit 42; CTm.Var k])
         } in
       
-      let exe : Mono.exe_ctx =
+      let exe : Spec.exe_ctx =
         { main = main_def
         ; defs = Path.of_list [(id_path, id_def)]
         } in
@@ -547,7 +547,7 @@ let main(x: int): int = x + x
         ; body = CTm.Call (test1_path, [], [CTm.Var k])
         } in
       
-      let exe : Mono.exe_ctx =
+      let exe : Spec.exe_ctx =
         { main = main_def
         ; defs = Path.of_list 
             [ (const_path, const_def)

@@ -983,44 +983,30 @@ module Collapse = struct
         FTm.Switch (a, collapse_dec dec, List.map (collapse_branch parity) branches)
 
     (* Built-in Forall - Forall is NEGATIVE *)
-    | Target.LetInstantiate (a, k_ty, body_ty, v, cont) ->
-        FTm.LetInstantiate (v, a, focus_type k_ty, focus_type body_ty, collapse_command parity cont)
-    | Target.LetNewForall (a, k_ty, body_ty, body, v, cont) ->
-        let body_parity = if is_negative body_ty then not parity else parity in
-        FTm.NewForall (v, a, focus_type k_ty, 
-          collapse_command body_parity body, collapse_command parity cont)
-    | Target.CutInstantiate (_a, k_ty, body_ty, v) ->
-        FTm.InvokeInstantiate (v, focus_type body_ty, focus_type k_ty)
-    | Target.CutNewForall (a, k_ty, body_ty, body, v) ->
-        let k' = focus_type k_ty in
-        let body_parity = if is_negative body_ty then not parity else parity in
-        if parity then
-          let w = Ident.fresh () in
-          FTm.NewForall (w, a, k',
-            collapse_command body_parity body,
-            FTm.Axiom (FTy.Forall (a, k', focus_type body_ty), w, v))
-        else
-          FTm.SwitchForall (v, a, k', collapse_command body_parity body)
+    | Target.LetInstantiate (_a, _k_ty, _body_ty, _v, _cont) ->
+        failwith "Unexpected LetInstantiate -- term is not monomorphic"
+    | Target.LetNewForall (_a, _k_ty, _body_ty, _body, _v, _cont) ->
+        failwith "Unexpected LetNewForall -- term is not monomorphic"
+    | Target.CutInstantiate (_a, _k_ty, _body_ty, _v) ->
+        failwith "Unexpected CutInstantiate -- term is not monomorphic"
+    | Target.CutNewForall (_a, _k_ty, _body_ty, _body, _v) ->
+        failwith "Unexpected CutNewForall -- term is not monomorphic"
 
     (* Primitives *)
     | Target.LetInt (n, x, cont) ->
         FTm.Lit (n, x, collapse_command parity cont)
     | Target.CutInt (x, k) ->
-        FTm.Axiom (FTy.Ext Common.Types.Int, x, k)
-    | Target.CutTyped (ty, x, k) ->
-        FTm.Axiom (focus_type ty, x, k)
+        FTm.Axiom (Common.Types.Int, x, k)
+    | Target.CutTyped (_ty, _x, _k) ->
+        failwith "Unexpected Cut at non-primitive type -- should have been simplified"
     | Target.LetIntCns (k, v, branch_body, cont) ->
         (* NewInt(k, v, branch_body, cont) binds k : Cns Int, v is received Int in branch *)
         FTm.NewInt (k, v, collapse_command parity branch_body, collapse_command parity cont)
-    | Target.Add (x, y, k, cont) ->
-        FTm.Add (x, y, k, collapse_command parity cont)
-    | Target.Sub (x, y, k, cont) ->
-        FTm.Sub (x, y, k, collapse_command parity cont)
-    | Target.Ifz (v, s1, s2) ->
-        FTm.Ifz (v, collapse_command parity s1, collapse_command parity s2)
-    | Target.Call (_path, _tys, _args) ->
-        FTm.End
 
+    | Target.Add (x, y, k, cont) -> FTm.Add (x, y, k, collapse_command parity cont)
+    | Target.Sub (x, y, k, cont) -> FTm.Sub (x, y, k, collapse_command parity cont)
+    | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command parity s1, collapse_command parity s2)
+    | Target.Call (_path, _tys, _args) -> FTm.End
     | Target.Ret (ty, x) -> FTm.Ret (focus_type ty, x)
     | Target.End -> FTm.End
 
