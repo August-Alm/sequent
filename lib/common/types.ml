@@ -540,14 +540,30 @@ module TypeSystem(Base: BASE) = struct
       ; main = apply_fresh_subst xtor_subst xtor.main
       }
     in
-    (* Filter to only reachable xtors *)
-    let scrutinee_type = Sgn (dec.name, type_args) in
+    (* Filter to only reachable xtors (for GADT refinement).
+       The scrutinee_type must match the shape of xtor.main.
+       For codata types in Core, xtor.main is wrapped in raise(), so we wrap
+       scrutinee_type to match. We detect this by checking the first xtor. *)
+    let base_scrutinee = Sgn (dec.name, type_args) in
+    let scrutinee_type = 
+      match dec.xtors with
+      | xtor :: _ ->
+          (* Check if the xtor's main type is wrapped in raise/lower *)
+          (match xtor.main with
+           | Sgn (wrapper, [Sgn (inner_dec, _)]) 
+             when Path.equal inner_dec dec.name ->
+               (* Xtor main is wrapper(dec(...)), so wrap scrutinee *)
+               Sgn (wrapper, [base_scrutinee])
+           | _ -> base_scrutinee)
+      | [] -> base_scrutinee
+    in
     let reachable_xtors = 
       List.filter_map (fun (xtor: xtor) ->
         (* Check if xtor's main type can unify with the scrutinee type *)
         let _, fresh_subst = freshen_meta xtor.quantified in
         let fresh_main = apply_fresh_subst fresh_subst xtor.main in
-        match unify fresh_main scrutinee_type Ident.emptytbl with
+        let result = unify fresh_main scrutinee_type Ident.emptytbl in
+        match result with
         | Some _ -> Some (instantiate_xtor xtor)
         | None -> None
       ) dec.xtors

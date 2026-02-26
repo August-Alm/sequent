@@ -162,6 +162,14 @@ let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var l
   List.fold_left2 (fun ctx var ct -> extend ctx var ct) ctx vars arg_types
 
 (** Check that actual arguments match xtor's declared chiralities with unification *)
+let rec simple_typ_str = function
+  | TVar v -> Ident.name v
+  | TMeta m -> "?" ^ Ident.name m
+  | Sgn (p, args) -> Path.name p ^ "(" ^ String.concat ", " (List.map simple_typ_str args) ^ ")"
+  | Forall (v, _, body) -> "∀" ^ Ident.name v ^ ". " ^ simple_typ_str body
+  | Arrow (a, b) -> simple_typ_str a ^ " -> " ^ simple_typ_str b
+  | _ -> "?"
+
 let check_xtor_args
     (ctx: context)
     (xtor_name: Path.t) (expected: chiral_typ list) (args: term list)
@@ -232,23 +240,22 @@ let check_branch
           ; expected = List.length xtor.argument_types
           ; got = List.length term_vars })
       else
-        (* Freshen existentials only - dec is already instantiated *)
-        let inst_args, _ = freshen_xtor_existentials xtor in
-        (* Substitute user-provided type variable names for existentials *)
+        (* Substitute user-provided type variable names for existentials.
+           Don't freshen - the user's type vars are the "fresh" names for this branch. *)
         let exist_subst =
           List.fold_left2 (fun s (old_v, _) new_v ->
             Ident.add old_v (TVar new_v) s
           ) Ident.emptytbl xtor.existentials type_vars
         in
-        let inst_args' =
-          List.map (chiral_map (apply_fresh_subst exist_subst)) inst_args
+        let inst_args =
+          List.map (chiral_map (apply_fresh_subst exist_subst)) xtor.argument_types
         in
         (* Extend context with existential type vars and term vars *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
             ctx type_vars xtor.existentials
         in
-        let ctx'' = bind_xtor_term_args ctx' inst_args' term_vars in
+        let ctx'' = bind_xtor_term_args ctx' inst_args term_vars in
         check_cmd ctx'' subs cmd
 
 (** Check all branches and verify exhaustiveness.

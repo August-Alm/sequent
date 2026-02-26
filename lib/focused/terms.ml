@@ -471,29 +471,20 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
     ; got = List.length vars
     })
   else
-    let rec check_args subs expected vars =
+    let rec check_args idx subs expected vars =
       match expected, vars with
         [], [] -> Ok subs
       | exp_ct :: exps', var :: vars' ->
           let* var_ct = lookup_var ctx var in
           let exp_ty = strip_chirality exp_ct in
           let var_ty = strip_chirality var_ct in
-          (* DEBUG - use simple string conversion to avoid cycle *)
-          let rec ty_str = function
-            | TVar a -> "TVar " ^ Ident.name a
-            | Sgn (p, tys) -> "Sgn(" ^ Path.name p ^ ", [" ^ String.concat ", " (List.map ty_str tys) ^ "])"
-            | Ext Int -> "Ext Int"
-            | _ -> "..."
-          in
-          Format.eprintf "check_xtor_args: var=%s, exp_ty=%s, var_ty=%s@."
-            (Ident.name var) (ty_str exp_ty) (ty_str var_ty);
           (match unify exp_ty var_ty subs with
             None -> Error (UnificationFailed (exp_ty, var_ty))
           | Some subs' ->
               (* Also check chirality matches *)
               (match exp_ct, var_ct with
                 Prd _, Prd _ | Cns _, Cns _ ->
-                  check_args subs' exps' vars'
+                  check_args (idx + 1) subs' exps' vars'
               | _ -> Error (ChiralityMismatch
                   { expected_chirality =
                       (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
@@ -501,7 +492,7 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
                   })))
       | _ -> assert false
     in
-    check_args subs expected vars
+    check_args 0 subs expected vars
 
 let check_def (ctx: context) (def: definition) : definition check_result =
   let ctx' = List.fold_left (fun c (v, ct) -> extend c v ct) ctx def.term_params in

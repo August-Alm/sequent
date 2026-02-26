@@ -77,6 +77,10 @@ let run_test ~name ~expected (source: string) =
     Printf.printf "   Generated %d new declarations, %d definitions\n"
       (List.length mono_result.new_declarations)
       (List.length mono_result.definitions);
+    (* Debug: print mono definitions *)
+    List.iter (fun (def: Core.Terms.definition) ->
+      Printf.printf "   Mono %s: %s\n" (Path.name def.path) (Core.Printing.command_to_string def.body)
+    ) mono_result.definitions;
     
     (* Stage 7: Focus *)
     let* (focused_decs, focused_main, focused_defs) = 
@@ -86,6 +90,15 @@ let run_test ~name ~expected (source: string) =
     (* Print focused main *)
     print_endline "\nFocused main:";
     Printf.printf "%s\n\n" (FPrint.command_to_string focused_main.body);
+
+    (* Print focused defs for debugging *)
+    let def_list = Path.to_list focused_defs in
+    if List.length def_list > 0 then begin
+      print_endline "Focused definitions:";
+      List.iter (fun (_, (def: FTerms.definition)) ->
+        Printf.printf "  %s:\n%s\n\n" (Path.name def.path) (FPrint.command_to_string def.body)
+      ) def_list
+    end;
     
     (* Stage 8: Focused type-check *)
     let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in
@@ -309,7 +322,7 @@ let main: int = get_or_zero(some{int}(42))
   (* Test 16: Pair type *)
   run_test
     ~name:"Pair type"
-    ~expected:7
+    ~expected:6
     {|
 data pair: type -> type -> type where
   { mk_pair: {a}{b} a -> b -> pair(a)(b)
@@ -326,9 +339,9 @@ let snd{a}{b}(p: pair(a)(b)): b =
   }
 
 let main: int =
-  let p = mk_pair{int}{int}(3)(4) in
-  let q = mk_pair{int}{int}(5)(6) in
-  fst{int}{int}(p) + snd{int}{int}(p)
+  let p = mk_pair{int}{int}(1)(2) in
+  let q = mk_pair{int}{int}(3)(5) in
+  fst{int}{int}(p) + snd{int}{int}(q)
     |};
   
   (* Test 17: Fibonacci *)
@@ -341,6 +354,70 @@ let fib(n: int): int =
   else fib(n - 1) + fib(n - 2)
 
 let main: int = fib(6)
+    |};
+
+  (* Test 18: Complex *)
+  run_test
+    ~name:"Complex test with multiple features"
+    ~expected:10
+    {|
+data option: type -> type where
+  { none: {a} option(a)
+  ; some: {a} a -> option(a)
+  }
+
+code stream: type -> type where
+  { state: {a} stream(a) -> a
+  ; next: {a} stream(a) -> option(stream(a))
+  }
+
+code algebra: type -> type -> type where
+  { nil: {b}{c} algebra(b)(c) -> c
+  ; cons: {b}{c} algebra(b)(c) -> b -> c -> c
+  }
+
+code foldable: type -> type where
+  { fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
+  }
+
+let ints_from(i: int): stream(int) =
+  new { state => i
+      ; next => some{stream(int)}(ints_from(i + 1))
+      }
+
+let nats: stream(int) = ints_from(0)
+
+let take{e}(s: stream(e))(n: int): foldable(e) =
+  new foldable(e)
+  { fold{e}{t}(alg) =>
+      ifz(0) then
+        nil{e}{t}(alg)
+      else
+        match next{e}(s) with
+        { none{_} => nil{e}{t}(alg)
+        ; some{_}(s') =>
+            let s'' =
+              new stream(e)
+              { state => state{e}(s')
+              ; next => next{e}(s)
+              } in
+            let rest = take{e}(s'')(n - 1) in
+            let folded_rest = fold{e}{t}(rest)(alg) in
+            cons{e}{t}(alg)(state{e}(s'))(folded_rest)
+        }
+  }
+
+let sum(l: foldable(int)): int =
+  let alg =
+    new algebra(int)(int)
+    { nil => 0
+    ; cons(h)(t) => h + t
+    } in
+  fold{int}{int}(l)(alg)
+
+let main: int =
+  let tetractys = take{int}(nats)(5) in
+  sum(tetractys)
     |};
 
   (* Final Summary *)

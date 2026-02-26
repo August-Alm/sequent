@@ -61,11 +61,21 @@ let encode_xtor (sorts: data_sort Path.tbl) (ds: data_sort) (x: MTy.xtor) : CTy.
     if i = 0 && ds = Codata then CB.Cns (encode_type sorts ty) else
       CB.Prd (encode_type sorts ty)  (* All other arguments are producers *)
   in
+  (* For codata, the xtor.main is the "internal" type used in cuts after unwrapping.
+     It should NOT be wrapped in raise - that wrapping happens at use sites.
+     For data, encode_type doesn't wrap anyway. *)
+  let encode_main (ty: MTy.typ) : CTy.typ =
+    match ty with
+    | MTy.Sgn (p, args) when get_data_sort sorts p = Codata ->
+        (* Don't wrap codata types in raise for xtor.main *)
+        CTy.Sgn (p, List.map (encode_type sorts) args)
+    | _ -> encode_type sorts ty
+  in
   { name = x.name
   ; quantified = List.map (fun (v, k) -> (v, encode_type sorts k)) x.quantified
   ; existentials = List.map (fun (v, k) -> (v, encode_type sorts k)) x.existentials
   ; argument_types = List.mapi encode_xtor_arg x.argument_types
-  ; main = encode_type sorts x.main
+  ; main = encode_main x.main
   }
 
 (** Encode a declaration *)
@@ -467,26 +477,49 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.Ctor (raise_dec, Prim.thunk_sym, [comatch])
 
   | MTm.TypedCtor (dec, ctor, ty_args, args, _ty) ->
-      (* Ctor(d, c, {ty_args}, args) → Ctor(inst_dec, c, args') *)
+      (* Ctor(d, c, {ty_args}, args) → Ctor(inst_dec, c, args')
+         ty_args contains BOTH dec params AND xtor existentials.
+         We need to split them: only dec params go to instantiate_dec. *)
       let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
       let args' = List.map (encode_term ctx) args in
-      let inst_dec = get_instantiated_dec ctx dec ty_args' in
+      (* Get the original dec to find how many params it has *)
+      let orig_dec = match Path.find_opt dec ctx.types.decs with
+        | Some d -> d
+        | None -> failwith ("Unknown declaration: " ^ Path.name dec)
+      in
+      let n_dec_params = List.length orig_dec.param_kinds in
+      let dec_type_args = List.filteri (fun i _ -> i < n_dec_params) ty_args' in
+      let inst_dec = get_instantiated_dec ctx dec dec_type_args in
       CTm.Ctor (inst_dec, ctor, args')
 
   | MTm.TypedDtor (dec, dtor, ty_args, args, ty) ->
       (* Dtor(d, c, {ty_args}, this :: rest) where this : raise(codata)
          
+         ty_args contains BOTH dec params AND xtor existentials.
+         We need to split them: only dec params go to instantiate_dec.
+         
          Since codata types are wrapped in raise, we need to unwrap before calling.
          μα.⟨this' | match { thunk(g) => ⟨g | Dtor(inst_dec, c, rest' @ [α])⟩ }⟩ *)
       let ty' = encode_type ctx.data_sorts ty in
       let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
-      let inst_dec = get_instantiated_dec ctx dec ty_args' in
+      (* Get the original dec to find how many params it has *)
+      let orig_dec = match Path.find_opt dec ctx.types.decs with
+        | Some d -> d
+        | None -> failwith ("Unknown declaration: " ^ Path.name dec)
+      in
+      let n_dec_params = List.length orig_dec.param_kinds in
+      let dec_type_args = List.filteri (fun i _ -> i < n_dec_params) ty_args' in
+      let inst_dec = get_instantiated_dec ctx dec dec_type_args in
       (match args with
         [] -> failwith "Dtor must have at least a subject argument"
       | this_arg :: rest_args ->
           let this' = encode_term ctx this_arg in
           let this_ty = encode_type ctx.data_sorts (MTm.get_type this_arg) in
-          let rest' = List.map (encode_term ctx) rest_args in
+          (* rest' needs to be reversed because:
+             - Melcore rest_args are in surface order: [arg1, arg2, ...]
+             - Core argument_types are stored reversed: [result; argN; ...; arg1]
+             - So after prepending alpha (result), we need [alpha; argN; ...; arg1] *)
+          let rest' = List.rev (List.map (encode_term ctx) rest_args) in
           let alpha = Ident.fresh () in
           
           (* this_ty is raise(inner_codata_ty) *)
@@ -501,8 +534,10 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
             make_cut this_ty this'
               (CTm.Match (raise_dec,
                 [(Prim.thunk_sym, [], [g],
+                  (* In Core, dtor args are: [continuation, rest args reversed]
+                     The continuation (alpha) comes FIRST *)
                   make_cut inner_codata_ty (CTm.Var g)
-                    (CTm.Dtor (inst_dec, dtor, rest' @ [CTm.Var alpha])))]))))
+                    (CTm.Dtor (inst_dec, dtor, [CTm.Var alpha] @ rest')))]))))
 
   | MTm.TypedIfz (cond, then_br, else_br, ty) ->
       (* ifz cond then t else e → μα.ifz(cond', ⟨then' | α⟩, ⟨else' | α⟩) *)
@@ -563,7 +598,10 @@ and encode_match_branch (ctx: encode_ctx) (inst_dec: CTy.dec) (result_ty: CTy.ty
   (xtor, exist_ty_vars, tm_vars, cmd)
 
 (** Encode a new/comatch branch - bind result continuation k.
-    Similar to encode_match_branch, filter ty_vars to keep only existentials. *)
+    Similar to encode_match_branch, filter ty_vars to keep only existentials.
+    
+    In Core, codata xtor arguments are ordered: [cns return_type, prd argN, ...prd arg1]
+    (reversed from surface order). So the continuation k comes FIRST, then tm_vars reversed. *)
 and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
     ((xtor, ty_vars, tm_vars, body): MTm.typed_clause) : CTm.branch =
   let body' = encode_term_tail ctx body in  (* branch body is in tail position *)
@@ -583,7 +621,9 @@ and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
       let start = n_total - n_exist in
       List.filteri (fun i _ -> i >= start) ty_vars
   in
-  (xtor, exist_ty_vars, tm_vars @ [k], cmd)
+  (* k comes first (consumer for return), then the pattern variables REVERSED
+     to match the reversed order in argument_types *)
+  (xtor, exist_ty_vars, [k] @ List.rev tm_vars, cmd)
 
 (* ========================================================================= *)
 (* Definition Encoding                                                       *)

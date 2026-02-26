@@ -62,7 +62,7 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   | Sgn (name, []) -> pp_sym name
   | Sgn (name, args) ->
       let args_str = comma_sep (List.map (pp_typ ~cfg ~nested:false) args) in
-      pp_sym name ^ brackets args_str
+      pp_sym name ^ parens args_str
   | PromotedCtor (dec, ctor, []) -> 
       "'" ^ pp_sym dec ^ "." ^ pp_sym ctor
   | PromotedCtor (dec, ctor, args) ->
@@ -168,7 +168,7 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       pp_cmd ~cfg n body
   (* sub(x, y) { r ⇒ body } *)
   | Sub (x, y, r, body) ->
-      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " - " ^ pp_var y ^ ";\\n" ^
+      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " - " ^ pp_var y ^ ";\n" ^
       pp_cmd ~cfg n body
   (* new k = { v ⇒ branch }; cont *)
   | NewInt (k, v, branch, cont) ->
