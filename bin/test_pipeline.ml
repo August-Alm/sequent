@@ -87,10 +87,9 @@ let run_test ~name ~expected (source: string) =
     print_endline "\nFocused main:";
     Printf.printf "%s\n\n" (FPrint.command_to_string focused_main.body);
     
-    (* Stage 8: Focused type-check (optional - skip for now as it needs context setup) *)
-    (* let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in *)
-    ignore focused_decs;
-    print_endline "8. Focused type-check: SKIPPED";
+    (* Stage 8: Focused type-check *)
+    let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in
+    print_endline "8. Focused type-check: OK";
     
     (* Stage 9: Evaluate *)
     let* (final_cmd, final_env, steps) = 
