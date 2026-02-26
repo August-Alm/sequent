@@ -162,9 +162,10 @@ let rec subst_term (subst: typ Ident.tbl) (tm: T.term): T.term =
   | T.Ctor (dec, xtor, args) ->
       let dec' = subst_dec subst dec in
       T.Ctor (dec', xtor, List.map (subst_term subst) args)
-  | T.Dtor (dec, xtor, args) ->
+  | T.Dtor (dec, xtor, exist_tys, args) ->
       let dec' = subst_dec subst dec in
-      T.Dtor (dec', xtor, List.map (subst_term subst) args)
+      let exist_tys' = List.map (apply_fresh_subst subst) exist_tys in
+      T.Dtor (dec', xtor, exist_tys', List.map (subst_term subst) args)
   | T.Match (dec, branches) ->
       let dec' = subst_dec subst dec in
       T.Match (dec', List.map (subst_branch subst) branches)
@@ -247,6 +248,7 @@ let rec typ_to_ground_arg (t: typ): Specialization.ground_arg =
 (** Context for transformation *)
 type transform_ctx =
   { mono_infos: mono_info Path.tbl
+  ; dtor_flows: Specialization.ground_arg list Path.tbl  (* dtor_path -> instantiations *)
   }
 
 (** Transform a term, handling call sites to monomorphized definitions *)
@@ -256,14 +258,16 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
   | T.Ctor (dec, xtor, args) ->
       let* args' = traverse_result (List.map (transform_term ctx) args) in
       Ok (T.Ctor (dec, xtor, args'))
-  | T.Dtor (dec, xtor, args) ->
+  | T.Dtor (dec, xtor, exist_tys, args) ->
       let* args' = traverse_result (List.map (transform_term ctx) args) in
-      Ok (T.Dtor (dec, xtor, args'))
+      Ok (T.Dtor (dec, xtor, exist_tys, args'))
   | T.Match (dec, branches) ->
       let* branches' = traverse_result (List.map (transform_branch ctx) branches) in
       Ok (T.Match (dec, branches'))
   | T.Comatch (dec, branches) ->
-      let* branches' = traverse_result (List.map (transform_branch ctx) branches) in
+      (* For comatch, we need to substitute existential type variables in branches
+         based on the solved flow constraints for each destructor *)
+      let* branches' = traverse_result (List.map (transform_comatch_branch ctx dec) branches) in
       Ok (T.Comatch (dec, branches'))
   | T.MuPrd (typ, var, cmd) ->
       let* cmd' = transform_command ctx cmd in
@@ -277,9 +281,36 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
   | T.InstantiateDtor typ ->
       Ok (T.InstantiateDtor typ)
 
+(** Transform a regular branch (for Match) *)
 and transform_branch
     (ctx: transform_ctx) ((xtor, tvars, tmvars, cmd): T.branch): T.branch mono_check =
   let* cmd' = transform_command ctx cmd in
+  Ok (xtor, tvars, tmvars, cmd')
+
+(** Transform a comatch branch, substituting existential type variables *)
+and transform_comatch_branch
+    (ctx: transform_ctx) (dec: dec) ((xtor, tvars, tmvars, cmd): T.branch): T.branch mono_check =
+  (* Build the destructor path to look up flow instantiations *)
+  let dtor_path = Path.access dec.name (Path.name xtor) in
+  
+  (* Look up what types should be substituted for this destructor's existentials *)
+  let subst = match Path.find_opt dtor_path ctx.dtor_flows with
+    | Some ground_args when List.length ground_args = List.length tvars ->
+        (* Build substitution: tvars[i] -> ground_args[i] *)
+        List.fold_left2 (fun s tv garg ->
+          Ident.add tv (ground_arg_to_typ garg) s
+        ) Ident.emptytbl tvars ground_args
+    | _ ->
+        (* No flow found, or mismatched arity - no substitution *)
+        Ident.emptytbl
+  in
+  
+  (* Apply substitution to the command - this propagates concrete types into the body *)
+  let cmd_subst = subst_command subst cmd in
+  let* cmd' = transform_command ctx cmd_subst in
+  
+  (* Keep the type vars to match the xtor's expected arity.
+     The type vars are still "bound" but their uses in the body have been substituted. *)
   Ok (xtor, tvars, tmvars, cmd')
 
 (** Transform a command, replacing calls to polymorphic definitions *)
@@ -313,8 +344,8 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
               Error (NoMatchingInstantiation { def_path; instantiation = current_inst })
           | Some idx ->
               let dtor_path = dtor_name_for_inst info.generated_codata.name idx in
-              (* Build: Call(foo.mono, [], [Dtor(For, inst_i, args)]) *)
-              let dtor = T.Dtor (info.generated_codata, dtor_path, transformed_args) in
+              (* Build: Call(foo.mono, [], [Dtor(For, inst_i, [], args)]) *)
+              let dtor = T.Dtor (info.generated_codata, dtor_path, [], transformed_args) in
               Ok (T.Call (info.mono_path, [], [dtor]))))
   
   | T.Add (t1, t2, t3) ->
@@ -449,7 +480,24 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
         |> Path.of_list
       in
       
-      let ctx = { mono_infos } in
+      (* Build dtor_flows: group flows by destructor path *)
+      let dtor_flows = 
+        List.fold_left (fun acc (flow: Specialization.ground_flow) ->
+          (* Check if destination path looks like a destructor (dec.dtor) *)
+          let path_str = Path.name flow.dst in
+          if String.contains path_str '.' then
+            let existing = 
+              match Path.find_opt flow.dst acc with
+                Some _lst -> flow.src  (* Take the first/most recent for now *)
+              | None -> flow.src
+            in
+            Path.add flow.dst existing acc
+          else
+            acc
+        ) Path.emptytbl flows
+      in
+      
+      let ctx = { mono_infos; dtor_flows } in
       
       (* Transform all definitions *)
       let* transformed_defs = traverse_result (Path.to_list exe.defs |> List.map (fun (path, def) ->

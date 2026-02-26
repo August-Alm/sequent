@@ -34,7 +34,7 @@ let pass_count = ref 0
 
 let ( let* ) = Result.bind
 
-let run_test ~name ~expected (source: string) =
+let run_test ?(trace=false) ~name ~expected (source: string) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
@@ -106,7 +106,7 @@ let run_test ~name ~expected (source: string) =
     
     (* Stage 9: Evaluate *)
     let* (final_cmd, final_env, steps) = 
-      Pipe.FocusedStage.eval focused_main focused_defs in
+      Pipe.FocusedStage.eval ~trace focused_main focused_defs in
     Printf.printf "9. Evaluate: OK (%d steps)\n" steps;
     
     (* Extract result using the semantics helper *)
@@ -390,20 +390,15 @@ let nats: stream(int) = ints_from(0)
 let take{e}(s: stream(e))(n: int): foldable(e) =
   new foldable(e)
   { fold{e}{t}(alg) =>
-      ifz(0) then
+      ifz(n) then
         nil{e}{t}(alg)
       else
         match next{e}(s) with
         { none{_} => nil{e}{t}(alg)
         ; some{_}(s') =>
-            let s'' =
-              new stream(e)
-              { state => state{e}(s')
-              ; next => next{e}(s)
-              } in
-            let rest = take{e}(s'')(n - 1) in
+            let rest = take{e}(s')(n - 1) in
             let folded_rest = fold{e}{t}(rest)(alg) in
-            cons{e}{t}(alg)(state{e}(s'))(folded_rest)
+            cons{e}{t}(alg)(state{e}(s))(folded_rest)
         }
   }
 

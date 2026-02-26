@@ -61,7 +61,7 @@ let rec pp_core_term (tm: CTm.term) : string =
       Printf.sprintf "%s(%s)" 
         (Path.name xtor)
         (String.concat ", " (List.map pp_core_term args))
-  | CTm.Dtor (dec, xtor, args) ->
+  | CTm.Dtor (dec, xtor, _exist_tys, args) ->
       let _ = dec in  (* dec context is implicit in xtor path *)
       Printf.sprintf "%s(%s)"
         (Path.name xtor)

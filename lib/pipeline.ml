@@ -178,11 +178,11 @@ module FocusedStage = struct
       | Error msg -> Error msg
 
   (** Returns the final command, environment, and step count *)
-  let eval (main: FTerms.definition) (defs: FTerms.definition Path.tbl)
+  let eval ?(trace=false) (main: FTerms.definition) (defs: FTerms.definition Path.tbl)
       : (FTerms.command * FMachine.env * int, string) result =
     try
       let env = { FMachine.empty_env with defs = defs } in
-      let ((cmd, env), steps) = FMachine.run (main.body, env) in
+      let ((cmd, env), steps) = FMachine.run ~trace (main.body, env) in
       Ok (cmd, env, steps)
     with e ->
       Error (Printf.sprintf "Evaluation error: %s" (Printexc.to_string e))

@@ -197,7 +197,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
             | CTm.Lit n -> string_of_int n
             | CTm.Ctor (dec, xtor, _) ->
                 Printf.sprintf "Ctor(%s, %s, ...)" (Path.name dec.CTy.name) (Path.name xtor)
-            | CTm.Dtor (dec, xtor, _) ->
+            | CTm.Dtor (dec, xtor, _, _) ->
                 Printf.sprintf "Dtor(%s, %s, ...)" (Path.name dec.CTy.name) (Path.name xtor)
             | CTm.Match (dec, _) ->
                 Printf.sprintf "Match(%s, ...)" (Path.name dec.CTy.name)

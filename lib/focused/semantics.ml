@@ -149,14 +149,15 @@ let step ((cmd, e): config) : config option =
        | _ -> failwith "switch: expected data value")
 
   (* (invoke) ⟨v.m(args) ∥ E, v → {E0; bs}⟩ → ⟨b ∥ E0[params↦E(args)]⟩
-     Invokes a codata value: find matching branch, bind args to params *)
+     Invokes a codata value: find matching branch, bind args to params.
+     Body runs in the CAPTURED env extended with args, not merged with current. *)
   | Invoke (v, _, m, args) ->
       (match lookup e v with
        | CodataVal (e0, branches) ->
            let (_, _, params, branch_body) = select_branch m branches in
            let arg_vals = List.map (fun a -> lookup e a) args in
-           let e_merged = merge_env e0 e in
-           let e' = List.fold_left2 extend e_merged params arg_vals in
+           (* Use captured e0 extended with args, don't merge current env *)
+           let e' = List.fold_left2 extend { e0 with defs = e.defs } params arg_vals in
            Some (branch_body, e')
        | _ -> failwith "invoke: expected codata value")
 
@@ -184,19 +185,19 @@ let step ((cmd, e): config) : config option =
                 let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v_x); (_, v_y)] ->
-                     let e' = extend (extend (merge_env e0 e) px v_x) py v_y in
+                     let e' = extend (extend { e0 with defs = e.defs } px v_x) py v_y in
                      Some (s, e')
                  | _ -> failwith "axiom: fun expected 2 args")
             | _ -> failwith "axiom: expected data on the left for fun")
        | Some (ForallVal (e0, _, s)) ->
-           Some (s, merge_env e0 e)
+           Some (s, { e0 with defs = e.defs })
        | Some (ThunkVal (e0, px, s)) ->
            (match lookup e v1 with
             | DataVal (_, e1) ->
                 let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v0)] ->
-                     let e' = extend (merge_env e0 e) px v0 in
+                     let e' = extend { e0 with defs = e.defs } px v0 in
                      Some (s, e')
                  | _ -> failwith "axiom: thunk expected 1 arg")
             | _ -> failwith "axiom: expected data on the left for thunk")
@@ -206,7 +207,7 @@ let step ((cmd, e): config) : config option =
                 let e1_list = List.rev (Ident.to_list e1.values) in
                 (match e1_list with
                  | [(_, v0)] ->
-                     let e' = extend (merge_env e0 e) px v0 in
+                     let e' = extend { e0 with defs = e.defs } px v0 in
                      Some (s, e')
                  | _ -> failwith "axiom: return expected 1 arg")
             | _ -> failwith "axiom: expected data on the left for return")
@@ -300,9 +301,23 @@ let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * 
   if steps > max_steps then
     failwith (Printf.sprintf "[LOOP] Machine exceeded %d steps" max_steps);
   let (cmd, e) = cfg in
-  if trace then 
-    Printf.printf "    [%d] %s | env has %d bindings\n"
+  if trace then begin
+    Printf.printf "    [%d] %s | env has %d bindings"
       steps (cmd_name cmd) (List.length (Ident.to_list e.values));
+    (* Extra info for ifz and arithmetic *)
+    (match cmd with
+    | Ifz (v, _, _) -> 
+        (try Printf.printf " [ifz val = %d]" (lookup_int e v)
+         with _ -> Printf.printf " [ifz val = ?]")
+    | Add (a, b, _, _) ->
+        (try Printf.printf " [%d + %d]" (lookup_int e a) (lookup_int e b)
+         with _ -> Printf.printf " [? + ?]")
+    | Axiom (_, v, _) ->
+        (try Printf.printf " [val = %d]" (lookup_int e v)
+         with _ -> ())
+    | _ -> ());
+    Printf.printf "\n"
+  end;
   match step cfg with
   | None -> (cfg, steps)
   | Some cfg' -> run ~trace ~steps:(steps + 1) ~max_steps cfg'

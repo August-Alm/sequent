@@ -105,7 +105,7 @@ let rec subst_term (ts: TySub.t) (t: CTm.term) : CTm.term =
   match t with
   | CTm.Var v -> CTm.Var v
   | CTm.Ctor (dec, c, args) -> CTm.Ctor (subst_dec ts dec, c, List.map (subst_term ts) args)
-  | CTm.Dtor (dec, c, args) -> CTm.Dtor (subst_dec ts dec, c, List.map (subst_term ts) args)
+  | CTm.Dtor (dec, c, exist_tys, args) -> CTm.Dtor (subst_dec ts dec, c, List.map (subst_type ts) exist_tys, List.map (subst_term ts) args)
   | CTm.Match (dec, bs) -> CTm.Match (subst_dec ts dec, List.map (subst_branch ts) bs)
   | CTm.Comatch (dec, bs) -> CTm.Comatch (subst_dec ts dec, List.map (subst_branch ts) bs)
   | CTm.MuPrd (ty, v, cmd) -> CTm.MuPrd (subst_type ts ty, v, subst_command ts cmd)
@@ -351,7 +351,7 @@ module Transform = struct
         let a = Ident.fresh () in
         Target.LetComatch (dec, transform_branches ctx bs h, a, k Sub.empty a)
 
-    | CTm.Dtor (dec, c, args) ->
+    | CTm.Dtor (dec, c, _exist_tys, args) ->
         (* bindTerms args h (\i vs => LetDestructor n vs (k (Comp i Weak) Z)) *)
         bind_terms ctx args h (fun i vs ->
           let a = Ident.fresh () in
@@ -632,21 +632,42 @@ module Transform = struct
             ) dec.xtors in
             Target.LetComatch (dec, branches, a', transform_command ctx r (Sub.add a a' h))
         | None ->
-            (* Type variable - can't eta expand.
-              Use AdministrativeTyped to represent ⟨µα.s | µ~x.r⟩_T *)
+            (* Not a data/codata type - could be a type variable or external type *)
             (match ty with
             | CTy.TVar tvar ->
+                (* Type variable - can't eta expand.
+                  Use AdministrativeTyped to represent ⟨µα.s | µ~x.r⟩_T *)
                 let x' = Ident.fresh () in
                 let a' = Ident.fresh () in
                 let s' = transform_command ctx s (Sub.add x x' h) in
                 let r' = transform_command ctx r (Sub.add a a' h) in
                 Target.AdministrativeTyped (tvar, x', s', a', r')
+            | CTy.Ext Int ->
+                (* External Int type - for ⟨μ+x.s | μ-a.r⟩ at Int, we need to 
+                   create an int continuation. Use LetNewInt to handle this.
+                   LetNewInt(k, v, branch, cont) represents:
+                     new k = { v => branch }; cont
+                   where k is an int continuation (Cns Int) and v is the 
+                   value received (Prd Int).
+                   
+                   For ⟨μ+x.s | μ-a.r⟩:
+                   - x is the continuation (Cns Int in Core)
+                   - a is the value (Prd Int in Core)
+                   - s runs with x available
+                   - r runs when x is invoked, with a bound to the received value
+                   
+                   So we create: new x = { a => r }; s  *)
+                let x' = Ident.fresh () in
+                let a' = Ident.fresh () in
+                let s' = transform_command ctx s (Sub.add x x' h) in
+                let r' = transform_command ctx r (Sub.add a a' h) in
+                Target.LetNewInt (x', a', r', s')
             | _ ->
-                (* TODO: Handle Forall types! *)
-                failwith "Double-mu cut at unknown type: expected TVar"))
+                (* Other external/unknown types - shouldn't happen after monomorphization *)
+                failwith (Printf.sprintf "Double-mu cut at unsupported type")))
 
     (* CutNeg (Variable x) (Destructor n as) *)
-    | CTm.Cut (_, CTm.Var x, CTm.Dtor (dec, c, args)) ->
+    | CTm.Cut (_, CTm.Var x, CTm.Dtor (dec, c, _exist_tys, args)) ->
         bind_terms ctx args h (fun i vs ->
           Target.CutDtor (dec, c, Sub.apply (Sub.compose h i) x, vs))
 
@@ -655,7 +676,7 @@ module Transform = struct
         Target.CutComatch (dec, transform_branches ctx bs h, Sub.apply h y)
 
     (* CutNeg (Comatch bs) (Destructor n as) - lookup and inline *)
-    | CTm.Cut (_, CTm.Comatch (_, bs), CTm.Dtor (_, c, args)) ->
+    | CTm.Cut (_, CTm.Comatch (_, bs), CTm.Dtor (_, c, _exist_tys, args)) ->
         bind_terms ctx args h (fun i vs ->
           Target.lookup_branch (transform_branches ctx bs (Sub.compose h i)) c vs)
 
@@ -666,7 +687,7 @@ module Transform = struct
           transform_command ctx r (Sub.add a a' h))
 
     (* CutNeg (MuLhsNeg s) (Destructor n as) *)
-    | CTm.Cut (_, CTm.MuPrd (_, x, s), CTm.Dtor (dec, c, args)) ->
+    | CTm.Cut (_, CTm.MuPrd (_, x, s), CTm.Dtor (dec, c, _exist_tys, args)) ->
         bind_terms ctx args h (fun i vs ->
           let z = Ident.fresh () in
           Target.LetDtor (dec, c, vs, z, transform_command ctx s (Sub.add x z (Sub.compose h i))))

@@ -109,13 +109,15 @@ let rec pp_term ?(cfg=default_config) (tm: term) : string =
       let args_str = comma_sep (List.map (pp_term ~cfg) args) in
       pp_sym xtor ^ ty_args ^ parens args_str
   
-  | Dtor (dec, xtor, []) ->
+  | Dtor (dec, xtor, exist_tys, []) ->
       let ty_args = pp_type_args dec.type_args in
-      pp_sym xtor ^ ty_args
-  | Dtor (dec, xtor, args) ->
+      let exist_args = if exist_tys = [] then "" else "[" ^ comma_sep (List.map pp_typ exist_tys) ^ "]" in
+      pp_sym xtor ^ ty_args ^ exist_args
+  | Dtor (dec, xtor, exist_tys, args) ->
       let ty_args = pp_type_args dec.type_args in
+      let exist_args = if exist_tys = [] then "" else "[" ^ comma_sep (List.map pp_typ exist_tys) ^ "]" in
       let args_str = comma_sep (List.map (pp_term ~cfg) args) in
-      pp_sym xtor ^ ty_args ^ parens args_str
+      pp_sym xtor ^ ty_args ^ exist_args ^ parens args_str
   
   | Match (dec, branches) ->
       let ty_args = pp_type_args dec.type_args in

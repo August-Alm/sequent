@@ -31,7 +31,8 @@ and term =
   (* Parameters are instantiated declaration, ctor symbol, and terms *)
   | Ctor of dec * sym * (term list)
   (* Destructors consume codata (are consumers) *)
-  | Dtor of dec * sym * (term list)
+  (* Parameters: instantiated declaration, dtor symbol, existential type args, term args *)
+  | Dtor of dec * sym * (typ list) * (term list)
   (* Match consumes data (consumer) *)
   (* First argument is instantiated declaration *)
   | Match of dec * (branch list)
@@ -338,13 +339,17 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
             (fun c tm -> infer_typ c subs tm) subs in
           (* Ctor produces Prd (producer) of the result type *)
           Ok (Prd inst_main, subs'))
-  | Dtor (dec, xtor_name, term_args) ->
+  | Dtor (dec, xtor_name, exist_ty_args, term_args) ->
       (* dec is already instantiated - just find the xtor and use its types directly *)
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
-          (* Freshen existentials for this usage *)
-          let inst_args, inst_main = freshen_xtor_existentials xtor in
+          (* Apply existential type args to specialize the xtor *)
+          let exist_subst = List.fold_left2 (fun s (v, _k) ty ->
+            Ident.add v ty s
+          ) Ident.emptytbl xtor.existentials exist_ty_args in
+          let inst_args = List.map (chiral_map (apply_fresh_subst exist_subst)) xtor.argument_types in
+          let inst_main = apply_fresh_subst exist_subst xtor.main in
           let* subs' = check_xtor_args ctx xtor_name inst_args term_args
             (fun c tm -> infer_typ c subs tm) subs in
           (* Dtor produces Cns (consumer) of the result type *)

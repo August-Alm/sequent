@@ -372,7 +372,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       (* Build the application command *)
       let build_app_cmd (result_cont: CTm.term) : CTm.command =
         make_cut inner_fun_ty (CTm.Var g)
-          (CTm.Dtor (fun_dec, Prim.apply_sym, [result_cont; wrapped_arg]))
+          (CTm.Dtor (fun_dec, Prim.apply_sym, [], [result_cont; wrapped_arg]))
       in
       
       (match cod with
@@ -383,7 +383,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
           let thunk = Ident.fresh () in
           let ret = Ident.fresh () in
           let force_cmd = make_cut cod (CTm.Var thunk)
-            (CTm.Dtor (lower_dec, Prim.return_sym, [CTm.Var ret])) in
+            (CTm.Dtor (lower_dec, Prim.return_sym, [], [CTm.Var ret])) in
           let force_continuation = CTm.MuCns (cod, thunk, force_cmd) in
           CTm.MuPrd (result_ty', ret,
             make_cut f_ty f'
@@ -484,7 +484,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       let args' = List.map (encode_term ctx) args in
       (* Get the original dec to find how many params it has *)
       let orig_dec = match Path.find_opt dec ctx.types.decs with
-        | Some d -> d
+          Some d -> d
         | None -> failwith ("Unknown declaration: " ^ Path.name dec)
       in
       let n_dec_params = List.length orig_dec.param_kinds in
@@ -504,11 +504,12 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
       (* Get the original dec to find how many params it has *)
       let orig_dec = match Path.find_opt dec ctx.types.decs with
-        | Some d -> d
+          Some d -> d
         | None -> failwith ("Unknown declaration: " ^ Path.name dec)
       in
       let n_dec_params = List.length orig_dec.param_kinds in
       let dec_type_args = List.filteri (fun i _ -> i < n_dec_params) ty_args' in
+      let exist_type_args = List.filteri (fun i _ -> i >= n_dec_params) ty_args' in
       let inst_dec = get_instantiated_dec ctx dec dec_type_args in
       (match args with
         [] -> failwith "Dtor must have at least a subject argument"
@@ -537,7 +538,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
                   (* In Core, dtor args are: [continuation, rest args reversed]
                      The continuation (alpha) comes FIRST *)
                   make_cut inner_codata_ty (CTm.Var g)
-                    (CTm.Dtor (inst_dec, dtor, [CTm.Var alpha] @ rest')))]))))
+                    (CTm.Dtor (inst_dec, dtor, exist_type_args, [CTm.Var alpha] @ rest')))]))))
 
   | MTm.TypedIfz (cond, then_br, else_br, ty) ->
       (* ifz cond then t else e → μα.ifz(cond', ⟨then' | α⟩, ⟨else' | α⟩) *)

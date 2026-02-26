@@ -142,8 +142,21 @@ let rec generate_for_term (tm: Terms.term): unit gen =
       let+ () = iter dec.type_args generate_for_typ in
       iter args generate_for_term
   
-  | Dtor (dec, _xtor, args) ->
+  | Dtor (dec, xtor, exist_tys, args) ->
+      (* Process declaration type args *)
       let+ () = iter dec.type_args generate_for_typ in
+      
+      (* KEY: Emit flow constraint for existential type args!
+         When we have Dtor(fold, [int], ...), emit [int] → fold_path
+         so that comatch branches bound to fold_path get instantiated. *)
+      let dtor_path = Path.access dec.name (Path.name xtor) in
+      let+ mono_args = traverse exist_tys typ_to_mono_arg in
+      let+ () = 
+        if List.length mono_args > 0 then
+          emit [{ input = Vector mono_args; dst = dtor_path }]
+        else
+          return ()
+      in
       iter args generate_for_term
   
   | Match (dec, branches) ->
@@ -152,7 +165,10 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   
   | Comatch (dec, branches) ->
       let+ () = iter dec.type_args generate_for_typ in
-      iter branches generate_for_branch
+      (* For each branch, emit a Forward from destructor path to current def,
+         and bind branch type vars to the destructor's path so destructor
+         existential instantiations flow to the branch. *)
+      iter branches (generate_for_comatch_branch dec)
   
   | MuPrd (_typ, _var, cmd) ->
       generate_for_command cmd
@@ -166,9 +182,44 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   | InstantiateDtor _typ ->
       return ()
 
-(** Generate constraints for a branch *)
+(** Generate constraints for a branch (used for Match) *)
 and generate_for_branch ((_xtor, _tyvars, _tmvars, cmd): Terms.branch): unit gen =
   generate_for_command cmd
+
+(** Generate constraints for a comatch branch.
+    
+    This is the key to destructor existential specialization:
+    When we have a Comatch like:
+      comatch { fold[t](x) => ... }
+    and a destructor call like:
+      Dtor(fold, [int], ...)
+    
+    We need the [int] to flow to the branch's type variable t.
+    
+    We achieve this by:
+    1. Binding the branch's type vars to the DESTRUCTOR's path (not the enclosing def)
+    2. Emitting a Forward constraint from destructor path to current def
+       (so that instantiations propagate transitively)
+*)
+and generate_for_comatch_branch (dec: dec) ((xtor, tyvars, _tmvars, cmd): Terms.branch): unit gen =
+  (* Build the destructor's path: declaration path + destructor name *)
+  let dtor_path = Path.access dec.name (Path.name xtor) in
+  
+  (* Bind branch type variables to the destructor's path, not the current def.
+     This way, when Dtor(fold, [int], ...) emits [int] → fold_path,
+     the branch's type var t (bound to fold_path index 0) will get int. *)
+  let tparams_indexed = List.mapi (fun i v -> (v, i)) tyvars in
+  
+  (* Generate body with type vars bound to destructor path *)
+  let+ _ctx = get_context in
+  fun ctx ->
+    let tparam_map = List.fold_left (fun tbl (v, i) ->
+      Ident.add v (dtor_path, i) tbl
+    ) ctx.tparam_map tparams_indexed in
+    let ((), flows) = generate_for_command cmd { ctx with tparam_map } in
+    (* Also emit a Forward from destructor path to current def for transitive flow *)
+    let forward_flow = { input = Forward dtor_path; dst = ctx.current_def } in
+    ((), forward_flow :: flows)
 
 (** Find the definition path if this term contains a Call returning a forall type.
     This handles patterns like: MuPrd(∀a.T, k, Call(f, [], [Var k])) *)
