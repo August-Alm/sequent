@@ -223,7 +223,9 @@ module Target = struct
     | LetInt of int * Ident.t * command
     | LetNewInt of Ident.t * Ident.t * command * command  (* new k = { v => branch }; cont - int continuation *)
     | CutInt of Ident.t * Ident.t
-    | CutTyped of CTy.typ * Ident.t * Ident.t
+    (* Administrative cuts at type variables (should be eliminated by monomorphization) *)
+    | CutTyped of Ident.t * Ident.t * Ident.t  (* tvar, producer, consumer *)
+    | AdministrativeTyped of Ident.t * Ident.t * command * Ident.t * command  (* tvar, x, s1, a, s2 for ⟨µα.s1 | µ~x.s2⟩_T *)
     | Add of Ident.t * Ident.t * Ident.t * command
     | Sub of Ident.t * Ident.t * Ident.t * command
     | Ifz of Ident.t * command * command
@@ -270,7 +272,10 @@ module Target = struct
         let k' = Ident.fresh () in let v' = Ident.fresh () in
         LetNewInt (k', v', rename (Sub.add v v' (Sub.add k k' h)) branch, rename (Sub.add k k' h) cont)
     | CutInt (x, a) -> CutInt (Sub.apply h x, Sub.apply h a)
-    | CutTyped (ty, x, a) -> CutTyped (ty, Sub.apply h x, Sub.apply h a)
+    | CutTyped (tvar, x, a) -> CutTyped (tvar, Sub.apply h x, Sub.apply h a)
+    | AdministrativeTyped (tvar, x, s1, a, s2) ->
+        let x' = Ident.fresh () in let a' = Ident.fresh () in
+        AdministrativeTyped (tvar, x', rename (Sub.add x x' h) s1, a', rename (Sub.add a a' h) s2)
     | Add (x, y, k, cont) ->
         let k' = Ident.fresh () in Add (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
     | Sub (x, y, k, cont) ->
@@ -366,8 +371,29 @@ module Transform = struct
             let x' = Ident.fresh () in
             Target.LetMatch (dec, branches, x', transform_command ctx s (Sub.add x x' h))
         | None ->
-            (* Primitive type (int): transform s, inlining k at cuts to x *)
-            transform_command_with_cont ctx s h x k)
+            (match ty with
+            | CTy.Ext _ ->
+                (* Primitive type (int): create a continuation to capture the result.
+                   We create LetNewInt to make a new continuation that calls k when a value arrives. *)
+                let cont_var = Ident.fresh () in
+                let result_var = Ident.fresh () in
+                Target.LetNewInt (cont_var, result_var,
+                  k Sub.empty result_var,  (* when result arrives, call k *)
+                  transform_command ctx s (Sub.add x cont_var h))  (* pass cont_var as the continuation *)
+            | CTy.TVar tvar ->
+                (* Type variable: can't eta-expand.
+                   Use AdministrativeTyped: ⟨µα.s | µ~z.k(z)⟩_T
+                   s is the body (producer), k(z) is the continuation (consumer) *)
+                let x' = Ident.fresh () in  (* bound in s *)
+                let z = Ident.fresh () in   (* bound in continuation *)
+                let s' = transform_command ctx s (Sub.add x x' h) in
+                let k_body = k Sub.empty z in
+                Target.AdministrativeTyped (tvar, x', s', z, k_body)
+            | CTy.Forall _ ->
+                (* Forall is handled specially in transform_command *)
+                failwith "bind_term MuPrd at Forall: should be handled elsewhere"
+            | _ ->
+                failwith "bind_term MuPrd: unexpected type"))
 
     | CTm.MuCns (ty, a, s) ->
         (* MuRhsNeg (consumer, codata type focus) 
@@ -378,18 +404,37 @@ module Transform = struct
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
-              (xtor.name, [], ps, Target.LetDtor (dec, xtor.name, ps, z, k Sub.empty z))
+              (xtor.name, [], ps,
+                Target.LetDtor (dec, xtor.name, ps, z, k Sub.empty z))
             ) dec.xtors in
             let a' = Ident.fresh () in
-            Target.LetComatch (dec, branches, a', transform_command ctx s (Sub.add a a' h))
+            Target.LetComatch (dec, branches, a',
+              transform_command ctx s (Sub.add a a' h))
         | None ->
-            (* Primitive type (int): transform s, inlining k at cuts from a *)
-            transform_command_with_prd_cont ctx s h a k)
+            (match ty with
+            | CTy.Ext _ ->
+                (* Primitive type (int): transform s, inlining k at cuts from a *)
+                transform_command_with_prd_cont ctx s h a k
+            | CTy.TVar tvar ->
+                (* Type variable: can't eta-expand.
+                   Use AdministrativeTyped: ⟨µα.k(z) | µ~z.s[a:=z]⟩_T
+                   where k is the continuation producing a value z, and s consumes from a *)
+                let z = Ident.fresh () in   (* bound in producer from k *)
+                let a' = Ident.fresh () in  (* bound in s *)
+                let k_body = k Sub.empty z in  (* producer side: "what we do with result" *)
+                let s' = transform_command ctx s (Sub.add a a' h) in  (* consumer side: "how to produce" *)
+                Target.AdministrativeTyped (tvar, z, k_body, a', s')
+            | CTy.Forall _ ->
+                (* Forall is handled specially in transform_command *)
+                failwith "bind_term MuCns at Forall: should be handled elsewhere"
+            | _ ->
+                failwith "bind_term MuCns: unexpected type"))
 
     | CTm.NewForall (_a, k_ty, body_ty, body) ->
         let v = Ident.fresh () in
         let a' = Ident.fresh () in
-        Target.LetNewForall (a', k_ty, body_ty, transform_command ctx body h, v, k Sub.empty v)
+        Target.LetNewForall (a', k_ty, body_ty,
+          transform_command ctx body h, v, k Sub.empty v)
 
     | CTm.InstantiateDtor ty_arg ->
         let a = Ident.fresh () in
@@ -408,17 +453,6 @@ module Transform = struct
           bind_terms ctx rest (Sub.compose h i) (fun j vs ->
             k (Sub.compose i j) (Sub.apply j v :: vs)))
 
-  (* Like bind_terms but threads target continuation through *)
-  and bind_terms_with_cont (ctx: focus_ctx) (terms: CTm.term list) (h: Sub.t)
-      (target_cns: Ident.t) (outer_k: Sub.t -> Ident.t -> Target.command)
-      (k: Sub.t -> Ident.t list -> Target.command) : Target.command =
-    match terms with
-    | [] -> k Sub.empty []
-    | t :: rest ->
-        bind_term_with_cont ctx t h target_cns outer_k (fun i v ->
-          bind_terms_with_cont ctx rest (Sub.compose h i) target_cns outer_k (fun j vs ->
-            k (Sub.compose i j) (Sub.apply j v :: vs)))
-
   (* Transform command for MuPrd at primitive type.
     When we hit a cut that sends to the target consumer variable,
     we inline the continuation k instead of creating CutInt. *)
@@ -428,116 +462,45 @@ module Transform = struct
     (* The key case: Cut at Ext type where rhs is our target variable *)
     | CTm.Cut (CTy.Ext _, lhs, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
         (* Instead of CutInt(lhs', target), call k with lhs' *)
-        bind_term_with_cont ctx lhs h target_cns k (fun i v -> k i v)
+        bind_term ctx lhs h (fun i v -> k i v)
         
     (* For Add/Sub, check if the continuation IS the target *)
     | CTm.Add (m, n, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
         (* The result of this add should flow to k, not to cns_var *)
-        bind_term_with_cont ctx m h target_cns k (fun i m' ->
-          bind_term_with_cont ctx n (Sub.compose h i) target_cns k (fun j n' ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
             let r = Ident.fresh () in
             Target.Add (m', Sub.apply j n', r, k (Sub.compose i j) r)))
             
     | CTm.Sub (m, n, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
-        bind_term_with_cont ctx m h target_cns k (fun i m' ->
-          bind_term_with_cont ctx n (Sub.compose h i) target_cns k (fun j n' ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
             let r = Ident.fresh () in
             Target.Sub (m', Sub.apply j n', r, k (Sub.compose i j) r)))
               
     (* General Add/Sub - the continuation is NOT our target, recurse normally *)
     | CTm.Add (m, n, cns) ->
-        bind_term_with_cont ctx m h target_cns k (fun i m' ->
-          bind_term_with_cont ctx n (Sub.compose h i) target_cns k (fun j n' ->
-            bind_term_with_cont ctx cns (Sub.compose (Sub.compose h i) j) target_cns k (fun _l k' ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
               let r = Ident.fresh () in
               Target.Add (m', Sub.apply j n', r, Target.CutInt (r, k')))))
               
     | CTm.Sub (m, n, cns) ->
-        bind_term_with_cont ctx m h target_cns k (fun i m' ->
-          bind_term_with_cont ctx n (Sub.compose h i) target_cns k (fun j n' ->
-            bind_term_with_cont ctx cns (Sub.compose (Sub.compose h i) j) target_cns k (fun _l k' ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
               let r = Ident.fresh () in
               Target.Sub (m', Sub.apply j n', r, Target.CutInt (r, k')))))
 
     | CTm.Ifz (cond, s1, s2) ->
-        bind_term_with_cont ctx cond h target_cns k (fun _i v ->
+        bind_term ctx cond h (fun _i v ->
           Target.Ifz (v,
             transform_command_with_cont ctx s1 h target_cns k,
             transform_command_with_cont ctx s2 h target_cns k))
-            
-    (* Call where one of the args contains our target continuation 
-       We need to create a continuation object that applies k *)
-    | CTm.Call (path, tys, args) ->
-        (* Check if target_cns appears anywhere in args (including nested) *)
-        let rec term_contains_target = function
-          | CTm.Var x -> Ident.equal x target_cns
-          | CTm.Ctor (_, _, inner_args) -> List.exists term_contains_target inner_args
-          | CTm.Dtor (_, _, inner_args) -> List.exists term_contains_target inner_args
-          | CTm.MuPrd (_, _, _) -> false (* Don't look inside bindings *)
-          | CTm.MuCns (_, _, _) -> false
-          | _ -> false
-        in
-        let has_target = List.exists term_contains_target args in
-        if has_target then
-          (* Bind all args with continuation threading *)
-          bind_terms_with_cont ctx args h target_cns k (fun _h vs -> 
-            Target.Call (path, tys, vs))
-        else
-          (* No target in args, use regular transform *)
-          bind_terms ctx args h (fun _i vs -> Target.Call (path, tys, vs))
 
     (* Fall back to regular transformation for other cases *)
     | _ -> transform_command ctx cmd h
-
-  (* bind_term variant that threads the continuation target through MuPrd *)
-  and bind_term_with_cont (ctx: focus_ctx) (term: CTm.term) (h: Sub.t)
-      (target_cns: Ident.t) (outer_k: Sub.t -> Ident.t -> Target.command)
-      (k: Sub.t -> Ident.t -> Target.command) : Target.command =
-    match term with
-    | CTm.Var x when Ident.equal x target_cns ->
-        (* This IS the target continuation - create a LetNewInt to capture result *)
-        let cont_var = Ident.fresh () in
-        let result_var = Ident.fresh () in
-        Target.LetNewInt (cont_var, result_var,
-          outer_k Sub.empty result_var,  (* when result arrives, call outer_k *)
-          k Sub.empty cont_var)           (* return cont_var to caller *)
-          
-    | CTm.Var x ->
-        k Sub.empty (Sub.apply h x)
-        
-    | CTm.MuPrd (ty, x, s) ->
-        (match get_dec_from_type ctx.decs ty with
-        | Some dec ->
-            let branches = List.map (fun (xtor: CTy.xtor) ->
-              let ps = fresh_params xtor.argument_types in
-              let z = Ident.fresh () in
-              (xtor.name, [], ps, Target.LetCtor (dec, xtor.name, ps, z, k Sub.empty z))
-            ) dec.xtors in
-            let x' = Ident.fresh () in
-            Target.LetMatch (dec, branches, x', 
-              transform_command_with_cont ctx s (Sub.add x x' h) target_cns outer_k)
-        | None ->
-            (* Nested primitive MuPrd - compose continuations *)
-            transform_command_with_cont ctx s h x k)
-            
-    | CTm.Lit n ->
-        let v = Ident.fresh () in
-        Target.LetInt (n, v, k Sub.empty v)
-    
-    (* Ctor: use bind_terms_with_cont to handle nested target *)
-    | CTm.Ctor (dec, c, args) ->
-        bind_terms_with_cont ctx args h target_cns outer_k (fun i vs ->
-          let x = Ident.fresh () in
-          Target.LetCtor (dec, c, vs, x, k i x))
-    
-    (* Dtor: use bind_terms_with_cont to handle nested target *)
-    | CTm.Dtor (dec, c, args) ->
-        bind_terms_with_cont ctx args h target_cns outer_k (fun i vs ->
-          let a = Ident.fresh () in
-          Target.LetDtor (dec, c, vs, a, k i a))
-        
-    (* Other terms: use regular bind_term *)
-    | _ -> bind_term ctx term h k
 
   (* Transform command for MuCns at primitive type.
     When we hit a cut where the producer is our target variable,
@@ -601,7 +564,10 @@ module Transform = struct
               ) dec.xtors,
               Sub.apply h y)
         | None ->
-            Target.CutTyped (ty, Sub.apply h x, Sub.apply h y))
+            (match ty with
+            | CTy.TVar tvar -> Target.CutTyped (tvar, Sub.apply h x, Sub.apply h y)
+            | CTy.Ext _ -> Target.CutInt (Sub.apply h x, Sub.apply h y)
+            | _ -> failwith "Var/Var cut at unexpected non-declared, non-tvar, non-ext type"))
 
     (* CutPos (Variable x) (Match bs) *)
     | CTm.Cut (CTy.Sgn _, CTm.Var x, CTm.Match (dec, bs)) ->
@@ -625,7 +591,8 @@ module Transform = struct
     | CTm.Cut (_, CTm.Ctor (dec, c, args), CTm.MuCns (_, a, r)) ->
         bind_terms ctx args h (fun i vs ->
           let z = Ident.fresh () in
-          Target.LetCtor (dec, c, vs, z, transform_command ctx r (Sub.add a z (Sub.compose h i))))
+          Target.LetCtor (dec, c, vs, z,
+            transform_command ctx r (Sub.add a z (Sub.compose h i))))
 
     (* CutPos (MuLhsPos s) (Variable y) => transform s with y substituted *)
     | CTm.Cut (_, CTm.MuPrd (_, x, s), CTm.Var y) ->
@@ -665,11 +632,18 @@ module Transform = struct
             ) dec.xtors in
             Target.LetComatch (dec, branches, a', transform_command ctx r (Sub.add a a' h))
         | None ->
-            (* Type variable - can't eta expand, just substitute *)
-            let v = Ident.fresh () in
-            let s' = transform_command ctx s (Sub.add x v h) in
-            let _ = transform_command ctx r (Sub.add a v h) in
-            s')
+            (* Type variable - can't eta expand.
+              Use AdministrativeTyped to represent ⟨µα.s | µ~x.r⟩_T *)
+            (match ty with
+            | CTy.TVar tvar ->
+                let x' = Ident.fresh () in
+                let a' = Ident.fresh () in
+                let s' = transform_command ctx s (Sub.add x x' h) in
+                let r' = transform_command ctx r (Sub.add a a' h) in
+                Target.AdministrativeTyped (tvar, x', s', a', r')
+            | _ ->
+                (* TODO: Handle Forall types! *)
+                failwith "Double-mu cut at unknown type: expected TVar"))
 
     (* CutNeg (Variable x) (Destructor n as) *)
     | CTm.Cut (_, CTm.Var x, CTm.Dtor (dec, c, args)) ->
@@ -707,11 +681,15 @@ module Transform = struct
     | CTm.Cut (CTy.Forall (a, k_ty, body_ty), lhs, rhs) ->
         transform_cut_forall ctx a k_ty body_ty lhs rhs h
 
-    (* Generic fallback *)
+    (* Generic fallback - must be at a type variable *)
     | CTm.Cut (ty, lhs, rhs) ->
-        bind_term ctx lhs h (fun i lhs_v ->
-          bind_term ctx rhs (Sub.compose h i) (fun _j rhs_v ->
-            Target.CutTyped (ty, lhs_v, rhs_v)))
+        (match ty with
+        | CTy.TVar tvar ->
+            bind_term ctx lhs h (fun i lhs_v ->
+              bind_term ctx rhs (Sub.compose h i) (fun _j rhs_v ->
+                Target.CutTyped (tvar, lhs_v, rhs_v)))
+        | _ ->
+            failwith "Generic Cut fallback: expected TVar type")
 
   and transform_cut_forall (ctx: focus_ctx) (_a: Ident.t) (k_ty: CTy.typ) (body_ty: CTy.typ)
       (lhs: CTm.term) (rhs: CTm.term) (h: Sub.t) : Target.command =
@@ -787,7 +765,8 @@ module Collapse = struct
     | Target.LetNewInt (k, v, branch, cont) -> 
         FTm.NewInt (k, v, collapse_command ctx parity branch, collapse_command ctx parity cont)
     | Target.CutInt (x, k) -> FTm.Axiom (Int, x, k)
-    | Target.CutTyped _ -> failwith "Unexpected CutTyped -- should have been simplified"
+    | Target.CutTyped _ -> failwith "Unexpected CutTyped -- type variable not eliminated by monomorphization"
+    | Target.AdministrativeTyped _ -> failwith "Unexpected AdministrativeTyped -- type variable not eliminated by monomorphization"
     | Target.Add (x, y, k, cont) -> FTm.Add (x, y, k, collapse_command ctx parity cont)
     | Target.Sub (x, y, k, cont) -> FTm.Sub (x, y, k, collapse_command ctx parity cont)
     | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command ctx parity s1, collapse_command ctx parity s2)
