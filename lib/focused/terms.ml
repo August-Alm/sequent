@@ -333,7 +333,13 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
           let* v_ct = lookup_var ctx v in
-          let* v_ty = expect_cns v_ct in
+          (match expect_cns v_ct with
+          | Error e -> 
+              Printf.eprintf "CHIRALITY ERROR in Invoke %s.%s: v=%s expected Cns, got %s\n" 
+                (Path.name dec.name) (Path.name xtor_name) (Ident.name v)
+                (match v_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+              Error e
+          | Ok v_ty ->
           let expected_ty = Sgn (dec.name, dec.type_args) in
           (match unify v_ty expected_ty subs with
             None -> Error (UnificationFailed (v_ty, expected_ty))
@@ -341,20 +347,25 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               (* Freshen existentials - quantified is empty for instantiated dec *)
               let inst_args, _ = freshen_xtor_existentials xtor in
               check_xtor_args ctx xtor_name inst_args term_vars subs'
-              |> Result.map (fun _ -> ())))
+              |> Result.map (fun _ -> ()))))
 
   (* ⟨v | k⟩ at ty *)
   | Axiom (ty, v, k) ->
       let* v_ct = lookup_var ctx v in
       let* k_ct = lookup_var ctx k in
       let* v_ty = expect_prd v_ct in
-      let* k_ty = expect_cns k_ct in
+      (match expect_cns k_ct with
+      | Error e ->
+          Printf.eprintf "CHIRALITY ERROR in Axiom: k=%s expected Cns, got %s\n"
+            (Ident.name k) (match k_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+          Error e
+      | Ok k_ty ->
       (match unify v_ty (Ext ty) subs with
         None -> Error (UnificationFailed (v_ty, Ext ty))
       | Some subs' ->
           (match unify k_ty (Ext ty) subs' with
             None -> Error (UnificationFailed (k_ty, Ext ty))
-          | Some _ -> Ok ()))
+          | Some _ -> Ok ())))
 
   (* lit n { v => s } *)
   | Lit (_, v, body) ->
@@ -449,7 +460,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
                   (match exp_ct, arg_ct with
                   | Prd _, Prd _ | Cns _, Cns _ ->
                       check_args subs' params' args'
-                  | _ -> Error (ChiralityMismatch
+                  | _ -> 
+                      Printf.eprintf "CHIRALITY MISMATCH in Jump to %s:\n" (Path.name label);
+                      Printf.eprintf "  expected param chirality: %s\n" (match exp_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+                      Printf.eprintf "  actual arg %s chirality: %s\n" (Ident.name arg) (match arg_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+                      Error (ChiralityMismatch
                       { expected_chirality =
                           (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
                       ; actual = arg_ct
@@ -485,7 +500,11 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
               (match exp_ct, var_ct with
                 Prd _, Prd _ | Cns _, Cns _ ->
                   check_args (idx + 1) subs' exps' vars'
-              | _ -> Error (ChiralityMismatch
+              | _ -> 
+                  Printf.eprintf "CHIRALITY MISMATCH in xtor %s arg %d:\n" (Path.name xtor_name) idx;
+                  Printf.eprintf "  expected: %s\n" (match exp_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+                  Printf.eprintf "  actual var %s: %s\n" (Ident.name var) (match var_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
+                  Error (ChiralityMismatch
                   { expected_chirality =
                       (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
                   ; actual = var_ct

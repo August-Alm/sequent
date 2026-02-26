@@ -608,8 +608,7 @@ module TypeSystem(Base: BASE) = struct
   let fun_sgn a b = Sgn (Prim.fun_sym, [a; b])
 
   (* raise[a] is the positive (data) type wrapping a negative.
-     thunk constructor takes: (producer of a) - the wrapped codata value
-     Following simple.ml: raise[a] = Pos [[Lhs a]] *)
+    thunk constructor takes: (producer of a) - the wrapped codata value *)
   let thunk_xtor =
     let a = Ident.mk "a" in
     { name = Prim.thunk_sym
@@ -630,14 +629,13 @@ module TypeSystem(Base: BASE) = struct
   let raise_sgn a = Sgn (Prim.raise_sym, [a])
 
   (* lower[a] is the negative (codata) type wrapping a positive.
-     return destructor takes: (continuation: Cns a) - where to send the value
-     Following simple.ml: lower[a] = Neg [[Rhs a]] *)
+    return destructor takes: (continuation: Cns a) - where to send the value *)
   let return_xtor =
     let a = Ident.mk "a" in
     { name = Prim.return_sym
     ; quantified = [ (a, as_typ Base.data_polarity) ]
     ; existentials = []
-    ; argument_types = [ Base.mk_consumer (TVar a) ]  (* Rhs a = consumer continuation *)
+    ; argument_types = [ Base.mk_consumer (TVar a) ]  (* Rhs a = consumer *)
     ; main = Sgn (Prim.lower_sym, [TVar a])
     }
 
