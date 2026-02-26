@@ -59,6 +59,10 @@ let run_test ~name ~expected (source: string) =
     (* Stage 4: Encode to Core *)
     let* (core_decs, core_defs) = Pipe.MelcoreStage.encode decs norm_defs in
     print_endline "4. Encode to Core: OK";
+    (* Debug: print Core defs *)
+    Path.to_list core_defs |> List.iter (fun (p, (def: Core.Terms.definition)) ->
+      Printf.printf "   %s: %s\n" (Path.name p) (Core.Printing.command_to_string def.body)
+    );
     
     (* Stage 5: Core type-check *)
     let core_decs_tbl = List.fold_left (fun acc (dec: Core.Types.CoreTypes.dec) ->

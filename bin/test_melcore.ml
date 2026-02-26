@@ -242,7 +242,8 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
               (* Use MuCns to create a proper consumer binding, matching simple.ml's pattern *)
               let ret_consumer = CTm.MuCns (core_ty, ret, CTm.Ret (core_ty, CTm.Var ret)) in
               let core_cmd = CTm.Cut (core_ty, core_term, ret_consumer) in
-              let focused = Focus.focus_command core_cmd in
+              (* Pass empty decs for this simple test - no user-defined types *)
+              let focused = Focus.focus_command Path.emptytbl core_cmd in
               let focused_ty = Focus.focus_type core_ty in
               let closed = close_ret focused_ty focused in
               Printf.printf "%s\n" (FPrint.pp_command closed);

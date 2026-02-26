@@ -128,7 +128,7 @@ module CoreStage = struct
         ) decs mono_defs.new_declarations
       in
       let focused_decs = Focus.focus_decs decs_with_new in
-      let focused_main = Focus.focus_def mono_defs.main in
+      let focused_main = Focus.focus_def decs_with_new mono_defs.main in
       (* Close main's return continuation - main's term_params should have the 
          return continuation as the last parameter. Replace references to it with Ret. *)
       let closed_main = 
@@ -141,7 +141,7 @@ module CoreStage = struct
       in
       let focused_defs =
         List.fold_left (fun acc (def: CTerms.definition) ->
-          let focused_def = Focus.focus_def def in
+          let focused_def = Focus.focus_def decs_with_new def in
           Path.add focused_def.path focused_def acc
         ) Path.emptytbl mono_defs.definitions in
       Ok (focused_decs, closed_main, focused_defs)

@@ -439,8 +439,8 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
         | _ -> failwith "Match scrutinee must be data type"
       in
       let inst_dec = get_instantiated_dec ctx dec_name type_args in
-      let branches' = List.map (encode_match_branch ctx ty') branches in
       let alpha = Ident.fresh () in
+      let branches' = List.map (encode_match_branch ctx inst_dec ty' alpha) branches in
       CTm.MuPrd (ty', alpha,
         make_cut scrut_ty scrut' (CTm.Match (inst_dec, branches')))
 
@@ -460,7 +460,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
         | _ -> failwith "New type must be codata type"
       in
       let inst_dec = get_instantiated_dec ctx dec_name type_args in
-      let branches' = List.map (encode_new_branch ctx) branches in
+      let branches' = List.map (encode_new_branch ctx inst_dec) branches in
       let comatch = CTm.Comatch (inst_dec, branches') in
       (* Wrap in thunk *)
       let raise_dec = get_instantiated_dec ctx Prim.raise_sym [inner_codata_ty] in
@@ -539,22 +539,51 @@ and wrap_body_for_cod (ctx: encode_ctx) (body: CTm.term) (body_ty: CTy.typ)
       (* cod = body_ty, no wrapping needed *)
       make_cut body_ty body (CTm.Var k)
 
-(** Encode a match branch - bind result continuation k *)
-and encode_match_branch (ctx: encode_ctx) (result_ty: CTy.typ)
+(** Encode a match branch - alpha is the outer continuation variable.
+    The inst_dec is the instantiated declaration, which has quantified = []
+    and only existentials remain. We need to filter ty_vars to keep only
+    the existential part (drop the quantified vars that are now fixed). *)
+and encode_match_branch (ctx: encode_ctx) (inst_dec: CTy.dec) (result_ty: CTy.typ) (alpha: Ident.t)
     ((xtor, ty_vars, tm_vars, body): MTm.typed_clause) : CTm.branch =
   let body' = encode_term_tail ctx body in  (* branch body is in tail position *)
-  let k = Ident.fresh () in
-  let cmd = make_cut result_ty body' (CTm.Var k) in
-  (xtor, ty_vars, tm_vars @ [k], cmd)
+  let cmd = make_cut result_ty body' (CTm.Var alpha) in
+  (* Find the xtor in the instantiated dec to get existential count *)
+  let n_exist = match List.find_opt (fun (x: CTy.xtor) -> Path.equal x.name xtor) inst_dec.xtors with
+    | Some inst_xtor -> List.length inst_xtor.existentials
+    | None -> 0  (* Should not happen for valid code *)
+  in
+  (* Keep only the last n_exist type vars (existentials come after quantified) *)
+  let exist_ty_vars = 
+    if n_exist = 0 then []
+    else 
+      let n_total = List.length ty_vars in
+      let start = n_total - n_exist in
+      List.filteri (fun i _ -> i >= start) ty_vars
+  in
+  (xtor, exist_ty_vars, tm_vars, cmd)
 
-(** Encode a new/comatch branch - bind result continuation k *)
-and encode_new_branch (ctx: encode_ctx)
+(** Encode a new/comatch branch - bind result continuation k.
+    Similar to encode_match_branch, filter ty_vars to keep only existentials. *)
+and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
     ((xtor, ty_vars, tm_vars, body): MTm.typed_clause) : CTm.branch =
   let body' = encode_term_tail ctx body in  (* branch body is in tail position *)
   let body_ty = encode_type ctx.data_sorts (MTm.get_type body) in
   let k = Ident.fresh () in
   let cmd = make_cut body_ty body' (CTm.Var k) in
-  (xtor, ty_vars, tm_vars @ [k], cmd)
+  (* Find the xtor in the instantiated dec to get existential count *)
+  let n_exist = match List.find_opt (fun (x: CTy.xtor) -> Path.equal x.name xtor) inst_dec.xtors with
+    | Some inst_xtor -> List.length inst_xtor.existentials
+    | None -> 0
+  in
+  (* Keep only the last n_exist type vars (existentials come after quantified) *)
+  let exist_ty_vars = 
+    if n_exist = 0 then []
+    else 
+      let n_total = List.length ty_vars in
+      let start = n_total - n_exist in
+      List.filteri (fun i _ -> i >= start) ty_vars
+  in
+  (xtor, exist_ty_vars, tm_vars @ [k], cmd)
 
 (* ========================================================================= *)
 (* Definition Encoding                                                       *)

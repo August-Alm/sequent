@@ -346,12 +346,12 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       (* dec is already instantiated with param_kinds = [] *)
       let* _ = check_branches ctx dec branches check_command subs in
       (* Match produces Cns (consumer) of the data type *)
-      Ok (Cns (Sgn (dec.name, [])), subs)
+      Ok (Cns (Sgn (dec.name, dec.type_args)), subs)
   | Comatch (dec, branches) ->
       (* dec is already instantiated with param_kinds = [] *)
       let* _ = check_branches ctx dec branches check_command subs in
       (* Comatch produces Prd (producer) of the codata type *)
-      Ok (Prd (Sgn (dec.name, [])), subs)
+      Ok (Prd (Sgn (dec.name, dec.type_args)), subs)
   | MuPrd (ty, x, cmd) ->
       (* μP binds x : Cns ty, produces Prd ty *)
       let ctx' = extend ctx x (Cns ty) in
