@@ -330,6 +330,18 @@ let main: int =
   let q = mk_pair{int}{int}(5)(6) in
   fst{int}{int}(p) + snd{int}{int}(p)
     |};
+  
+  (* Test 17: Fibonacci *)
+  run_test
+    ~name:"Fibonacci"
+    ~expected:8
+    {|
+let fib(n: int): int =
+  ifz(n) then 0 else ifz(n - 1) then 1
+  else fib(n - 1) + fib(n - 2)
+
+let main: int = fib(6)
+    |};
 
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
