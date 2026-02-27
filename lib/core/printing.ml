@@ -135,7 +135,7 @@ let rec pp_term ?(cfg=default_config) (tm: term) : string =
       let ty_ann = if cfg.show_types then ":" ^ pp_typ t else "" in
       "μ-" ^ pp_var v ^ ty_ann ^ "." ^ pp_command ~cfg ~n:0 cmd
   
-  | NewForall (v, k, t, cmd) ->
+  | NewForall (v, k, t, _cont, cmd) ->
       let forall_typ = "∀(" ^ pp_var v ^ ": " ^ pp_kind k ^ ")." ^ pp_typ t in
       "comatch " ^ forall_typ ^ " { instantiate{" ^ pp_var v ^ "} ⇒ " ^ pp_command ~cfg ~n:0 cmd ^ " }"
   

@@ -78,9 +78,9 @@ let rec pp_core_term (tm: CTm.term) : string =
       Printf.sprintf "μ+%s:%s.%s" (Ident.name v) (pp_core_typ ty) (pp_core_cmd cmd)
   | CTm.MuCns (ty, v, cmd) ->
       Printf.sprintf "μ-%s:%s.%s" (Ident.name v) (pp_core_typ ty) (pp_core_cmd cmd)
-  | CTm.NewForall (a, k, body_ty, cmd) ->
-      Printf.sprintf "NewForall(%s:%s, body:%s, %s)"
-        (Ident.name a) (pp_core_typ k) (pp_core_typ body_ty) (pp_core_cmd cmd)
+  | CTm.NewForall (a, k, body_ty, cont, cmd) ->
+      Printf.sprintf "NewForall(%s:%s, body:%s, cont:%s, %s)"
+        (Ident.name a) (pp_core_typ k) (pp_core_typ body_ty) (Ident.name cont) (pp_core_cmd cmd)
   | CTm.InstantiateDtor ty ->
       Printf.sprintf "InstantiateDtor(%s)" (pp_core_typ ty)
 

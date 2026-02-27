@@ -43,10 +43,11 @@ and term =
   (* μC binds producer var, forms consumer *)
   | MuCns of typ * var * command
   (* We treat the Forall(a, k, t) as a codata type:
-      NewForall ~ comatch { instantiate[a] => cmd }
+      NewForall ~ comatch { instantiate[a](cont) => cmd }
     The instantiate destructor works as an xtor with
-    an existentially bound type parameter `a` of kind `k`. *)
-  | NewForall of var * typ * typ * command
+    an existentially bound type parameter `a` of kind `k`.
+    The continuation `cont` is bound and receives the body result. *)
+  | NewForall of var * typ * typ * var * command
   | InstantiateDtor of typ
 
 (* xtor{t0, .., tn}(x0, .., xm) => cmd *)
@@ -374,11 +375,13 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       let ctx' = extend ctx k (Prd ty) in
       let* _ = check_command ctx' subs cmd in
       Ok (Cns ty, subs)
-  | NewForall (a, k, body_ty, cmd) ->
-      (* NewForall ~ comatch { instantiate[a: k] => cmd }
-         Binds type var a : k, produces Prd (Forall a k body_ty) *)
+  | NewForall (a, k, body_ty, cont, cmd) ->
+      (* NewForall ~ comatch { instantiate[a: k](cont) => cmd }
+         Binds type var a : k and term var cont : Cns body_ty
+         Produces Prd (Forall a k body_ty) *)
       let ctx' = extend_tyvar ctx a k in
-      let* _ = check_command ctx' subs cmd in
+      let ctx'' = extend ctx' cont (Cns body_ty) in
+      let* _ = check_command ctx'' subs cmd in
       Ok (Prd (Forall (a, k, body_ty)), subs)
   | InstantiateDtor ty_arg ->
       (* instantiate destructor: given a type argument, consumes Forall

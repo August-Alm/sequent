@@ -14,9 +14,6 @@ open Terms
 type value =
   | DataVal of sym * env            (** {m; E} - constructor m with captured environment *)
   | CodataVal of env * branch list  (** {E; bs} - branches with captured environment *)
-  | FunVal of env * var * var * command     (** {E; x, y ⇒ s} - function value *)
-  | ForallVal of env * var * command        (** {E; a ⇒ s} - polymorphic value *)
-  | ThunkVal of env * var * command         (** {E; x ⇒ s} - thunk value *)
   | ReturnVal of env * var * command        (** {E; x ⇒ s} - return continuation *)
   | IntVal of int                           (** Literal integers *)
 
@@ -82,9 +79,6 @@ let pp_sym (x: sym) : string = Path.name x
 let pp_value = function
   | DataVal (m, _) -> "{" ^ pp_sym m ^ "; ...}"
   | CodataVal (_, bs) -> "{...; " ^ string_of_int (List.length bs) ^ " branches}"
-  | FunVal _ -> "{fun; ...}"
-  | ForallVal _ -> "{forall; ...}"
-  | ThunkVal _ -> "{thunk; ...}"
   | ReturnVal _ -> "{return; ...}"
   | IntVal n -> string_of_int n
 
@@ -179,28 +173,6 @@ let step ((cmd, e): config) : config option =
                 let e' = List.fold_left2 (fun acc p (_, val0) -> extend acc p val0) e0 params e1_list in
                 Some (branch_body, e')
             | _ -> failwith "axiom: expected data or int on the left")
-       | Some (FunVal (e0, px, py, s)) ->
-           (match lookup e v1 with
-            | DataVal (_, e1) ->
-                let e1_list = List.rev (Ident.to_list e1.values) in
-                (match e1_list with
-                 | [(_, v_x); (_, v_y)] ->
-                     let e' = extend (extend { e0 with defs = e.defs } px v_x) py v_y in
-                     Some (s, e')
-                 | _ -> failwith "axiom: fun expected 2 args")
-            | _ -> failwith "axiom: expected data on the left for fun")
-       | Some (ForallVal (e0, _, s)) ->
-           Some (s, { e0 with defs = e.defs })
-       | Some (ThunkVal (e0, px, s)) ->
-           (match lookup e v1 with
-            | DataVal (_, e1) ->
-                let e1_list = List.rev (Ident.to_list e1.values) in
-                (match e1_list with
-                 | [(_, v0)] ->
-                     let e' = extend { e0 with defs = e.defs } px v0 in
-                     Some (s, e')
-                 | _ -> failwith "axiom: thunk expected 1 arg")
-            | _ -> failwith "axiom: expected data on the left for thunk")
        | Some (ReturnVal (e0, px, s)) ->
            (match lookup e v1 with
             | DataVal (_, e1) ->

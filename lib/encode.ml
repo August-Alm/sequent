@@ -178,7 +178,70 @@ let is_def_call (ctx: encode_ctx) (tm: MTm.typed_term) : Path.t option =
     
     Saturated calls to definitions in TAIL position are encoded as direct Call commands.
 *)
-let rec encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
+
+(** Eta-expand a partial application of a definition into a first-class value.
+    
+    For a definition like:
+      def id{a}(x: a): a = x
+    
+    When used without arguments (as `id`), we create:
+      thunk(NewForall(a, +, fun(a,a), 
+        ⟨Comatch fun(a,a) { apply(k, x) => call id{a}(x, k) } | α⟩))
+    
+    This is crucial for flow analysis: the resulting forall value contains
+    a Call to the original definition, so instantiation flows propagate
+    correctly for higher-rank polymorphism. *)
+let rec encode_partial_application 
+    (ctx: encode_ctx) (path: Path.t) (ty: MTy.typ) (def: MTm.typed_term_def) 
+    : CTm.term =
+  match ty with
+  | MTy.Forall (tv, k, body_ty) ->
+      let k' = encode_type ctx.data_sorts k in
+      let body_ty' = encode_type ctx.data_sorts body_ty in
+      
+      (* Recursively encode the body type - this will eventually hit the function case *)
+      let inner = encode_partial_application ctx path body_ty def in
+      
+      let alpha = Ident.fresh () in
+      let inner_forall_ty = CTy.Forall (tv, k', body_ty') in
+      (* alpha is now bound by NewForall as the continuation *)
+      let new_forall = CTm.NewForall (tv, k', body_ty', alpha,
+        make_cut body_ty' inner (CTm.Var alpha)) in
+      
+      (* Wrap in thunk to produce raise(∀...) *)
+      let raise_dec = get_instantiated_dec ctx Prim.raise_sym [inner_forall_ty] in
+      CTm.Ctor (raise_dec, Prim.thunk_sym, [new_forall])
+      
+  | MTy.Sgn (sym, [dom; cod]) when sym = Common.Types.Prim.fun_sym ->
+      
+      let dom' = encode_type ctx.data_sorts dom in
+      let cod' = encode_type ctx.data_sorts cod in
+      let inner_fun_ty = CTy.Sgn (Prim.fun_sym, [dom'; cod']) in
+      
+      let k = Ident.fresh () in
+      let x = Ident.fresh () in
+      
+      (* Collect type args from the definition's type params *)
+      let ty_args = List.map (fun (v, _) -> CTy.TVar v) def.type_params in
+      
+      (* Create the call: call path{ty_args}(x, k) *)
+      let call_cmd = CTm.Call (path, ty_args, [CTm.Var x; CTm.Var k]) in
+      
+      let fun_dec = get_instantiated_dec ctx Prim.fun_sym [dom'; cod'] in
+      let comatch = CTm.Comatch (fun_dec,
+        [(Prim.apply_sym, [], [k; x], call_cmd)]) in
+      
+      (* Wrap in thunk to produce raise(fun(...)) *)
+      let raise_dec = get_instantiated_dec ctx Prim.raise_sym [inner_fun_ty] in
+      CTm.Ctor (raise_dec, Prim.thunk_sym, [comatch])
+      
+  | _ ->
+      (* Shouldn't happen for well-typed partial applications *)
+      failwith (Printf.sprintf 
+        "encode_partial_application: unexpected type %s for %s"
+        (Melcore.Printing.typ_to_string ty) (Path.name path))
+
+and encode_term (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   (* Non-tail position: use standard encoding *)
   encode_term_inner ctx tm
 
@@ -238,20 +301,14 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedVar (x, _ty) -> CTm.Var x
 
   | MTm.TypedSym (path, ty) ->
-      (* Symbol reference - for definitions without term params, this is a
-         direct call that returns a value. For definitions WITH term params,
-         this case is only reached for partial applications. *)
       (match Path.find_opt path ctx.defs with
        | Some def when def.MTm.term_params = [] ->
            (* Nullary definition: call it and get the value *)
            let ty' = encode_type ctx.data_sorts ty in
            let k = Ident.fresh () in
            CTm.MuPrd (ty', k, CTm.Call (path, [], [CTm.Var k]))
-       | Some _def ->
-           (* Definition with term params but used without full application.
-              This is partial application - treat as first-class function.
-              For now, fail - we don't support partial application of definitions. *)
-           failwith ("Partial application of definition not supported: " ^ Path.name path)
+       | Some def ->
+           encode_partial_application ctx path ty def
        | None ->
            (* Not a definition - could be a constructor or external symbol *)
            let ty' = encode_type ctx.data_sorts ty in
@@ -305,15 +362,14 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.Ctor (raise_dec, Prim.thunk_sym, [comatch])
 
   | MTm.TypedAll ((tv, k), body, ty) ->
-      (* Λa:k. body → thunk(NewForall(a, k', body_ty', ⟨body' | α⟩))
+      (* Λa:k. body → thunk(NewForall(a, k', alpha, ⟨body' | alpha⟩))
          
-         Forall types are encoded as raise(∀a:k. lower(body_ty)).
-         But at the term level, we produce body_ty' directly (positive).
-         The lower wrapping is just for typing the forall.
+         Forall types are encoded as raise(∀a:k. body_ty).
+         The NewForall binds both the type variable and the continuation.
          
          The NewForall body produces body_ty', and the continuation α
-         receives that value. When instantiated, the body runs and
-         the result flows to the instantiation continuation.
+         (now bound by NewForall) receives that value. When instantiated, 
+         the body runs and the result flows to the instantiation continuation.
          
          NewForall is negative, so wrap in thunk. *)
       let k' = encode_type ctx.data_sorts k in
@@ -323,9 +379,10 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       in
       let body' = encode_term ctx body in
       let alpha = Ident.fresh () in
-      (* Use body_ty' as the forall body type, NOT lower(body_ty') *)
+      (* Use body_ty' as the forall body type *)
       let inner_forall_ty = CTy.Forall (tv, k', body_ty') in
-      let new_forall = CTm.NewForall (tv, k', body_ty', make_cut body_ty' body' (CTm.Var alpha)) in
+      (* alpha is now bound by NewForall as the continuation *)
+      let new_forall = CTm.NewForall (tv, k', body_ty', alpha, make_cut body_ty' body' (CTm.Var alpha)) in
       (* Wrap in thunk to produce raise(∀...) *)
       let raise_dec = get_instantiated_dec ctx Prim.raise_sym [inner_forall_ty] in
       CTm.Ctor (raise_dec, Prim.thunk_sym, [new_forall])
@@ -517,9 +574,9 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
           let this' = encode_term ctx this_arg in
           let this_ty = encode_type ctx.data_sorts (MTm.get_type this_arg) in
           (* rest' needs to be reversed because:
-             - Melcore rest_args are in surface order: [arg1, arg2, ...]
-             - Core argument_types are stored reversed: [result; argN; ...; arg1]
-             - So after prepending alpha (result), we need [alpha; argN; ...; arg1] *)
+            - Melcore rest_args are in surface order: [arg1, arg2, ...]
+            - Core argument_types are stored reversed: [result; argN; ...; arg1]
+            - So after prepending alpha (result), we need [alpha; argN; ...; arg1] *)
           let rest' = List.rev (List.map (encode_term ctx) rest_args) in
           let alpha = Ident.fresh () in
           

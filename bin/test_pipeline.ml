@@ -55,6 +55,11 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     (* Stage 3: Normalize *)
     let norm_defs = Pipe.MelcoreStage.normalize typed_defs in
     print_endline "3. Normalize: OK";
+    (* Debug: print normalized Melcore for main *)
+    (match Path.find_opt (Path.of_string "main") norm_defs with
+     | Some main_def -> 
+         Printf.printf "   Normalized main body: %s\n" (MPrint.typed_term_to_string main_def.Melcore.Terms.body)
+     | None -> ());
     
     (* Stage 4: Encode to Core *)
     let* (core_decs, core_defs) = Pipe.MelcoreStage.encode decs norm_defs in
@@ -356,7 +361,49 @@ let fib(n: int): int =
 let main: int = fib(6)
     |};
 
-  (* Test 18: Complex *)
+
+  (* Test 18: Optimized closures *)
+  run_test
+    ~name:"Optimized closures"
+    ~expected:42
+    {|
+let main: int =
+  let a = 41 in
+  let f = fun(x: int) => x + 1 in
+  f(a)
+    |};
+
+  (* Test 19: Higher rank polymorphism *)
+  run_test
+    ~name:"Higher-rank polymorphism"
+    ~expected:5
+    {|
+data tuple: type -> type -> type where
+  { mk_tuple: {a}{b} a -> b -> tuple(a)(b)
+  }
+
+data enum: type where
+  { A: enum
+  ; B: enum
+  }
+
+let map_mk_tuple{a}{b}(f: {c} c -> c)(x: a)(y: b): tuple(a)(b) =
+  mk_tuple{a}{b}(f{a}(x))(f{b}(y))
+
+let id{a}(x: a): a = x
+
+let main: int =
+  let t = map_mk_tuple{int}{enum}(id)(5)(B) in
+  match t with
+  { mk_tuple{_}{_}(x)(y) =>
+      match y with
+      { A => 0
+      ; B => x
+      }
+  }
+    |};
+
+  (* Test 20: Complex *)
   run_test
     ~name:"Complex test with multiple features"
     ~expected:10

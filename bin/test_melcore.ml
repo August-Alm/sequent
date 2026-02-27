@@ -210,7 +210,7 @@ let run_test ~name ~manual_repr ?expected_result (term: MTm.term) =
                 Printf.sprintf "μ+%s.%s" (Ident.name v) (pp_core_cmd body)
             | CTm.MuCns (_, v, body) ->
                 Printf.sprintf "μ-%s.%s" (Ident.name v) (pp_core_cmd body)
-            | CTm.NewForall (a, k, _, body) ->
+            | CTm.NewForall (a, k, _, _cont, body) ->
                 Printf.sprintf "NewForall(%s:%s, %s)" 
                   (Ident.name a) (FPrint.typ_to_string (Focus.focus_type k)) (pp_core_cmd body)
             | CTm.InstantiateDtor ty ->

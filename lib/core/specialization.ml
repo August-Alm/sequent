@@ -47,6 +47,7 @@ type gen_context =
   { defs: Terms.definition Path.tbl           (* All definitions *)
   ; current_def: Path.t                       (* Current definition being analyzed *)
   ; tparam_map: (Path.t * int) Ident.tbl      (* Type var -> (definition, index) *)
+  ; forall_param_map: Path.t Ident.tbl        (* Term var (of forall type) -> param path for flows *)
   }
 
 (** Constraint generation monad: context -> (result, flows) *)
@@ -126,6 +127,13 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
 (* Constraint Generation for Terms and Commands                              *)
 (* ========================================================================= *)
 
+(** Check if a type is a forall type (wrapped in raise) *)
+let rec is_forall_type (t: typ): bool =
+  match t with
+  | Forall _ -> true
+  | Sgn (_, [arg]) -> is_forall_type arg  (* Check through raise wrapper *)
+  | _ -> false
+
 (** Generate constraints for a type (when it's used) *)
 let generate_for_typ (t: typ): unit gen =
   let+ _marg = typ_to_mono_arg t in
@@ -176,10 +184,23 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   | MuCns (_typ, _var, cmd) ->
       generate_for_command cmd
   
-  | NewForall (_var, _kind, _typ, cmd) ->
-      generate_for_command cmd
+  | NewForall (var, _kind, _typ, _cont, cmd) ->
+      (* NewForall introduces a type variable that needs to be bound.
+         Use Path.of_ident var as the path - the type variable identifier
+         serves as its own identity for flow tracking.
+         
+         NOTE: Currently, flows to this path only come from `call id{a}(...)`
+         inside the body. Without inter-procedural analysis, we can't connect
+         InstantiateDtor sites to this forall's type variable. *)
+      let forall_path = Path.of_ident var in
+      fun ctx ->
+        let tparam_map = Ident.add var (forall_path, 0) ctx.tparam_map in
+        generate_for_command cmd { ctx with tparam_map }
   
   | InstantiateDtor _typ ->
+      (* InstantiateDtor: for now, don't emit flows.
+         The connection between instantiation sites and inline foralls
+         requires more sophisticated inter-procedural analysis. *)
       return ()
 
 (** Generate constraints for a branch (used for Match) *)
@@ -256,6 +277,21 @@ and find_instantiate_dtor_cmd (cmd: Terms.command): typ option =
     Terms.Cut (_, _, consumer) -> find_instantiate_dtor consumer
   | _ -> None
 
+(** Find NewForall type variable path in a term.
+    This handles patterns like: Ctor(raise, thunk, [NewForall(a, ...)]) *)
+and find_newforall_path (tm: Terms.term): Path.t option =
+  match tm with
+    Terms.NewForall (var, _, _, _, _) -> Some (Path.of_ident var)
+  | Terms.Ctor (_, _, args) -> List.find_map find_newforall_path args
+  | Terms.MuPrd (_, _, cmd) | Terms.MuCns (_, _, cmd) ->
+      find_newforall_path_cmd cmd
+  | _ -> None
+
+and find_newforall_path_cmd (cmd: Terms.command): Path.t option =
+  match cmd with
+    Terms.Cut (_, producer, _) -> find_newforall_path producer
+  | _ -> None
+
 (** Generate constraints for a command *)
 and generate_for_command (cmd: Terms.command): unit gen =
   match cmd with
@@ -274,19 +310,67 @@ and generate_for_command (cmd: Terms.command): unit gen =
             | None -> return ())
         | None -> return ())
       in
+      (* Check for NewForall being instantiated:
+         ⟨ Ctor(raise.thunk, [NewForall(a, ...)]) | ... InstantiateDtor(T) ... ⟩ *)
+      let+ () =
+        (match find_newforall_path producer with
+          Some forall_path ->
+            (* Producer has a NewForall. Look for InstantiateDtor in consumer *)
+            (match find_instantiate_dtor consumer with
+              Some ty_arg ->
+                let+ mono_arg = typ_to_mono_arg ty_arg in
+                emit [{ input = Vector [mono_arg]; dst = forall_path }]
+            | None -> return ())
+        | None -> return ())
+      in
+      (* Check for forall parameter being instantiated:
+         ⟨ Var f | Match { ... InstantiateDtor(T) } ⟩ where f is forall param *)
+      let+ () =
+        (match producer with
+          Terms.Var v ->
+            let+ ctx = get_context in
+            (match Ident.find_opt v ctx.forall_param_map with
+              Some param_path ->
+                (match find_instantiate_dtor consumer with
+                  Some ty_arg ->
+                    let+ mono_arg = typ_to_mono_arg ty_arg in
+                    emit [{ input = Vector [mono_arg]; dst = param_path }]
+                | None -> return ())
+            | None -> return ())
+        | _ -> return ())
+      in
       let+ () = generate_for_term producer in
       generate_for_term consumer
   
   | Call (def_path, type_args, term_args) ->
       (* This is the key constraint generation site! *)
       (* Emit a flow: the type_args flow to the called definition *)
-      let+ _ctx = get_context in
+      let+ ctx = get_context in
       let+ mono_args = traverse type_args typ_to_mono_arg in
       let+ () = 
         if List.length mono_args > 0 then
           emit [{ input = Vector mono_args; dst = def_path }]
         else
           return ()
+      in
+      (* For each term argument that's a NewForall, emit Forward from param path *)
+      let+ () =
+        match Path.find_opt def_path ctx.defs with
+        | Some called_def ->
+            let param_arg_pairs = List.combine called_def.term_params term_args in
+            let forwards = List.filter_map (fun ((param_var, param_ty), arg) ->
+              let ty = Types.CoreTypes.strip_chirality param_ty in
+              if is_forall_type ty then
+                (* This parameter has forall type. Check if arg contains NewForall *)
+                match find_newforall_path arg with
+                | Some forall_path ->
+                    let param_path = Path.access def_path (Ident.name param_var ^ ".forall_param") in
+                    Some { input = Forward param_path; dst = forall_path }
+                | None -> None
+              else None
+            ) param_arg_pairs in
+            emit forwards
+        | None -> return ()
       in
       iter term_args generate_for_term
   
@@ -314,9 +398,23 @@ and generate_for_command (cmd: Terms.command): unit gen =
 let generate_for_definition (def: Terms.definition): unit gen =
   (* Bind type parameters for this definition *)
   let tparams_indexed = List.mapi (fun i (v, _k) -> (v, i)) def.type_params in
+  
+  (* Build forall_param_map: for each term param of forall type, create a path *)
+  let forall_params = List.filter_map (fun (v, chiral_ty) ->
+    let ty = Types.CoreTypes.strip_chirality chiral_ty in
+    if is_forall_type ty then
+      let param_path = Path.access def.path (Ident.name v ^ ".forall_param") in
+      Some (v, param_path)
+    else None
+  ) def.term_params in
+  
   with_current_def def.path (
     with_tparams tparams_indexed (
-      generate_for_command def.body
+      fun ctx ->
+        let forall_param_map = List.fold_left (fun tbl (v, path) ->
+          Ident.add v path tbl
+        ) ctx.forall_param_map forall_params in
+        generate_for_command def.body { ctx with forall_param_map }
     )
   )
 
@@ -330,6 +428,7 @@ let generate_constraints (exe: exe_ctx): flow list =
     { defs = exe.defs
     ; current_def = exe.main.path
     ; tparam_map = Ident.emptytbl
+    ; forall_param_map = Ident.emptytbl
     }
   in
   (* Generate constraints for main (which should be monomorphic) *)
@@ -341,7 +440,8 @@ let generate_constraints (exe: exe_ctx): flow list =
     flows
   ) in
   
-  main_flows @ def_flows
+  let all_flows = main_flows @ def_flows in
+  all_flows
 
 (* ========================================================================= *)
 (* Cycle Detection - Finding Growing Cycles                                  *)

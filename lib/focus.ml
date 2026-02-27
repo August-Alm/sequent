@@ -110,8 +110,8 @@ let rec subst_term (ts: TySub.t) (t: CTm.term) : CTm.term =
   | CTm.Comatch (dec, bs) -> CTm.Comatch (subst_dec ts dec, List.map (subst_branch ts) bs)
   | CTm.MuPrd (ty, v, cmd) -> CTm.MuPrd (subst_type ts ty, v, subst_command ts cmd)
   | CTm.MuCns (ty, v, cmd) -> CTm.MuCns (subst_type ts ty, v, subst_command ts cmd)
-  | CTm.NewForall (v, k, body_ty, cmd) -> 
-      CTm.NewForall (v, subst_type ts k, subst_type ts body_ty, subst_command ts cmd)
+  | CTm.NewForall (v, k, body_ty, cont, cmd) -> 
+      CTm.NewForall (v, subst_type ts k, subst_type ts body_ty, cont, subst_command ts cmd)
   | CTm.InstantiateDtor ty -> CTm.InstantiateDtor (subst_type ts ty)
   | CTm.Lit n -> CTm.Lit n
 
@@ -177,8 +177,12 @@ let rec focus_type (t: CTy.typ) : FTy.typ =
 
 let collapse_chiral (ctx: focus_ctx) (ct: CTy.chiral_typ) : FTy.chiral_typ =
   match ct with
-  | CB.Prd t -> if is_negative ctx t then FB.Cns (focus_type t) else FB.Prd (focus_type t)
-  | CB.Cns t -> if is_negative ctx t then FB.Prd (focus_type t) else FB.Cns (focus_type t)
+  | CB.Prd t -> 
+      let neg = is_negative ctx t in
+      if neg then FB.Cns (focus_type t) else FB.Prd (focus_type t)
+  | CB.Cns t -> 
+      let neg = is_negative ctx t in
+      if neg then FB.Prd (focus_type t) else FB.Cns (focus_type t)
 
 let collapse_xtor (ctx: focus_ctx) (x: CTy.xtor) : FTy.xtor =
   let extended_ty_ctx = 
@@ -430,11 +434,13 @@ module Transform = struct
             | _ ->
                 failwith "bind_term MuCns: unexpected type"))
 
-    | CTm.NewForall (_a, k_ty, body_ty, body) ->
+    | CTm.NewForall (_a, k_ty, body_ty, cont, body) ->
         let v = Ident.fresh () in
         let a' = Ident.fresh () in
+        (* The cont variable from NewForall is where results go.
+           We need to propagate this correctly. *)
         Target.LetNewForall (a', k_ty, body_ty,
-          transform_command ctx body h, v, k Sub.empty v)
+          transform_command ctx body (Sub.add cont (Ident.fresh ()) h), v, k Sub.empty v)
 
     | CTm.InstantiateDtor ty_arg ->
         let a = Ident.fresh () in
@@ -725,14 +731,14 @@ module Transform = struct
         Target.CutInstantiate (a', ty_arg, body_ty, Sub.apply h x)
     | CTm.Var x, CTm.MuCns (_, av, r) ->
         transform_command ctx r (Sub.add av (Sub.apply h x) h)
-    | CTm.NewForall (av, _, _, cmd), CTm.InstantiateDtor ty_arg ->
+    | CTm.NewForall (av, _, _, cont, cmd), CTm.InstantiateDtor ty_arg ->
         let ts = TySub.add av ty_arg TySub.empty in
-        transform_command ctx (subst_command ts cmd) h
-    | CTm.NewForall (av, _, _, cmd), CTm.MuCns (_, bv, r) ->
+        transform_command ctx (subst_command ts cmd) (Sub.add cont (Ident.fresh ()) h)
+    | CTm.NewForall (av, _, _, cont, cmd), CTm.MuCns (_, bv, r) ->
         let v = Ident.fresh () in
         let av' = Ident.fresh () in
         Target.LetNewForall (av', k_ty, body_ty,
-          transform_command ctx cmd (Sub.add av av' h),
+          transform_command ctx cmd (Sub.add cont v (Sub.add av av' h)),
           v,
           transform_command ctx r (Sub.add bv v h))
     | CTm.MuPrd (_, x, s), CTm.Var y ->

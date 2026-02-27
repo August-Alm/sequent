@@ -432,11 +432,11 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
       Trm.New (ty_opt', clauses')
   
   | AST_Xtor (name, ty_args, tm_args) ->
-      (* First check if it's a term symbol (function call) *)
-      (match lookup_term_symbol ctx name with
-        Some path ->
-          (* Function call: convert to nested Ins and App *)
-          let base = Trm.Sym path in
+      (* First check if it's a local term variable *)
+      (match lookup_term_var ctx name with
+        Some id ->
+          (* Local variable with type/term applications *)
+          let base = Trm.Var id in
           let with_types = List.fold_left (fun acc ty ->
             Trm.Ins (acc, typ_of_ast ctx ty)
           ) base ty_args in
@@ -444,17 +444,29 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
             Trm.App (acc, term_of_ast ctx tm)
           ) with_types tm_args
       | None ->
-          (* Constructor or destructor *)
-          (match lookup_xtor_symbol ctx name with
-            Some (dec_path, xtor, ds) ->
-              (* Apply type arguments to instantiate xtor's universal params.
-                xtor.quantified are the universals, ty_args are the instantiations. *)
-              let ty_args' = List.map (typ_of_ast ctx) ty_args in
-              let args' = List.map (term_of_ast ctx) tm_args in
-              (match ds with
-                Data -> Trm.Ctor (dec_path, xtor.name, ty_args', args')
-              | Codata -> Trm.Dtor (dec_path, xtor.name, ty_args', args'))
-          | None -> failwith ("Unknown constructor/destructor: " ^ name)))
+          (* Then check if it's a term symbol (top-level function call) *)
+          (match lookup_term_symbol ctx name with
+            Some path ->
+              (* Function call: convert to nested Ins and App *)
+              let base = Trm.Sym path in
+              let with_types = List.fold_left (fun acc ty ->
+                Trm.Ins (acc, typ_of_ast ctx ty)
+              ) base ty_args in
+              List.fold_left (fun acc tm ->
+                Trm.App (acc, term_of_ast ctx tm)
+              ) with_types tm_args
+          | None ->
+              (* Constructor or destructor *)
+              (match lookup_xtor_symbol ctx name with
+                Some (dec_path, xtor, ds) ->
+                  (* Apply type arguments to instantiate xtor's universal params.
+                    xtor.quantified are the universals, ty_args are the instantiations. *)
+                  let ty_args' = List.map (typ_of_ast ctx) ty_args in
+                  let args' = List.map (term_of_ast ctx) tm_args in
+                  (match ds with
+                    Data -> Trm.Ctor (dec_path, xtor.name, ty_args', args')
+                  | Codata -> Trm.Dtor (dec_path, xtor.name, ty_args', args'))
+              | None -> failwith ("Unknown constructor/destructor: " ^ name))))
 
 and branch_of_clause
     (ctx: conv_ctx) (xtor_name, ty_binders, tm_binders, body) : Trm.branch =
