@@ -82,6 +82,12 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     Printf.printf "   Generated %d new declarations, %d definitions\n"
       (List.length mono_result.new_declarations)
       (List.length mono_result.definitions);
+    (* Debug: print new declarations *)
+    List.iter (fun dec ->
+      Printf.printf "   New dec: %s\n" (Core.Printing.dec_to_string dec)
+    ) mono_result.new_declarations;
+    (* Debug: print mono main *)
+    Printf.printf "   Mono main: %s\n" (Core.Printing.command_to_string mono_result.main.body);
     (* Debug: print mono definitions *)
     List.iter (fun (def: Core.Terms.definition) ->
       Printf.printf "   Mono %s: %s\n" (Path.name def.path) (Core.Printing.command_to_string def.body)
@@ -403,7 +409,36 @@ let main: int =
   }
     |};
 
-  (* Test 20: Complex *)
+  (* Test 20: Higher rank polymorphism with anonymous *)
+  run_test
+    ~name:"Higher-rank polymorphism with anonymous"
+    ~expected:5
+    {|
+data tuple: type -> type -> type where
+  { mk_tuple: {a}{b} a -> b -> tuple(a)(b)
+  }
+
+data enum: type where
+  { A: enum
+  ; B: enum
+  }
+
+let map_mk_tuple{a}{b}(f: {c} c -> c)(x: a)(y: b): tuple(a)(b) =
+  mk_tuple{a}{b}(f{a}(x))(f{b}(y))
+
+let main: int =
+  let f = fun{c}(z: c) => z in
+  let t = map_mk_tuple{int}{enum}(f)(5)(B) in
+  match t with
+  { mk_tuple{_}{_}(x)(y) =>
+      match y with
+      { A => 0
+      ; B => x
+      }
+  }
+    |};
+
+  (* Test 21: Complex *)
   run_test
     ~name:"Complex test with multiple features"
     ~expected:10

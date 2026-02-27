@@ -53,6 +53,13 @@ open Types.CoreTypes
 (* Open Terms for direct access to term/command constructors *)
 module T = Terms
 
+(* Counter for generating fresh inline For-codata names *)
+let inline_for_counter = ref 0
+let fresh_inline_for_name () =
+  let n = !inline_for_counter in
+  inline_for_counter := n + 1;
+  Path.of_string ("inline.For" ^ string_of_int n)
+
 (* ========================================================================= *)
 (* Types for Monomorphization                                                *)
 (* ========================================================================= *)
@@ -250,6 +257,48 @@ let generate_codata_for_def
   
   (codata_dec, codata_name)
 
+(** Generate an inline For-codata for a NewForall that doesn't call a monomorphized function.
+    
+    For a NewForall like:
+      NewForall(c, k, body_typ, cont, cmd)
+    
+    With instantiation types [int, enum], generates:
+    
+    codata inline.ForN where
+      inst_0(cont: body_typ[int/c]) : inline.ForN
+      inst_1(cont: body_typ[enum/c]) : inline.ForN
+*)
+let generate_inline_for_codata
+    (tvar: Ident.t)
+    (body_typ: typ)
+    (cont: Ident.t)
+    (inst_types: Specialization.ground_arg list)
+    : dec =
+  let codata_name = fresh_inline_for_name () in
+  let codata_typ = Sgn (codata_name, []) in
+  
+  let xtors = List.mapi (fun idx garg ->
+    let inst_typ = ground_arg_to_typ garg in
+    let subst = Ident.add tvar inst_typ Ident.emptytbl in
+    let specialized_body_typ = apply_fresh_subst subst body_typ in
+    
+    { name = dtor_name_for_inst codata_name idx
+    ; quantified = []
+    ; existentials = []
+    (* The cont parameter has the specialized body type - with Cns chirality since
+       it's the continuation (consumer) of the polymorphic value *)
+    ; argument_types = [Cns specialized_body_typ]
+    ; main = codata_typ
+    }
+  ) inst_types in
+  
+  { name = codata_name
+  ; data_sort = Codata
+  ; param_kinds = []
+  ; type_args = []
+  ; xtors
+  }
+
 (* ========================================================================= *)
 (* Type Substitution in Terms and Commands                                   *)
 (* ========================================================================= *)
@@ -350,7 +399,8 @@ type transform_ctx =
   ; forall_flows: Specialization.ground_arg list Path.tbl  (* forall_path -> instantiation types *)
   ; forall_bound: Ident.t list  (* Type vars bound by enclosing NewForall *)
   ; inline_forall_decs: dec list ref  (* Accumulator for inline NewForall codata declarations *)
-  ; forall_to_for: (dec * instantiation list) Ident.tbl  (* Maps forall-typed var to (For-type codata, instantiations) *)
+  ; forall_to_for: (dec * instantiation list * bool) Ident.tbl  (* Maps forall-typed var to (For-type codata, instantiations, is_inline) *)
+  ; inline_for_by_insts: (dec * instantiation list) list  (* List of (codata, insts) for inline For-codatas *)
   }
 
 (** Check if a type uses any of the given type variables *)
@@ -532,7 +582,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
       (match match_higher_rank_application cmd with
       | Some (f_var, inst_typ, arg, _result_k) 
         when Ident.find_opt f_var ctx.forall_to_for <> None ->
-          let (for_dec, instantiations) = Ident.find f_var ctx.forall_to_for in
+          let (for_dec, instantiations, is_inline) = Ident.find f_var ctx.forall_to_for in
           let inst_garg = typ_to_ground_arg inst_typ in
           let idx_opt = List.find_index (fun inst ->
             match inst with
@@ -544,8 +594,33 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
               let for_typ = Sgn (for_dec.name, []) in
               let* arg' = transform_term ctx arg in
               let dtor = T.Dtor (for_dec, dtor_path, [], [arg'; T.Var var]) in
-              let cut = T.Cut (for_typ, T.Var f_var, dtor) in
-              Ok (T.MuPrd (typ, var, cut))
+              if is_inline then begin
+                (* Inline lambda case: f_var has type raise(For), need to unwrap before invoking destructor *)
+                let raise_for_typ = Sgn (Prim.raise_sym, [for_typ]) in
+                let g_var = Ident.mk "g" in
+                let raise_dec =
+                  { name = Prim.raise_sym
+                  ; data_sort = Data
+                  ; param_kinds = [for_typ]
+                  ; type_args = [for_typ]
+                  ; xtors =
+                      [{ name = Prim.thunk_sym
+                       ; quantified = []
+                       ; existentials = []
+                       ; argument_types = [Prd for_typ]
+                       ; main = raise_for_typ
+                       }]
+                  } in
+                let inner_cut = T.Cut (for_typ, T.Var g_var, dtor) in
+                let raise_match = T.Match (raise_dec,
+                  [(Prim.thunk_sym, [], [g_var], inner_cut)]) in
+                let cut = T.Cut (raise_for_typ, T.Var f_var, raise_match) in
+                Ok (T.MuPrd (typ, var, cut))
+              end else begin
+                (* Named function case: f_var has type For, invoke destructor directly *)
+                let cut = T.Cut (for_typ, T.Var f_var, dtor) in
+                Ok (T.MuPrd (typ, var, cut))
+              end
           | None ->
               let* cmd' = transform_command ctx cmd in
               Ok (T.MuPrd (typ, var, cmd')))
@@ -555,7 +630,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
   | T.MuCns (typ, var, cmd) ->
       let* cmd' = transform_command ctx cmd in
       Ok (T.MuCns (typ, var, cmd'))
-  | T.NewForall (tvar, _kind, _body_typ, cont, cmd) ->
+  | T.NewForall (tvar, _kind, body_typ, cont, cmd) ->
       (* A NewForall creates a polymorphic value. After monomorphization, this must
          become a Comatch over a For-type. We find the monomorphized function that
          the body calls and use its For-type.
@@ -574,13 +649,104 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
       
       (match mono_calls with
         [] ->
-          (* No calls to monomorphized functions - keep as-is or fail *)
+          (* No calls to monomorphized functions *)
           if inst_types = [] then begin
+            (* No instantiations either - keep as-is *)
             let* cmd' = transform_command ctx cmd in
-            Ok (T.NewForall (tvar, _kind, _body_typ, cont, cmd'))
-          end else
-            failwith (Printf.sprintf "NewForall %s has instantiation types but no mono calls" 
-              (Ident.name tvar))
+            Ok (T.NewForall (tvar, _kind, body_typ, cont, cmd'))
+          end else begin
+            (* Has instantiations but no mono calls - this is an inline polymorphic lambda.
+               Look for a pre-generated inline For-codata with matching instantiations,
+               or generate a fresh one. *)
+            let inst_list = List.sort compare (List.map (fun t -> [t]) inst_types) in
+            let matching_inline = List.find_opt (fun (_dec, insts) ->
+              List.sort compare insts = inst_list
+            ) ctx.inline_for_by_insts in
+            
+            let (inline_for, branch_inst_types) = match matching_inline with
+              | Some (dec, insts) -> 
+                  (* Use the declaration's instantiation order for branches *)
+                  (dec, List.map (fun inst -> List.hd inst) insts)
+              | None ->
+                  (* No matching pre-generated codata - generate a fresh one *)
+                  let fresh = generate_inline_for_codata tvar body_typ cont inst_types in
+                  ctx.inline_forall_decs := fresh :: !(ctx.inline_forall_decs);
+                  (fresh, inst_types)
+            in
+            
+            (* Create branches for each instantiation.
+               If using a pre-generated codata (for higher-rank param), it expects 2 args: (arg, cont).
+               - The lambda body produces raise(fun(T, T)), we need to unwrap, apply to arg, send result to cont
+               - Transform: ⟨raised_lambda | cont⟩ → ⟨raised_lambda | match raise { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩
+               If using a freshly generated codata, it expects 1 arg: (cont). *)
+            let uses_pregenerated = matching_inline <> None in
+            let arg_var = Ident.mk "arg" in
+            
+            let* branches = traverse_result (List.mapi (fun idx garg ->
+              let inst_typ = ground_arg_to_typ garg in
+              let subst = Ident.add tvar inst_typ Ident.emptytbl in
+              let cmd_subst = subst_command subst cmd in
+              let* cmd' = transform_command ctx cmd_subst in
+              let dtor_name = dtor_name_for_inst inline_for.name idx in
+              if uses_pregenerated then begin
+                (* For 2-arg case: wrap the command to apply the lambda to arg_var.
+                   The original cmd' is ⟨raised_lambda | cont⟩ where raised_lambda produces raise(fun(T, T)).
+                   We need to:
+                   1. Unwrap the raise to get the raw function
+                   2. Apply it to arg_var
+                   3. Send result to cont
+                   
+                   Result: ⟨raised_lambda | match raise{fun(T,T)} { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩ *)
+                let fun_typ = Sgn (Prim.fun_sym, [inst_typ; inst_typ]) in
+                let raise_fun_typ = Sgn (Prim.raise_sym, [fun_typ]) in
+                let fun_dec = 
+                  { name = Prim.fun_sym
+                  ; data_sort = Codata
+                  ; param_kinds = [inst_typ; inst_typ]
+                  ; type_args = [inst_typ; inst_typ]
+                  ; xtors = 
+                      [{ name = Prim.apply_sym
+                       ; quantified = []
+                       ; existentials = []
+                       ; argument_types = [Cns inst_typ; Prd inst_typ]
+                       ; main = fun_typ
+                       }]
+                  } in
+                let raise_dec =
+                  { name = Prim.raise_sym
+                  ; data_sort = Data
+                  ; param_kinds = [fun_typ]
+                  ; type_args = [fun_typ]
+                  ; xtors =
+                      [{ name = Prim.thunk_sym
+                       ; quantified = []
+                       ; existentials = []
+                       ; argument_types = [Prd fun_typ]
+                       ; main = raise_fun_typ
+                       }]
+                  } in
+                (* Extract the producer from cmd' (should be Cut(_, producer, Var cont)) *)
+                let branch_cmd = match cmd' with
+                  | T.Cut (_, producer, T.Var c) when Ident.equal c cont ->
+                      (* Build: ⟨producer | match raise { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩ *)
+                      let g_var = Ident.mk "g" in
+                      let apply_dtor = T.Dtor (fun_dec, Prim.apply_sym, [], 
+                        [T.Var cont; T.Var arg_var]) in
+                      let inner_cut = T.Cut (fun_typ, T.Var g_var, apply_dtor) in
+                      let raise_match = T.Match (raise_dec, 
+                        [(Prim.thunk_sym, [], [g_var], inner_cut)]) in
+                      T.Cut (raise_fun_typ, producer, raise_match)
+                  | _ -> 
+                      (* Can't restructure, use original *)
+                      cmd'
+                in
+                Ok (dtor_name, [], [arg_var; cont], branch_cmd)
+              end else
+                Ok (dtor_name, [], [cont], cmd')
+            ) branch_inst_types) in
+            
+            Ok (T.Comatch (inline_for, branches))
+          end
       
       | (called_path, _type_args) :: _ ->
           (* Found a call to a monomorphized function. Use its For-type. *)
@@ -655,7 +821,7 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
         mapping exists *)
       (match producer, consumer with
         T.Var v, T.InstantiateDtor inst_typ when Ident.find_opt v ctx.forall_to_for <> None ->
-          let (for_dec, instantiations) = Ident.find v ctx.forall_to_for in
+          let (for_dec, instantiations, _is_inline) = Ident.find v ctx.forall_to_for in
           (* Find the index of this instantiation type in the instantiations list *)
           let inst_garg = typ_to_ground_arg inst_typ in
           let idx_opt = List.find_index (fun inst ->
@@ -678,7 +844,7 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
       | T.Var v, _ when Ident.find_opt v ctx.forall_to_for <> None ->
           (match find_instantiate_in_raise_match consumer with
             Some (inst_typ, _u) ->
-              let (for_dec, instantiations) = Ident.find v ctx.forall_to_for in
+              let (for_dec, instantiations, _is_inline) = Ident.find v ctx.forall_to_for in
               let inst_garg = typ_to_ground_arg inst_typ in
               let idx_opt = List.find_index (fun inst ->
                 match inst with [garg] -> garg = inst_garg | _ -> false
@@ -899,10 +1065,54 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
       (* Build forall_param_flows: for paths like "def.param.forall_param" -> types *)
       let forall_param_flows = group_flows_by (String.ends_with ~suffix:".forall_param") flows in
       
+      (* For each forall_param flow, check if there's a matching mono_info.
+         If not, generate an inline For-codata for that higher-rank parameter. *)
+      let inline_for_codatas: (dec * instantiation list) Path.tbl =
+        Path.to_list forall_param_flows |> List.filter_map (fun (param_path, forall_types) ->
+          let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
+          (* Check if any mono_info has matching instantiations *)
+          let has_matching_mono = Path.to_list mono_infos |> List.exists (fun (_path, info) ->
+            List.sort compare info.instantiations = forall_insts
+          ) in
+          if has_matching_mono then None
+          else begin
+            (* Generate an inline For-codata for this higher-rank parameter.
+               
+               For a higher-rank param like f: {c} c -> c, the destructor needs:
+               - arg: Prd inst_typ (the argument being passed)
+               - cont: Cns inst_typ (the continuation for the result)
+               
+               This matches the transform pattern:
+               f{T}(x) → ⟨f | inst_T(x, k)⟩ where k is the result continuation *)
+            let codata_name = fresh_inline_for_name () in
+            let codata_typ = Sgn (codata_name, []) in
+            (* Sort the types to ensure consistent ordering between declaration and usage *)
+            let sorted_types = List.sort compare forall_types in
+            let xtors = List.mapi (fun idx garg ->
+              let inst_typ = ground_arg_to_typ garg in
+              { name = dtor_name_for_inst codata_name idx
+              ; quantified = []
+              ; existentials = []
+              ; argument_types = [Prd inst_typ; Cns inst_typ]  (* arg and continuation *)
+              ; main = codata_typ
+              }
+            ) sorted_types in
+            let inline_dec = 
+              { name = codata_name
+              ; data_sort = Codata
+              ; param_kinds = []
+              ; type_args = []
+              ; xtors
+              } in
+            Some (param_path, (inline_dec, forall_insts))
+          end
+        ) |> Path.of_list
+      in
+      
       (* Build forall_to_for mapping: for each higher-rank parameter of a definition,
-        find which mono_info has matching instantiation types.
-        The mono_infos_tbl parameter allows using either the original or transformed mono_infos. *)
-      let build_forall_to_for mono_infos_tbl (def: T.definition): (dec * instantiation list) Ident.tbl =
+        find which mono_info or inline For-codata has matching instantiation types.
+        Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
+      let build_forall_to_for mono_infos_tbl (def: T.definition): (dec * instantiation list * bool) Ident.tbl =
         List.fold_left (fun acc (param_var, param_ty) ->
           let ty = strip_chirality param_ty in
           if contains_forall ty then
@@ -910,13 +1120,21 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
             match Path.find_opt param_path forall_param_flows with
               Some forall_types ->
                 let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
+                (* First check mono_infos *)
                 let matching_info = Path.to_list mono_infos_tbl |> List.find_opt (fun (_path, info) ->
                   List.sort compare info.instantiations = forall_insts
                 ) in
                 (match matching_info with
                   Some (_path, info) ->
-                    Ident.add param_var (info.generated_codata, info.instantiations) acc
-                | None -> acc)
+                    (* Named function case: is_inline=false *)
+                    Ident.add param_var (info.generated_codata, info.instantiations, false) acc
+                | None -> 
+                    (* Check inline_for_codatas *)
+                    (match Path.find_opt param_path inline_for_codatas with
+                      Some (inline_dec, insts) ->
+                        (* Inline lambda case: is_inline=true *)
+                        Ident.add param_var (inline_dec, insts, true) acc
+                    | None -> acc))
             | None -> acc
           else
             acc
@@ -930,9 +1148,15 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
           let transformed_args = List.mapi (fun i ct ->
             let (param_var, _orig_ct) = List.nth def.term_params i in
             match Ident.find_opt param_var forall_to_for with
-              Some (for_dec, _insts) ->
+              Some (for_dec, _insts, is_inline) ->
                 let for_typ = Sgn (for_dec.name, []) in
-                chiral_map (fun _ -> for_typ) ct
+                if is_inline then begin
+                  (* Inline lambda case: type is raise(For) *)
+                  let raise_for_typ = Sgn (Prim.raise_sym, [for_typ]) in
+                  chiral_map (fun _ -> raise_for_typ) ct
+                end else
+                  (* Named function case: type is just For *)
+                  chiral_map (fun _ -> for_typ) ct
             | None -> ct
           ) xtor.argument_types in
           { xtor with argument_types = transformed_args }
@@ -949,10 +1173,13 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
       
       let inline_forall_decs = ref [] in
       
+      (* Build list of inline For-codatas with their instantiations for lookup during transformation *)
+      let inline_for_by_insts = Path.to_list inline_for_codatas |> List.map snd in
+      
       (* Transform all definitions using transformed_mono_infos *)
       let* transformed_defs = traverse_result (Path.to_list exe.defs |> List.map (fun (path, def) ->
         let forall_to_for = build_forall_to_for transformed_mono_infos def in
-        let ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for } in
+        let ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for; inline_for_by_insts } in
         
         match Path.find_opt path transformed_mono_infos with
           Some info -> transform_definition ctx def info
@@ -964,7 +1191,7 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
       
       (* Also transform main (main is typically monomorphic) *)
       let main_forall_to_for = build_forall_to_for transformed_mono_infos exe.main in
-      let main_ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for = main_forall_to_for } in
+      let main_ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for = main_forall_to_for; inline_for_by_insts } in
       let* main_body' = transform_command main_ctx exe.main.body in
       let transformed_main = { exe.main with body = main_body' } in
       
@@ -972,9 +1199,14 @@ let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
       let new_decs = Path.to_list transformed_mono_infos 
         |> List.map (fun (_, info) -> info.generated_codata) in
       
+      (* Include inline For-codata declarations: both pre-generated ones and those from transformation *)
+      let pregenerated_inline_decs = Path.to_list inline_for_codatas
+        |> List.map (fun (_, (dec, _)) -> dec) in
+      let all_new_decs = new_decs @ pregenerated_inline_decs @ !inline_forall_decs in
+      
       Ok
         { main = transformed_main
         ; definitions = transformed_defs
-        ; new_declarations = new_decs
+        ; new_declarations = all_new_decs
         ; mono_infos = transformed_mono_infos
         }
