@@ -1,5 +1,5 @@
 (**
-  module: Core.Specialization
+  module: Core.Mono_spec
   description: Type specialization analysis for the Core language.
   
   This module implements flow-based type specialization analysis to determine
@@ -19,6 +19,7 @@ open Types.CoreTypes
 type exe_ctx = 
   { main: Terms.definition
   ; defs: Terms.definition Path.tbl
+  ; types: Types.CoreTypes.context  (* Type context with data_kinds, promoted_ctors *)
   }
 
 (** Monomorphic type argument - represents a type that may contain variables *)
@@ -45,6 +46,7 @@ type flow =
 (** Context for constraint generation *)
 type gen_context =
   { defs: Terms.definition Path.tbl           (* All definitions *)
+  ; types: Types.CoreTypes.context            (* Type context with data_kinds *)
   ; current_def: Path.t                       (* Current definition being analyzed *)
   ; tparam_map: (Path.t * int) Ident.tbl      (* Type var -> (definition, index) *)
   ; forall_param_map: Path.t Ident.tbl        (* Term var (of forall type) -> param path for flows *)
@@ -91,7 +93,7 @@ let iter (lst: 'a list) (f: 'a -> unit gen): unit gen =
   traverse lst f |> map (fun _ -> ())
 
 (* ========================================================================= *)
-(* Type to MonoArg Conversion                                                *)
+(* Type to mono_arg conversion                                                *)
 (* ========================================================================= *)
 
 (** Convert a Core type to a mono_arg, resolving type variables *)
@@ -117,11 +119,48 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
       | Forall (_v, _k, body) ->
           (* Polymorphic types - just convert the body, ignore the kind *)
           MonoSgn (Path.of_string "forall", [convert body])
-      | Base _ | PromotedCtor _ ->
-          (* These are kind-level, shouldn't appear in term types *)
-          failwith "Unexpected kind-level type in monomorphization"
+      | Base pol ->
+          (* Base polarities - convert to a MonoSgn for type identity *)
+          let name = match pol with
+            | Types.CoreBase.Pos -> "+"
+            | Types.CoreBase.Neg -> "-"
+          in
+          MonoSgn (Path.of_string name, [])
+      | PromotedCtor (data_name, ctor_name, args) ->
+          (* Promoted constructors - preserve for type-checking.
+             Convert to MonoSgn with a path like "'nat.zero" *)
+          let promoted_path = Path.of_string ("'" ^ Path.name data_name ^ "." ^ Path.name ctor_name) in
+          MonoSgn (promoted_path, List.map convert args)
     in
     (convert t, [])
+
+(** Check if a type has a free TVar (not in tparam_map).
+    Free TVars indicate GADT existentials that can't be tracked. *)
+let typ_has_free_tvar (t: typ): bool gen =
+  fun ctx ->
+    let rec has_free t =
+      match t with
+        Ext _ | TMeta _ | Base _ -> false
+      | TVar v -> Ident.find_opt v ctx.tparam_map = None
+      | Sgn (_, args) -> List.exists has_free args
+      | Arrow (a, b) -> has_free a || has_free b
+      | Forall (_, k, b) -> has_free k || has_free b
+      | PromotedCtor (_, _, args) -> List.exists has_free args
+    in
+    (has_free t, [])
+
+(** Check if a kind is inhabitable (i.e., can have values cut against it).
+    Only `type` (Base _) and type constructors (Arrow ending in Base) are inhabitable.
+    Data kinds like `nat` (Sgn where name is in data_kinds) are NOT inhabitable. *)
+let rec is_inhabitable_kind (types_ctx: Types.CoreTypes.context) (k: typ): bool =
+  match k with
+  | Base _ -> true                        (* type is inhabitable *)
+  | Arrow (_, result) -> is_inhabitable_kind types_ctx result  (* T -> type is inhabitable *)
+  | Sgn (name, _) ->                      (* Check if this is a data kind *)
+      (* If name is in data_kinds table, it's a promoted data type = uninhabitable *)
+      Path.find_opt name types_ctx.data_kinds = None
+  | PromotedCtor _ -> false               (* promoted constructors are not inhabitable *)
+  | _ -> false                            (* conservative: treat unknown as not inhabitable *)
 
 (* ========================================================================= *)
 (* Constraint Generation for Terms and Commands                              *)
@@ -186,12 +225,12 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   
   | NewForall (var, _kind, _typ, _cont, cmd) ->
       (* NewForall introduces a type variable that needs to be bound.
-         Use Path.of_ident var as the path - the type variable identifier
-         serves as its own identity for flow tracking.
-         
-         NOTE: Currently, flows to this path only come from `call id{a}(...)`
-         inside the body. Without inter-procedural analysis, we can't connect
-         InstantiateDtor sites to this forall's type variable. *)
+        Use Path.of_ident var as the path - the type variable identifier
+        serves as its own identity for flow tracking.
+        
+        NOTE: Currently, flows to this path only come from `call id{a}(...)`
+        inside the body. Without inter-procedural analysis, we can't connect
+        InstantiateDtor sites to this forall's type variable. *)
       let forall_path = Path.of_ident var in
       fun ctx ->
         let tparam_map = Ident.add var (forall_path, 0) ctx.tparam_map in
@@ -199,8 +238,8 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   
   | InstantiateDtor _typ ->
       (* InstantiateDtor: for now, don't emit flows.
-         The connection between instantiation sites and inline foralls
-         requires more sophisticated inter-procedural analysis. *)
+        The connection between instantiation sites and inline foralls
+        requires more sophisticated inter-procedural analysis. *)
       return ()
 
 (** Generate constraints for a branch (used for Match) *)
@@ -227,8 +266,8 @@ and generate_for_comatch_branch (dec: dec) ((xtor, tyvars, _tmvars, cmd): Terms.
   let dtor_path = Path.access dec.name (Path.name xtor) in
   
   (* Bind branch type variables to the destructor's path, not the current def.
-     This way, when Dtor(fold, [int], ...) emits [int] → fold_path,
-     the branch's type var t (bound to fold_path index 0) will get int. *)
+    This way, when Dtor(fold, [int], ...) emits [int] → fold_path,
+    the branch's type var t (bound to fold_path index 0) will get int. *)
   let tparams_indexed = List.mapi (fun i v -> (v, i)) tyvars in
   
   (* Generate body with type vars bound to destructor path *)
@@ -324,7 +363,7 @@ and generate_for_command (cmd: Terms.command): unit gen =
         | None -> return ())
       in
       (* Check for forall parameter being instantiated:
-         ⟨ Var f | Match { ... InstantiateDtor(T) } ⟩ where f is forall param *)
+         ⟨Var f | Match { ... InstantiateDtor(T) }⟩ where f is forall param *)
       let+ () =
         (match producer with
           Terms.Var v ->
@@ -344,9 +383,22 @@ and generate_for_command (cmd: Terms.command): unit gen =
   
   | Call (def_path, type_args, term_args) ->
       (* This is the key constraint generation site! *)
-      (* Emit a flow: the type_args flow to the called definition *)
+      (* Emit a flow: the type_args flow to the called definition,
+         but ONLY for type params with inhabitable kinds (e.g., `type`).
+         Data-kind params (like `k: nat`) don't need monomorphization. *)
       let+ ctx = get_context in
-      let+ mono_args = traverse type_args typ_to_mono_arg in
+      (* Get the called definition to check parameter kinds *)
+      let inhabitable_type_args = 
+        match Path.find_opt def_path ctx.defs with
+        | Some called_def ->
+            (* Pair type_args with their kinds, filter to inhabitable ones *)
+            let paired = List.combine type_args called_def.type_params in
+            List.filter_map (fun (ty_arg, (_param_var, kind)) ->
+              if is_inhabitable_kind ctx.types kind then Some ty_arg else None
+            ) paired
+        | None -> type_args  (* Conservative: include all if def not found *)
+      in
+      let+ mono_args = traverse inhabitable_type_args typ_to_mono_arg in
       let+ () = 
         if List.length mono_args > 0 then
           emit [{ input = Vector mono_args; dst = def_path }]
@@ -356,14 +408,14 @@ and generate_for_command (cmd: Terms.command): unit gen =
       (* For each term argument that's a NewForall, emit Forward from param path *)
       let+ () =
         match Path.find_opt def_path ctx.defs with
-        | Some called_def ->
+          Some called_def ->
             let param_arg_pairs = List.combine called_def.term_params term_args in
             let forwards = List.filter_map (fun ((param_var, param_ty), arg) ->
               let ty = Types.CoreTypes.strip_chirality param_ty in
               if is_forall_type ty then
                 (* This parameter has forall type. Check if arg contains NewForall *)
                 match find_newforall_path arg with
-                | Some forall_path ->
+                  Some forall_path ->
                     let param_path = Path.access def_path (Ident.name param_var ^ ".forall_param") in
                     Some { input = Forward param_path; dst = forall_path }
                 | None -> None
@@ -419,13 +471,14 @@ let generate_for_definition (def: Terms.definition): unit gen =
   )
 
 (* ========================================================================= *)
-(* Main Entry Point for Constraint Generation                                *)
+(* Main entry point for constraint generation                                *)
 (* ========================================================================= *)
 
 (** Generate all flow constraints from an execution context *)
 let generate_constraints (exe: exe_ctx): flow list =
   let initial_ctx = 
     { defs = exe.defs
+    ; types = exe.types
     ; current_def = exe.main.path
     ; tparam_map = Ident.emptytbl
     ; forall_param_map = Ident.emptytbl
@@ -444,7 +497,7 @@ let generate_constraints (exe: exe_ctx): flow list =
   all_flows
 
 (* ========================================================================= *)
-(* Cycle Detection - Finding Growing Cycles                                  *)
+(* Cycle detection - Finding growing cycles                                  *)
 (* ========================================================================= *)
 
 type index = int
@@ -562,7 +615,7 @@ let find_growing_cycle (flows: flow list): node list option =
     ) (List.hd cycles) (List.tl cycles))
 
 (* ========================================================================= *)
-(* Flow Solver - Fixpoint Computation                                        *)
+(* Flow solver - Fixpoint computation                                        *)
 (* ========================================================================= *)
 
 (** Ground (fully instantiated) type argument *)
@@ -687,7 +740,7 @@ let solve (constraints: flow list): ground_flow list =
   fix_point (fun fs -> solve_step fs !rules) !facts
 
 (* ========================================================================= *)
-(* Main Analysis Interface                                                   *)
+(* Main analysis interface                                                   *)
 (* ========================================================================= *)
 
 (** Result of monomorphization analysis *)

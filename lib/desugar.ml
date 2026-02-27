@@ -69,18 +69,49 @@ let lookup_term_symbol ctx name = StringMap.find_opt name ctx.term_symbols
 
 (* In the new type system, kinds are represented as types:
    Base Typ = kind of inhabitable types
-   Arrow = higher kinds *)
+   Arrow = higher kinds
+   Sgn = promoted data types (e.g., nat)
+   PromotedCtor = promoted constructors (e.g., zero, succ(n)) *)
 let default_kind = MT.Base Typ 
 
+(* Convert an AST kind to a Melcore type (used as a kind).
+   - type -> Base Typ  
+   - k1 -> k2 -> Arrow
+   - name(args) -> either Sgn (for data types) or PromotedCtor (for constructors) *)
+let rec kind_of_ast_ctx (ctx: conv_ctx) : ast_kind -> MT.typ = function
+  | AST_KStar -> default_kind
+  | AST_KArrow (k1, k2) -> MT.Arrow (kind_of_ast_ctx ctx k1, kind_of_ast_ctx ctx k2)
+  | AST_KApp (name, args) ->
+      let args' = List.map (kind_of_ast_ctx ctx) args in
+      (* Check if name is a type symbol (data/codata type) *)
+      (match lookup_type_symbol ctx name with
+      | Some (path, _ds, _sgn) -> MT.Sgn (path, args')
+      | None ->
+          (* Check if it's a constructor *)
+          (match lookup_xtor_symbol ctx name with
+          | Some (data_path, xtor, _ds) -> 
+              MT.PromotedCtor (data_path, xtor.name, args')
+          | None -> failwith ("Unknown kind: " ^ name)))
+
+(* kind_of_ast without context - only works for simple kinds (type, arrows) *)
 let rec kind_of_ast : ast_kind -> MT.typ = function
-    AST_KStar -> default_kind
+  | AST_KStar -> default_kind
   | AST_KArrow (k1, k2) -> MT.Arrow (kind_of_ast k1, kind_of_ast k2)
+  | AST_KApp (name, _) -> failwith ("Cannot resolve kind " ^ name ^ " without context")
 
 (* Extract parameter kinds from a kind (e.g., type -> type -> type
-  gives [Base Typ; Base Typ]) *)
+  gives [Base Typ; Base Typ]) 
+  For promoted types (e.g., type -> nat -> type), needs context to resolve. *)
+let rec params_of_kind_ctx (ctx: conv_ctx) : ast_kind -> MT.typ list = function
+  | AST_KStar -> []
+  | AST_KArrow (k1, k2) -> kind_of_ast_ctx ctx k1 :: params_of_kind_ctx ctx k2
+  | AST_KApp _ -> []  (* Promoted types don't contribute parameters *)
+
+(* params_of_kind without context - only for initial collection pass *)
 let rec params_of_kind : ast_kind -> MT.typ list = function
-    AST_KStar -> []
+  | AST_KStar -> []
   | AST_KArrow (k1, k2) -> kind_of_ast k1 :: params_of_kind k2
+  | AST_KApp _ -> []
 
 (* ===== TYPE CONVERSION ===== *)
 
@@ -101,15 +132,21 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
                   (* Use Sgn with no args for nullary types *)
                   MT.Sgn (path, [])
               | None ->
-                  (* Otherwise look it up as a type variable. *)
-                  (match lookup_type_var ctx x with
-                  | Some id -> MT.TVar id
-                  | None -> failwith ("Unbound type variable: " ^ x)))))
+                  (* Check if it's a promoted constructor *)
+                  (match lookup_xtor_symbol ctx x with
+                  | Some (data_path, xtor, _ds) ->
+                      MT.PromotedCtor (data_path, xtor.name, [])
+                  | None ->
+                      (* Otherwise look it up as a type variable. *)
+                      (match lookup_type_var ctx x with
+                      | Some id -> MT.TVar id
+                      | None -> failwith ("Unbound type variable: " ^ x))))))
 
   | AST_TyApp (t, args) ->
-      (* Type application: could be List(int), algebra(b)(c) etc.
+      (* Type application: could be List(int), algebra(b)(c), succ(n) etc.
          Handle curried applications by collecting all args.
-         If the head is a type symbol name, we create Sgn(name, all_args). *)
+         If the head is a type symbol name, we create Sgn(name, all_args).
+         If the head is a promoted constructor, we create PromotedCtor. *)
       let rec collect_ty_app head acc =
         match head with
         | AST_TyApp (h, more_args) -> collect_ty_app h (more_args @ acc)
@@ -122,8 +159,20 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
           (match lookup_type_symbol ctx name with
             Some (path, _pol, _sgn) -> MT.Sgn (path, all_args')
           | None ->
-              (* Higher-kinded type variable application - not yet supported *)
-              failwith ("Higher-kinded application not supported: " ^ name))
+              (* Check if it's a promoted constructor *)
+              (match lookup_xtor_symbol ctx name with
+              | Some (data_path, xtor, _ds) ->
+                  MT.PromotedCtor (data_path, xtor.name, all_args')
+              | None ->
+                  (* Check if it's a type variable (higher-kinded) *)
+                  (match lookup_type_var ctx name with
+                  | Some id ->
+                      (* Higher-kinded type variable application *)
+                      (* For now, just return the variable - full HKT support TBD *)
+                      if all_args' = [] then MT.TVar id
+                      else failwith ("Higher-kinded type variable application not supported: " ^ name)
+                  | None ->
+                      failwith ("Unknown type in application: " ^ name))))
       | _ ->
           (* Complex type in function position - not supported *)
           failwith "Complex type application not supported")
@@ -132,7 +181,7 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
       MT.fun_sgn (typ_of_ast ctx t1) (typ_of_ast ctx t2)
 
   | AST_TyAll ((x, k_opt), t) ->
-      let k = match k_opt with Some k -> kind_of_ast k | None -> default_kind in
+      let k = match k_opt with Some k -> kind_of_ast_ctx ctx k | None -> default_kind in
       let x_id = Ident.mk x in
       let ctx' = add_type_var ctx x x_id in
       MT.Forall (x_id, k, typ_of_ast ctx' t)
@@ -147,7 +196,9 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
   so mutual references work correctly. *)
 
 (* First pass: create all type symbols with placeholder signatures that will 
-  be replaced in the second pass *)
+  be replaced in the second pass. We use empty param_kinds here since the
+  actual kinds will be resolved in build_signatures when the full context
+  is available (needed for promoted data types like nat in "type -> nat -> type"). *)
 let collect_type_symbols (defs: ast_defs) : conv_ctx =
   List.fold_left (fun ctx tdef ->
     match tdef with
@@ -155,14 +206,12 @@ let collect_type_symbols (defs: ast_defs) : conv_ctx =
         add_type_alias ctx name ty
     | AST_TyData dec ->
         let path = Path.of_string dec.name in
-        let params = params_of_kind dec.kind in
-        (* Create placeholder - will be replaced in build_signatures *)
-        let sgn = lazy { MT.name = path; data_sort = Data; param_kinds = params; type_args = []; xtors = [] } in
+        (* Create placeholder with empty params - will be replaced in build_signatures *)
+        let sgn = lazy { MT.name = path; data_sort = Data; param_kinds = []; type_args = []; xtors = [] } in
         add_type_symbol ctx dec.name path Data sgn
     | AST_TyCode dec ->
         let path = Path.of_string dec.name in
-        let params = params_of_kind dec.kind in
-        let sgn = lazy { MT.name = path; data_sort = Codata; param_kinds = params; type_args = []; xtors = [] } in
+        let sgn = lazy { MT.name = path; data_sort = Codata; param_kinds = []; type_args = []; xtors = [] } in
         add_type_symbol ctx dec.name path Codata sgn
   ) empty_ctx defs.type_defs
 
@@ -187,7 +236,7 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (xtor: ast_xtor) : 
   (* Build context with type parameters *)
   let params, ctx' =
     List.fold_left (fun (acc, ctx_acc) (x, k_opt) ->
-      let k = match k_opt with Some k -> kind_of_ast k | None -> default_kind in
+      let k = match k_opt with Some k -> kind_of_ast_ctx ctx_acc k | None -> default_kind in
       let x_id = Ident.mk x in
       ((x_id, k) :: acc, add_type_var ctx_acc x x_id)
     ) ([], ctx) xtor.type_args
@@ -245,20 +294,25 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (xtor: ast_xtor) : 
 let build_recursive_signature 
     (ctx: conv_ctx) (path: Path.t) (dec: ast_type_dec) (ds: Common.Types.data_sort) 
     : MT.dec Lazy.t =
-  let params = params_of_kind dec.kind in
   (* Create a recursive lazy that contains itself *)
   let rec lazy_sgn = lazy begin
     (* Create a modified context where this type maps to our recursive lazy *)
     let ctx = add_type_symbol ctx dec.name path ds lazy_sgn in
+    (* Now resolve the kind with full context *)
+    let params = params_of_kind_ctx ctx dec.kind in
     let xtors = List.map (xtor_of_ast ctx ds) dec.clauses in
     {MT.name = path; data_sort = ds; param_kinds = params; type_args = []; xtors = xtors}
   end in
   lazy_sgn
 
-(* Second pass: build signatures with proper recursive references *)
+(* Second pass: build signatures with proper recursive references.
+   We need to process types in order so that promoted constructors are
+   available when referenced in later type definitions (e.g., nat's zero/succ
+   must be available when processing vec). *)
 let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
-  (* Build signatures one by one, each with proper self-reference *)
-  let ctx = List.fold_left (fun ctx tdef ->
+  (* Process each type definition, building its signature AND registering its xtors
+     before moving to the next type. This ensures promoted constructors are available. *)
+  List.fold_left (fun ctx tdef ->
     match tdef with
       AST_TyAlias _ -> ctx
     | AST_TyData dec ->
@@ -268,7 +322,12 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
           | None -> failwith ("Type symbol not found: " ^ dec.name)
         in
         let lazy_sgn = build_recursive_signature ctx path dec Common.Types.Data in
-        add_type_symbol ctx dec.name path Data lazy_sgn
+        let ctx = add_type_symbol ctx dec.name path Data lazy_sgn in
+        (* Force the signature and register xtors immediately *)
+        let sgn = Lazy.force lazy_sgn in
+        List.fold_left (fun ctx (xtor: MT.xtor) ->
+          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Data
+        ) ctx sgn.xtors
     | AST_TyCode dec ->
         let (path, _, _) =
           match lookup_type_symbol ctx dec.name with
@@ -276,29 +335,8 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
           | None -> failwith ("Type symbol not found: " ^ dec.name)
         in
         let lazy_sgn = build_recursive_signature ctx path dec Common.Types.Codata in
-        add_type_symbol ctx dec.name path Codata lazy_sgn
-  ) ctx defs.type_defs in
-  
-  (* Register xtors by forcing the signatures (now safe with recursive lazy) *)
-  List.fold_left (fun ctx tdef ->
-    match tdef with
-      AST_TyAlias _ -> ctx
-    | AST_TyData dec ->
-        let (_, _, lazy_sgn) =
-          match lookup_type_symbol ctx dec.name with
-            Some x -> x
-          | None -> failwith ("Type symbol not found: " ^ dec.name)
-        in
-        let sgn = Lazy.force lazy_sgn in
-        List.fold_left (fun ctx (xtor: MT.xtor) ->
-          add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Data
-        ) ctx sgn.xtors
-    | AST_TyCode dec ->
-        let (_, _, lazy_sgn) =
-          match lookup_type_symbol ctx dec.name with
-            Some x -> x
-          | None -> failwith ("Type symbol not found: " ^ dec.name)
-        in
+        let ctx = add_type_symbol ctx dec.name path Codata lazy_sgn in
+        (* Force the signature and register xtors immediately *)
         let sgn = Lazy.force lazy_sgn in
         List.fold_left (fun ctx (xtor: MT.xtor) ->
           add_xtor_symbol ctx (Path.name xtor.name) sgn.name xtor Codata
@@ -401,7 +439,7 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
       let rec process_ty_args ctx_ty = function
           [] -> process_tm_args ctx_ty tm_args
         | (x, k_opt) :: rest ->
-            let k = match k_opt with Some k -> kind_of_ast k | None -> default_kind in
+            let k = match k_opt with Some k -> kind_of_ast_ctx ctx_ty k | None -> default_kind in
             let x_id = Ident.mk x in
             let ctx_ty' = add_type_var ctx_ty x x_id in
             Trm.All ((x_id, k), process_ty_args ctx_ty' rest)
@@ -519,7 +557,7 @@ let term_def_of_ast (ctx: conv_ctx) (def: ast_term_def) : Trm.term_def =
   (* Process type args *)
   let type_args, ctx =
     List.fold_left (fun (acc, ctx) (x, k_opt) ->
-      let k = match k_opt with Some k -> kind_of_ast k | None -> default_kind in
+      let k = match k_opt with Some k -> kind_of_ast_ctx ctx k | None -> default_kind in
       let x_id = Ident.mk x in
       ((x_id, k) :: acc, add_type_var ctx x x_id)
     ) ([], ctx) def.type_args

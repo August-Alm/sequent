@@ -191,16 +191,17 @@ let expect_sgn (t: typ) (subs: subst) : (Path.t * typ list, check_error) result 
 (* Xtor Instantiation                                                        *)
 (* ========================================================================= *)
 
-(** Freshen an xtor's existential types with fresh metavariables.
-    For instantiated declarations, quantified is empty so we only freshen existentials. *)
-let freshen_xtor_existentials (xtor: xtor)
+(** Freshen an xtor's type parameters for pattern matching.
+    Both quantified and existential parameters become existentially bound when matching. *)
+let freshen_xtor_type_params (xtor: xtor)
     : (chiral_typ list * typ) =
-  (* Freshen existential variables only - quantified is empty for instantiated dec *)
-  let _, exist_subst = freshen_meta xtor.existentials in
+  (* For pattern matching, both quantified and existentials are freshened *)
+  let all_params = xtor.quantified @ xtor.existentials in
+  let _, subst = freshen_meta all_params in
   let inst_args =
-    List.map (chiral_map (apply_fresh_subst exist_subst))
+    List.map (chiral_map (apply_fresh_subst subst))
       xtor.argument_types in
-  let inst_main = apply_fresh_subst exist_subst xtor.main in
+  let inst_main = apply_fresh_subst subst xtor.main in
   (inst_args, inst_main)
 
 (** Bind term variables with xtor argument types *)
@@ -213,7 +214,9 @@ let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var l
 (* ========================================================================= *)
 
 (** Check a single branch.
-    For instantiated declarations, xtor.quantified is empty. *)
+    For data: quantified is existentially bound (matching introduces them).
+    For codata: quantified is also existentially bound (matching on codata introduces them).
+    So type_vars should match the total of quantified + existentials. *)
 let check_branch
     (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
@@ -223,11 +226,14 @@ let check_branch
   match find_xtor dec xtor_name with
     None -> Error (UnboundXtor (dec.name, xtor_name))
   | Some xtor ->
-      (* Check type variable arity (existentials only, quantified is empty) *)
-      let num_exist = List.length xtor.existentials in
-      if List.length type_vars <> num_exist then
+      (* For both data and codata, pattern matching binds both quantified and existentials.
+         For data ctors: quantified are the universals, but matching introduces them existentially.
+         For codata dtors: quantified AND existentials are introduced by matching. *)
+      let all_type_params = xtor.quantified @ xtor.existentials in
+      let num_type_vars = List.length all_type_params in
+      if List.length type_vars <> num_type_vars then
         Error (TypeVarArityMismatch {
-          xtor = xtor_name; expected = num_exist; got = List.length type_vars })
+          xtor = xtor_name; expected = num_type_vars; got = List.length type_vars })
       (* Check term variable arity *)
       else if List.length term_vars <> List.length xtor.argument_types then
         Error (XtorArityMismatch {
@@ -235,22 +241,22 @@ let check_branch
         ; expected = List.length xtor.argument_types
         ; got = List.length term_vars })
       else
-        (* Freshen existentials only - dec is already instantiated *)
-        let inst_args, _ = freshen_xtor_existentials xtor in
-        (* Substitute user-provided type variable names for existentials *)
-        let exist_subst =
+        (* Freshen all type params for pattern matching *)
+        let inst_args, _ = freshen_xtor_type_params xtor in
+        (* Substitute user-provided type variable names for all type params *)
+        let type_subst =
           List.fold_left2 (fun s (old_v, _) new_v ->
             Ident.add old_v (TVar new_v) s
-          ) Ident.emptytbl xtor.existentials type_vars
+          ) Ident.emptytbl all_type_params type_vars
         in
         let inst_args' =
-          List.map (chiral_map (apply_fresh_subst exist_subst))
+          List.map (chiral_map (apply_fresh_subst type_subst))
             inst_args
         in
-        (* Extend context with existential type vars and term vars *)
+        (* Extend context with type vars and term vars *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
-            ctx type_vars xtor.existentials
+            ctx type_vars all_type_params
         in
         let ctx'' = bind_xtor_term_args ctx' inst_args' term_vars in
         check_cmd ctx'' subs cmd
@@ -292,8 +298,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
-          (* Freshen existentials - quantified is empty for instantiated dec *)
-          let inst_args, inst_main = freshen_xtor_existentials xtor in
+          (* Freshen type params for construction *)
+          let inst_args, inst_main = freshen_xtor_type_params xtor in
           if List.length term_vars <> List.length inst_args then
             Error (XtorArityMismatch
               { xtor = xtor_name
@@ -344,8 +350,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify v_ty expected_ty subs with
             None -> Error (UnificationFailed (v_ty, expected_ty))
           | Some subs' ->
-              (* Freshen existentials - quantified is empty for instantiated dec *)
-              let inst_args, _ = freshen_xtor_existentials xtor in
+              (* Freshen type params for invocation *)
+              let inst_args, _ = freshen_xtor_type_params xtor in
               check_xtor_args ctx xtor_name inst_args term_vars subs'
               |> Result.map (fun _ -> ()))))
 

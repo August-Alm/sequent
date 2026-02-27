@@ -389,9 +389,8 @@ module TypeSystem(Base: BASE) = struct
 
   and is_inhabitable (ctx: context) (t: typ) : bool =
     match infer_kind ctx t with
-    | Error _ -> false
-    | Ok (Base p) -> List.exists (Base.eq_polarity p) Base.polarities
-    | Ok _ -> false
+      Ok (Base p) -> List.exists (Base.eq_polarity p) Base.polarities
+    | Ok _ | Error _ -> false
 
   (* Check that a constructor or destructor is well-kinded *)
   let check_xtor_well_kinded
@@ -524,14 +523,10 @@ module TypeSystem(Base: BASE) = struct
       Then instantiate_dec expr_dec [Int] would only include IntLit.
   *)
   let instantiate_dec (dec: dec) (type_args: typ list) : dec =
-    (* Instantiate a single xtor with the given type arguments *)
-    let instantiate_xtor (xtor: xtor) : xtor =
-      (* The xtor.quantified binds names for the dec's type params.
-         We substitute the type_args for those quantified vars. *)
-      let xtor_subst = 
-        List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
-          Ident.emptytbl xtor.quantified type_args
-      in
+    (* Instantiate a single xtor with a substitution derived from unification.
+      For GADTs, xtor.quantified may have different length than type_args,
+      so we use the substitution from unifying xtor.main with the target type. *)
+    let instantiate_xtor (xtor: xtor) (xtor_subst: subst) : xtor =
       { name = xtor.name
       ; quantified = []  (* No longer quantified after instantiation *)
       ; existentials = xtor.existentials  (* Keep existentials *)
@@ -540,31 +535,50 @@ module TypeSystem(Base: BASE) = struct
       ; main = apply_fresh_subst xtor_subst xtor.main
       }
     in
-    (* Filter to only reachable xtors (for GADT refinement).
-       The scrutinee_type must match the shape of xtor.main.
-       For codata types in Core, xtor.main is wrapped in raise(), so we wrap
-       scrutinee_type to match. We detect this by checking the first xtor. *)
-    let base_scrutinee = Sgn (dec.name, type_args) in
-    let scrutinee_type = 
-      match dec.xtors with
-      | xtor :: _ ->
-          (* Check if the xtor's main type is wrapped in raise/lower *)
-          (match xtor.main with
-           | Sgn (wrapper, [Sgn (inner_dec, _)]) 
-             when Path.equal inner_dec dec.name ->
-               (* Xtor main is wrapper(dec(...)), so wrap scrutinee *)
-               Sgn (wrapper, [base_scrutinee])
-           | _ -> base_scrutinee)
-      | [] -> base_scrutinee
+    (* For GADT filtering, convert TVars in type_args to fresh metas so they can
+      unify. This allows filtering like: vec{a}{succ(k)} excludes nil because
+      succ(k) can never unify with zero, even though a and k are polymorphic.
+      
+      We maintain a mapping from generated metas back to original types so we
+      can build the correct instantiation substitution. *)
+    let tvar_to_meta = ref Ident.emptytbl in
+    let rec typ_vars_to_metas t =
+      match t with
+        TVar v -> 
+          (* Check if we already have a meta for this TVar *)
+          (match Ident.find_opt v !tvar_to_meta with
+            Some m -> TMeta m
+          | None ->
+              let m = Ident.mk (Ident.name v) in
+              tvar_to_meta := Ident.add v m !tvar_to_meta;
+              TMeta m)
+      | TMeta _ -> t
+      | Arrow (t1, t2) -> Arrow (typ_vars_to_metas t1, typ_vars_to_metas t2)
+      | Sgn (n, args) -> Sgn (n, List.map typ_vars_to_metas args)
+      | PromotedCtor (d, c, args) -> PromotedCtor (d, c, List.map typ_vars_to_metas args)
+      | Forall (x, k, body) -> Forall (x, typ_vars_to_metas k, typ_vars_to_metas body)
+      | _ -> t
     in
+    let meta_type_args = List.map typ_vars_to_metas type_args in
+    let meta_scrutinee = Sgn (dec.name, meta_type_args) in
+    (* Build reverse mapping: meta -> original TVar *)
+    let meta_to_tvar = Ident.of_list
+      (List.map (fun (v, m) -> (m, TVar v)) (Ident.to_list !tvar_to_meta)) in
     let reachable_xtors = 
       List.filter_map (fun (xtor: xtor) ->
-        (* Check if xtor's main type can unify with the scrutinee type *)
+        (* Check if xtor's main type can unify with the scrutinee type.
+          Freshen quantified vars to metas so they can unify with type_args. *)
         let _, fresh_subst = freshen_meta xtor.quantified in
         let fresh_main = apply_fresh_subst fresh_subst xtor.main in
-        let result = unify fresh_main scrutinee_type Ident.emptytbl in
+        let result = unify fresh_main meta_scrutinee Ident.emptytbl in
         match result with
-        | Some _ -> Some (instantiate_xtor xtor)
+          Some unified_subst -> 
+            (* Compose: fresh_subst maps original vars to metas,
+              unified_subst maps those metas to types (possibly containing 
+              metas from meta_scrutinee). We need to convert those back to TVars. *)
+            let resolve_meta t = apply_fresh_subst meta_to_tvar (apply_subst unified_subst t) in
+            let combined_subst = Ident.map_tbl resolve_meta fresh_subst in
+            Some (instantiate_xtor xtor combined_subst)
         | None -> None
       ) dec.xtors
     in

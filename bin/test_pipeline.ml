@@ -62,7 +62,7 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
      | None -> ());
     
     (* Stage 4: Encode to Core *)
-    let* (core_decs, core_defs) = Pipe.MelcoreStage.encode decs norm_defs in
+    let* (types_ctx, core_defs) = Pipe.MelcoreStage.encode decs norm_defs in
     print_endline "4. Encode to Core: OK";
     (* Debug: print Core defs *)
     Path.to_list core_defs |> List.iter (fun (p, (def: Core.Terms.definition)) ->
@@ -70,14 +70,11 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     );
     
     (* Stage 5: Core type-check *)
-    let core_decs_tbl = List.fold_left (fun acc (dec: Core.Types.CoreTypes.dec) ->
-      Path.add dec.name dec acc
-    ) Path.emptytbl core_decs in
-    let* core_defs = Pipe.CoreStage.type_check core_decs_tbl core_defs in
+    let* (types_ctx, core_defs) = Pipe.CoreStage.type_check types_ctx core_defs in
     print_endline "5. Core type-check: OK";
     
     (* Stage 6: Monomorphize *)
-    let* mono_result = Pipe.CoreStage.monomorphize core_defs in
+    let* mono_result = Pipe.CoreStage.monomorphize types_ctx core_defs in
     print_endline "6. Monomorphize: OK";
     Printf.printf "   Generated %d new declarations, %d definitions\n"
       (List.length mono_result.new_declarations)
@@ -95,7 +92,7 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     
     (* Stage 7: Focus *)
     let* (focused_decs, focused_main, focused_defs) = 
-      Pipe.CoreStage.focus core_decs_tbl mono_result in
+      Pipe.CoreStage.focus types_ctx mono_result in
     print_endline "7. Focus: OK";
     
     (* Print focused main *)
@@ -438,9 +435,9 @@ let main: int =
   }
     |};
 
-  (* Test 21: Complex *)
+  (* Test 21: Complex types *)
   run_test
-    ~name:"Complex test with multiple features"
+    ~name:"Complex types with multiple features"
     ~expected:10
     {|
 data option: type -> type where
@@ -497,6 +494,42 @@ let main: int =
   sum(tetractys)
     |};
 
+  (* Test 22: Data kind (vectors) *)
+  run_test
+    ~name:"Data kind (vectors)"
+    ~expected:3
+    {|
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+data vec: type -> nat -> type where
+  { nil: {a} vec(a)(zero)
+  ; cons: {a}{n: nat} a -> vec(a)(n) -> vec(a)(succ(n))
+  }
+
+let to_int(n: nat): int =
+  match n with
+  { zero => 0
+  ; succ(m) => 1 + to_int(m)
+  }
+
+let length{a}{k: nat}(v: vec(a)(k)): nat =
+  match v with
+  { nil{_} => zero
+  ; cons{_}{n}(x)(xs) => succ(length{a}{n}(xs))
+  }
+
+let main: int =
+  let v0 = cons{int}{zero}(0)(nil{int}) in
+  let v1 = cons{int}{succ(zero)}(1)(v0) in
+  let v2 = cons{int}{succ(succ(zero))}(2)(v1) in
+  let n = length{int}{succ(succ(succ(zero)))}(v2) in
+  to_int(n)
+    |};
+
+  
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Results: %d/%d tests passed\n" !pass_count !test_count;

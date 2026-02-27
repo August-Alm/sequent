@@ -346,40 +346,40 @@ let dec_to_string (dec: dec) : string =
 (* ========================================================================= *)
 
 (** Pretty-print a ground argument *)
-let rec pp_ground_arg (arg: Specialization.ground_arg) : string =
+let rec pp_ground_arg (arg: Mono_spec.ground_arg) : string =
   match arg with
-  | Specialization.GroundExt Int -> "int"
-  | Specialization.GroundSgn (name, []) -> Path.name name
-  | Specialization.GroundSgn (name, args) ->
+  | Mono_spec.GroundExt Int -> "int"
+  | Mono_spec.GroundSgn (name, []) -> Path.name name
+  | Mono_spec.GroundSgn (name, args) ->
       Path.name name ^ parens (comma_sep (List.map pp_ground_arg args))
 
-let ground_arg_to_string (arg: Specialization.ground_arg) : string =
+let ground_arg_to_string (arg: Mono_spec.ground_arg) : string =
   pp_ground_arg arg
 
 (** Pretty-print a ground flow *)
-let pp_ground_flow (flow: Specialization.ground_flow) : string =
+let pp_ground_flow (flow: Mono_spec.ground_flow) : string =
   let args_str = match flow.src with
     | [] -> "()"
     | args -> parens (comma_sep (List.map pp_ground_arg args))
   in
   Path.name flow.dst ^ args_str
 
-let ground_flow_to_string (flow: Specialization.ground_flow) : string =
+let ground_flow_to_string (flow: Mono_spec.ground_flow) : string =
   pp_ground_flow flow
 
 (** Pretty-print analysis result *)
-let pp_analysis_result (result: Specialization.analysis_result) : string =
+let pp_analysis_result (result: Mono_spec.analysis_result) : string =
   match result with
-  | Specialization.HasGrowingCycle cycle ->
+  | Mono_spec.HasGrowingCycle cycle ->
       "growing cycle detected: " ^ 
       String.concat " → " (List.map (fun (p, i) -> 
         Path.name p ^ "[" ^ string_of_int i ^ "]"
       ) cycle)
-  | Specialization.Solvable flows ->
+  | Mono_spec.Solvable flows ->
       "solvable with instantiations:\n" ^
       String.concat "\n" (List.map (fun f -> "  " ^ pp_ground_flow f) flows)
 
-let analysis_result_to_string (result: Specialization.analysis_result) : string =
+let analysis_result_to_string (result: Mono_spec.analysis_result) : string =
   pp_analysis_result result
 
 (* ========================================================================= *)
@@ -387,16 +387,16 @@ let analysis_result_to_string (result: Specialization.analysis_result) : string 
 (* ========================================================================= *)
 
 (** Pretty-print a monomorphization error *)
-let pp_mono_error (err: Monomorphize.mono_error) : string =
+let pp_mono_error (err: Mono.mono_error) : string =
   match err with
-  | Monomorphize.GrowingCycle cycle ->
+  | Mono.GrowingCycle cycle ->
       "growing cycle detected: " ^
       String.concat " → " (List.map (fun (p, i) ->
         Path.name p ^ "[" ^ string_of_int i ^ "]"
       ) cycle)
-  | Monomorphize.NoMatchingInstantiation { def_path; instantiation } ->
+  | Mono.NoMatchingInstantiation { def_path; instantiation } ->
       "no matching instantiation for " ^ Path.name def_path ^ " with args " ^
       parens (comma_sep (List.map pp_ground_arg instantiation))
 
-let mono_error_to_string (err: Monomorphize.mono_error) : string =
+let mono_error_to_string (err: Mono.mono_error) : string =
   pp_mono_error err

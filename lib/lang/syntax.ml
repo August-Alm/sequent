@@ -5,7 +5,15 @@
   This module defines the abstract syntax of the surface language.
 *)
 
-type ast_kind = AST_KStar | AST_KArrow of ast_kind * ast_kind
+(** Kinds in the surface language.
+    - AST_KStar: the base kind "type"
+    - AST_KArrow: arrow kinds k1 -> k2
+    - AST_KApp: promoted data type applied to kind arguments, e.g. nat, vec(type)(nat)
+*)
+type ast_kind = 
+  | AST_KStar 
+  | AST_KArrow of ast_kind * ast_kind
+  | AST_KApp of string * ast_kind list
 
 type ast_typ =
     AST_TyVar of string
@@ -116,10 +124,13 @@ let rec kind_to_string = function
   | AST_KArrow (k1, k2) ->
     let k1_str =
       match k1 with
-      | AST_KStar -> kind_to_string k1
-      | AST_KArrow _ -> "(" ^ kind_to_string k1 ^ ")"
+      | AST_KStar | AST_KApp (_, []) -> kind_to_string k1
+      | AST_KArrow _ | AST_KApp _ -> "(" ^ kind_to_string k1 ^ ")"
     in
     k1_str ^ " -> " ^ kind_to_string k2
+  | AST_KApp (name, []) -> name
+  | AST_KApp (name, args) ->
+    name ^ String.concat "" (List.map (fun k -> "(" ^ kind_to_string k ^ ")") args)
 
 (* Convert type to string *)
 let rec typ_to_string = function

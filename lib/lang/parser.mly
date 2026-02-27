@@ -36,13 +36,28 @@ main_defs:
 
 (* ===== KINDS ===== *)
 
+(* Kinds support:
+   - type (the base kind)
+   - k1 -> k2 (arrow kinds)
+   - name (promoted data type, e.g., nat)
+   - name(k1)...(kN) (promoted constructor or data type applied to kind args)
+*)
+
 kind:
-  | KW_TYPE { AST_KStar }
-  | k1 = kind_atom ARROW k2 = kind { AST_KArrow (k1, k2) }
+  | k1 = kind_app ARROW k2 = kind { AST_KArrow (k1, k2) }
+  | k = kind_app { k }
+
+kind_app:
+  | k = kind_atom { k }
+  | k = kind_app LPAREN arg = kind RPAREN
+    { match k with
+      | AST_KApp (name, args) -> AST_KApp (name, args @ [arg])
+      | _ -> failwith "Invalid kind application" }
 
 kind_atom:
   | KW_TYPE { AST_KStar }
   | LPAREN k = kind RPAREN { k }
+  | name = IDENT { AST_KApp (name, []) }
 
 (* ===== TYPES ===== *)
 

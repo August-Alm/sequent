@@ -533,19 +533,24 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       let raise_dec = get_instantiated_dec ctx Prim.raise_sym [inner_codata_ty] in
       CTm.Ctor (raise_dec, Prim.thunk_sym, [comatch])
 
-  | MTm.TypedCtor (dec, ctor, ty_args, args, _ty) ->
+  | MTm.TypedCtor (dec, ctor, ty_args, args, result_ty) ->
       (* Ctor(d, c, {ty_args}, args) → Ctor(inst_dec, c, args')
-         ty_args contains BOTH dec params AND xtor existentials.
-         We need to split them: only dec params go to instantiate_dec. *)
-      let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
+         For GADTs, ty_args may not have all dec params - some are fixed by the ctor.
+         We extract the actual type args from result_ty which is the full result type. *)
       let args' = List.map (encode_term ctx) args in
-      (* Get the original dec to find how many params it has *)
-      let orig_dec = match Path.find_opt dec ctx.types.decs with
-          Some d -> d
-        | None -> failwith ("Unknown declaration: " ^ Path.name dec)
+      (* Extract type args from result type *)
+      let dec_type_args = match result_ty with
+        | MTy.Sgn (_, type_args) -> List.map (encode_type ctx.data_sorts) type_args
+        | _ -> 
+            (* Fallback: use the old method for non-Sgn types *)
+            let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
+            let orig_dec = match Path.find_opt dec ctx.types.decs with
+                Some d -> d
+              | None -> failwith ("Unknown declaration: " ^ Path.name dec)
+            in
+            let n_dec_params = List.length orig_dec.param_kinds in
+            List.filteri (fun i _ -> i < n_dec_params) ty_args'
       in
-      let n_dec_params = List.length orig_dec.param_kinds in
-      let dec_type_args = List.filteri (fun i _ -> i < n_dec_params) ty_args' in
       let inst_dec = get_instantiated_dec ctx dec dec_type_args in
       CTm.Ctor (inst_dec, ctor, args')
 

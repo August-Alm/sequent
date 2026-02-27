@@ -1,407 +1,39 @@
 (**
-  module: Core.Monomorphize
-  description: Monomorphization transformation for the Core language.
+  module: Core.Mono_transform
+  description: Term and command transformation for monomorphization.
   
-  This module transforms polymorphic definitions into monomorphic ones by:
-  1. Analyzing flow constraints to find all type instantiations
-  2. For each polymorphic definition, generating a codata type where each
-     destructor carries the specialized term parameters
-  3. Transforming the polymorphic definition into a monomorphic one that
-     takes a single consumer of the codata type
-  4. Transforming call sites to use the appropriate destructor
-  
-  Example transformation:
-  
-    def id{a}(x: Prd a, k: Cns a) = ⟨x | k⟩
-    
-    with instantiations [int, bool] becomes:
-    
-    codata id.For where
-      inst_0(x: Prd int, k: Cns int) : id.For
-      inst_1(x: Prd bool, k: Cns bool) : id.For
-    
-    def id.mono(u: Cns id.For) =
-      ⟨Comatch(id.For, [
-          inst_0(x, k) => ⟨x | k⟩
-          inst_1(x, k) => ⟨x | k⟩
-        ]) | u⟩
-    
-    Call site id{int}(42, k) becomes:
-      Call(id.mono, [], [Dtor(id.For, inst_0, [42, k])])
-  
-  Higher-rank polymorphism:
-  
-    When a definition has a higher-rank parameter like f: {c} c -> c,
-    and that parameter's type variable c is instantiated multiple times
-    (e.g., f{a}(x) and f{b}(y)), we create a dictionary codata type.
-    
-    For map_mk_tuple{a}{b}(f: {c} c->c) with f{a} and f{b} usages,
-    monomorphized at [int, enum]:
-    
-    codata id.For where
-      inst_0(k, x) : id.For    -- for int
-      inst_1(k, x) : id.For    -- for enum
-    
-    map_mk_tuple.mono takes f: prd id.For
+  This module handles the actual transformation of terms, commands, and
+  definitions during monomorphization. It transforms polymorphic constructs
+  into monomorphic equivalents using the codata types generated during analysis.
 *)
 
 open Common.Identifiers
 open Common.Types
 open Types.CoreBase
 open Types.CoreTypes
+open Mono_types
 
-(* Open Terms for direct access to term/command constructors *)
 module T = Terms
 
-(* Counter for generating fresh inline For-codata names *)
-let inline_for_counter = ref 0
-let fresh_inline_for_name () =
-  let n = !inline_for_counter in
-  inline_for_counter := n + 1;
-  Path.of_string ("inline.For" ^ string_of_int n)
-
 (* ========================================================================= *)
-(* Types for Monomorphization                                                *)
+(* Transformation Context                                                    *)
 (* ========================================================================= *)
-
-(** A specific instantiation of type parameters *)
-type instantiation = Specialization.ground_arg list
-
-(** Information about a higher-rank parameter's instantiation uses *)
-type higher_rank_info =
-  { param_var: Ident.t                  (* The parameter variable name, e.g., f *)
-  ; param_type: chiral_typ              (* The full parameter type *)
-  ; forall_var: Ident.t                 (* The forall-bound type var, e.g., c *)
-  ; instantiation_types: typ list       (* Types used with InstantiateDtor, e.g., [a; b] *)
-  }
-
-(** Information about a polymorphic definition's monomorphization *)
-type mono_info = 
-  { original_path: Path.t
-  ; type_params: (Ident.t * typ) list   (* Original type parameters *)
-  ; term_params: (Ident.t * chiral_typ) list  (* Original term parameters *)
-  ; instantiations: instantiation list  (* All discovered instantiations *)
-  ; generated_codata: dec               (* The generated For_X codata type *)
-  ; mono_path: Path.t                   (* Path of monomorphized definition *)
-  ; higher_rank_params: higher_rank_info list  (* Higher-rank param info *)
-  }
-
-(** Result of monomorphization *)
-type mono_result =
-  { main: Terms.definition
-  ; definitions: Terms.definition list
-  ; new_declarations: dec list
-  ; mono_infos: mono_info Path.tbl      (* keyed by original definition path *)
-  }
-
-(* ========================================================================= *)
-(* Error Types                                                               *)
-(* ========================================================================= *)
-
-(** Errors that can occur during monomorphization *)
-type mono_error =
-    GrowingCycle of (Path.t * int) list
-  | NoMatchingInstantiation of
-      { def_path: Path.t; instantiation: Specialization.ground_arg list }
-
-type 'a mono_check = ('a, mono_error) result
-
-let ( let* ) = Result.bind
-
-(* ========================================================================= *)
-(* Instantiation Utilities                                                   *)
-(* ========================================================================= *)
-
-(** Convert ground_arg to a Core typ *)
-let rec ground_arg_to_typ (arg: Specialization.ground_arg): typ =
-  match arg with
-    Specialization.GroundExt Int -> Ext Int
-  | Specialization.GroundSgn (name, args) ->
-      Sgn (name, List.map ground_arg_to_typ args)
-
-(** Generate destructor name for an instantiation *)
-let dtor_name_for_inst (base_path: Path.t) (idx: int): Path.t =
-  Path.access base_path ("inst_" ^ string_of_int idx)
-
-(** Apply type substitution to a chiral type *)
-let apply_subst_chiral (subst: typ Ident.tbl) (ct: chiral_typ): chiral_typ =
-  chiral_map (apply_fresh_subst subst) ct
-
-(* ========================================================================= *)
-(* Higher-Rank Parameter Analysis                                            *)
-(* ========================================================================= *)
-
-(** Check if a type contains a Forall - indicates higher-rank *)
-let rec contains_forall (t: typ): bool =
-  match t with
-    Forall _ -> true
-  | Sgn (_, args) -> List.exists contains_forall args
-  | Arrow (t1, t2) -> contains_forall t1 || contains_forall t2
-  | TVar _ | TMeta _ | Ext _ | Base _ | PromotedCtor _ -> false
-
-(** Extract the forall-bound variable from a higher-rank type.
-    For raise(∀c:k. body), returns Some c *)
-let extract_forall_var (t: typ): Ident.t option =
-  match t with
-    Sgn (_, [Forall (v, _, _)]) -> Some v  (* raise(∀v. body) *)
-  | Forall (v, _, _) -> Some v
-  | _ -> None
-
-(** Collect all InstantiateDtor types used in a term/command.
-    Returns list of types that are used with InstantiateDtor. *)
-let rec collect_instantiations_term (tm: T.term): typ list =
-  match tm with
-    T.Var _ | T.Lit _ -> []
-  | T.Ctor (_, _, args) -> List.concat_map collect_instantiations_term args
-  | T.Dtor (_, _, _, args) -> List.concat_map collect_instantiations_term args
-  | T.Match (_, branches) | T.Comatch (_, branches) ->
-      List.concat_map (fun (_, _, _, cmd) -> collect_instantiations_cmd cmd) branches
-  | T.MuPrd (_, _, cmd) | T.MuCns (_, _, cmd) -> collect_instantiations_cmd cmd
-  | T.NewForall (_, _, _, _, cmd) -> collect_instantiations_cmd cmd
-  | T.InstantiateDtor ty -> [ty]
-
-and collect_instantiations_cmd (cmd: T.command): typ list =
-  match cmd with
-    T.Cut (_, p, c) -> 
-      collect_instantiations_term p @ collect_instantiations_term c
-  | T.Call (_, _, args) -> List.concat_map collect_instantiations_term args
-  | T.Add (t1, t2, t3) | T.Sub (t1, t2, t3) ->
-      List.concat_map collect_instantiations_term [t1; t2; t3]
-  | T.Ifz (c, then_cmd, else_cmd) ->
-      collect_instantiations_term c @ 
-      collect_instantiations_cmd then_cmd @ 
-      collect_instantiations_cmd else_cmd
-  | T.Ret (_, tm) -> collect_instantiations_term tm
-  | T.End -> []
-
-(** Analyze a definition to find higher-rank parameters and their instantiation uses.
-    Returns list of higher_rank_info for each higher-rank parameter. *)
-let analyze_higher_rank_params (def: T.definition): higher_rank_info list =
-  (* Find parameters with forall types *)
-  let hr_params = List.filter_map (fun (var, ct) ->
-    let ty = strip_chirality ct in
-    if contains_forall ty then
-      match extract_forall_var ty with
-        Some forall_var -> Some (var, ct, forall_var) | None -> None
-    else None
-  ) def.term_params in
-  
-  if hr_params = [] then [] else
-  
-  (* Collect all InstantiateDtor types in the body *)
-  let instantiation_types = collect_instantiations_cmd def.body in
-  
-  (* For each higher-rank param, record the instantiation types *)
-  (* Note: This is simplified - we assume all instantiations apply to any HR param.
-     A more precise analysis would track which param each instantiation belongs to. *)
-  List.map (fun (var, ct, forall_var) ->
-    { param_var = var
-    ; param_type = ct
-    ; forall_var
-    ; instantiation_types
-    }
-  ) hr_params
-
-(* ========================================================================= *)
-(* Codata Generation                                                         *)
-(* ========================================================================= *)
-
-(** Generate the codata declaration for a polymorphic definition.
-    
-    For a definition like:
-      def foo{a, b}(x: T1[a], y: T2[b], k: R[a,b]) = body
-    
-    With instantiations [(int, bool), (string, char)], generates:
-    
-    codata foo.For where
-      inst_0(x: T1[int], y: T2[bool], k: R[int,bool]) : foo.For
-      inst_1(x: T1[string], y: T2[char], k: R[string,char]) : foo.For
-    
-    Note: The destructor arguments are the specialized term parameters,
-    and the main type is the codata type itself.
-*)
-let generate_codata_for_def 
-    (def: T.definition)
-    (instantiations: instantiation list)
-    : dec * Path.t =
-  
-  let codata_name = Path.access def.path "For" in
-  let codata_typ = Sgn (codata_name, []) in
-  
-  let xtors = List.mapi (fun idx inst ->
-    (* Create substitution: type_param_i -> inst_arg_i *)
-    let subst = List.fold_left2 (fun acc (tvar, _kind) arg ->
-      Ident.add tvar (ground_arg_to_typ arg) acc
-    ) Ident.emptytbl def.type_params inst in
-    
-    (* Specialize the term parameter types *)
-    let specialized_params = List.map (fun (_var, ct) ->
-      apply_subst_chiral subst ct
-    ) def.term_params in
-    
-    { name = dtor_name_for_inst codata_name idx
-    ; quantified = []
-    ; existentials = []
-    ; argument_types = specialized_params  (* Destructor carries the args! *)
-    ; main = codata_typ                    (* Main type is the codata itself *)
-    }
-  ) instantiations in
-  
-  let codata_dec = 
-    { name = codata_name
-    ; data_sort = Codata
-    ; param_kinds = []
-    ; type_args = []
-    ; xtors
-    } in
-  
-  (codata_dec, codata_name)
-
-(** Generate an inline For-codata for a NewForall that doesn't call a monomorphized function.
-    
-    For a NewForall like:
-      NewForall(c, k, body_typ, cont, cmd)
-    
-    With instantiation types [int, enum], generates:
-    
-    codata inline.ForN where
-      inst_0(cont: body_typ[int/c]) : inline.ForN
-      inst_1(cont: body_typ[enum/c]) : inline.ForN
-*)
-let generate_inline_for_codata
-    (tvar: Ident.t)
-    (body_typ: typ)
-    (cont: Ident.t)
-    (inst_types: Specialization.ground_arg list)
-    : dec =
-  let codata_name = fresh_inline_for_name () in
-  let codata_typ = Sgn (codata_name, []) in
-  
-  let xtors = List.mapi (fun idx garg ->
-    let inst_typ = ground_arg_to_typ garg in
-    let subst = Ident.add tvar inst_typ Ident.emptytbl in
-    let specialized_body_typ = apply_fresh_subst subst body_typ in
-    
-    { name = dtor_name_for_inst codata_name idx
-    ; quantified = []
-    ; existentials = []
-    (* The cont parameter has the specialized body type - with Cns chirality since
-       it's the continuation (consumer) of the polymorphic value *)
-    ; argument_types = [Cns specialized_body_typ]
-    ; main = codata_typ
-    }
-  ) inst_types in
-  
-  { name = codata_name
-  ; data_sort = Codata
-  ; param_kinds = []
-  ; type_args = []
-  ; xtors
-  }
-
-(* ========================================================================= *)
-(* Type Substitution in Terms and Commands                                   *)
-(* ========================================================================= *)
-
-(** Apply type substitution throughout a term *)
-let rec subst_term (subst: typ Ident.tbl) (tm: T.term): T.term =
-  match tm with
-    T.Var _ | T.Lit _ -> tm
-  | T.Ctor (dec, xtor, args) ->
-      let dec' = subst_dec subst dec in
-      T.Ctor (dec', xtor, List.map (subst_term subst) args)
-  | T.Dtor (dec, xtor, exist_tys, args) ->
-      let dec' = subst_dec subst dec in
-      let exist_tys' = List.map (apply_fresh_subst subst) exist_tys in
-      T.Dtor (dec', xtor, exist_tys', List.map (subst_term subst) args)
-  | T.Match (dec, branches) ->
-      let dec' = subst_dec subst dec in
-      T.Match (dec', List.map (subst_branch subst) branches)
-  | T.Comatch (dec, branches) ->
-      let dec' = subst_dec subst dec in
-      T.Comatch (dec', List.map (subst_branch subst) branches)
-  | T.MuPrd (typ, var, cmd) ->
-      T.MuPrd (apply_fresh_subst subst typ, var, subst_command subst cmd)
-  | T.MuCns (typ, var, cmd) ->
-      T.MuCns (apply_fresh_subst subst typ, var, subst_command subst cmd)
-  | T.NewForall (tvar, kind, body_typ, cont, cmd) ->
-      (* Remove tvar from substitution to avoid capture *)
-      let subst' = Ident.filter (fun k _ -> not (Ident.equal k tvar)) subst in
-      T.NewForall (tvar, apply_fresh_subst subst' kind, 
-                   apply_fresh_subst subst' body_typ, cont,
-                   subst_command subst' cmd)
-  | T.InstantiateDtor typ ->
-      T.InstantiateDtor (apply_fresh_subst subst typ)
-
-and subst_branch (subst: typ Ident.tbl) ((xtor, tvars, tmvars, cmd): T.branch): T.branch =
-  (* Remove bound type vars from substitution *)
-  let subst' = List.fold_left (fun s tv ->
-    Ident.filter (fun k _ -> not (Ident.equal k tv)) s
-  ) subst tvars in
-  (xtor, tvars, tmvars, subst_command subst' cmd)
-
-and subst_command (sbs: typ Ident.tbl) (cmd: T.command): T.command =
-  match cmd with
-    T.Cut (typ, p, c) ->
-      T.Cut (apply_fresh_subst sbs typ, subst_term sbs p, subst_term sbs c)
-  | T.Call (path, typs, args) ->
-      T.Call (path, List.map (apply_fresh_subst sbs) typs, List.map (subst_term sbs) args)
-  | T.Add (t1, t2, t3) ->
-      T.Add (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
-  | T.Sub (t1, t2, t3) ->
-      T.Sub (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
-  | T.Ifz (cond, then_cmd, else_cmd) ->
-      T.Ifz (subst_term sbs cond, subst_command sbs then_cmd, subst_command sbs else_cmd)
-  | T.Ret (typ, tm) ->
-      T.Ret (apply_fresh_subst sbs typ, subst_term sbs tm)
-  | T.End -> T.End
-
-and subst_dec (sbs: typ Ident.tbl) (dec: dec): dec =
-  { dec with
-    param_kinds = List.map (apply_fresh_subst sbs) dec.param_kinds
-  ; type_args = List.map (apply_fresh_subst sbs) dec.type_args
-  ; xtors = List.map (fun x -> 
-      { x with 
-        argument_types = List.map (apply_subst_chiral sbs) x.argument_types
-      ; main = apply_fresh_subst sbs x.main
-      }) dec.xtors
-  }
-
-(* ========================================================================= *)
-(* Call Site Transformation                                                  *)
-(* ========================================================================= *)
-
-(** Traverse a list of results, collecting all successes or returning first error *)
-let traverse_result (results: ('a, 'e) result list): ('a list, 'e) result =
-  List.fold_right (fun r acc ->
-    match r, acc with
-      Ok a, Ok rest -> Ok (a :: rest)
-    | Error e, _ | _, Error e -> Error e
-  ) results (Ok [])
-
-(** Convert a Core type to a ground argument for instantiation matching.
-    This should never fail on well-typed terms - errors indicate earlier bugs. *)
-let rec typ_to_ground_arg (t: typ): Specialization.ground_arg =
-  match t with
-    Ext Int -> Specialization.GroundExt Int
-  | Sgn (name, args) -> Specialization.GroundSgn (name, List.map typ_to_ground_arg args)
-  | TVar v -> failwith ("unexpected type variable in instantiation: " ^ Ident.name v)
-  | TMeta v -> failwith ("unexpected meta variable in instantiation: " ^ Ident.name v)
-  | Base _ -> failwith "unexpected base kind in instantiation"
-  | Arrow _ -> failwith "unexpected arrow kind in instantiation"
-  | Forall _ -> failwith "unexpected forall in instantiation"
-  | PromotedCtor _ -> failwith "unexpected promoted ctor in instantiation"
 
 (** Context for transformation *)
 type transform_ctx =
   { mono_infos: mono_info Path.tbl
-  ; dtor_flows: Specialization.ground_arg list Path.tbl  (* dtor_path -> instantiations *)
-  ; forall_flows: Specialization.ground_arg list Path.tbl  (* forall_path -> instantiation types *)
+  ; types_ctx: context  (* Type context for checking inhabitable kinds *)
+  ; dtor_flows: Mono_spec.ground_arg list Path.tbl  (* dtor_path -> instantiations *)
+  ; forall_flows: Mono_spec.ground_arg list Path.tbl  (* forall_path -> instantiation types *)
   ; forall_bound: Ident.t list  (* Type vars bound by enclosing NewForall *)
   ; inline_forall_decs: dec list ref  (* Accumulator for inline NewForall codata declarations *)
   ; forall_to_for: (dec * instantiation list * bool) Ident.tbl  (* Maps forall-typed var to (For-type codata, instantiations, is_inline) *)
   ; inline_for_by_insts: (dec * instantiation list) list  (* List of (codata, insts) for inline For-codatas *)
   }
+
+(* ========================================================================= *)
+(* Helper Functions                                                          *)
+(* ========================================================================= *)
 
 (** Check if a type uses any of the given type variables *)
 let rec typ_uses_vars (vars: Ident.t list) (ty: typ): bool =
@@ -412,6 +44,16 @@ let rec typ_uses_vars (vars: Ident.t list) (ty: typ): bool =
   | Forall (_, k, b) -> typ_uses_vars vars k || typ_uses_vars vars b
   | Arrow (a, b) -> typ_uses_vars vars a || typ_uses_vars vars b
   | PromotedCtor (_, _, args) -> List.exists (typ_uses_vars vars) args
+
+(** Check if a type contains ANY type variable (TVar) *)
+let rec typ_has_tvar (ty: typ): bool =
+  match ty with
+    TVar _ -> true
+  | TMeta _ | Base _ | Ext _ -> false
+  | Sgn (_, args) -> List.exists typ_has_tvar args
+  | Forall (_, k, b) -> typ_has_tvar k || typ_has_tvar b
+  | Arrow (a, b) -> typ_has_tvar a || typ_has_tvar b
+  | PromotedCtor (_, _, args) -> List.exists typ_has_tvar args
 
 (** Find calls to monomorphized functions in a command.
     Returns list of (def_path, type_args) for each call found. *)
@@ -527,6 +169,39 @@ let find_called_function_in_newforall (tvar: Ident.t) (cmd: T.command): Path.t o
     | _ -> None
   in
   find_call cmd
+
+(** Generate an inline For-codata for a NewForall that doesn't reference a mono call.
+    This is used for simple polymorphic lambdas like fun{c}(z: c) => z. *)
+let generate_inline_for_codata
+    (_tvar: Ident.t)
+    (_body_typ: typ)
+    (cont: Ident.t)
+    (inst_types: Mono_spec.ground_arg list)
+    : dec =
+  ignore cont;  (* unused but kept for documentation *)
+  let codata_path = Mono_types.fresh_inline_for_name () in
+  let codata_typ = Sgn (codata_path, []) in
+  
+  let xtors = List.mapi (fun idx garg ->
+    let inst_typ = ground_arg_to_typ garg in
+    { name = dtor_name_for_inst codata_path idx
+    ; quantified = []
+    ; existentials = []
+    ; argument_types = [Cns inst_typ]  (* Just the continuation *)
+    ; main = codata_typ
+    }
+  ) inst_types in
+  
+  { name = codata_path
+  ; data_sort = Codata
+  ; param_kinds = []
+  ; type_args = []
+  ; xtors
+  }
+
+(* ========================================================================= *)
+(* Term and Command Transformation                                           *)
+(* ========================================================================= *)
 
 (** Transform a term, handling call sites to monomorphized definitions *)
 let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
@@ -877,22 +552,33 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
           Ok (T.Call (def_path, type_args, term_args'))
       
       | Some info ->
-          (* Check if any type argument uses forall-bound type variables.
-             If so, we can't transform this call yet - it will be handled
-             when the enclosing NewForall is instantiated with concrete types. *)
-          if List.exists (typ_uses_vars ctx.forall_bound) type_args then begin
+          (* Separate type args into inhabitable-kind (need concrete types for monomorphization)
+             and data-kind (pass through as existentials, TVars are OK) *)
+          let paired = List.combine type_args info.type_params in
+          let inhabitable_type_args = List.filter_map (fun (ty_arg, (_var, kind)) ->
+            if Mono_spec.is_inhabitable_kind ctx.types_ctx kind then Some ty_arg else None
+          ) paired in
+          let data_kind_type_args = List.filter_map (fun (ty_arg, (_var, kind)) ->
+            if Mono_spec.is_inhabitable_kind ctx.types_ctx kind then None else Some ty_arg
+          ) paired in
+          
+          (* Check if any INHABITABLE-kind type argument uses forall-bound type variables
+             or has ANY type variable. Data-kind type args with TVars are fine - they
+             pass through as existentials on the destructor. *)
+          if List.exists (typ_uses_vars ctx.forall_bound) inhabitable_type_args 
+             || List.exists typ_has_tvar inhabitable_type_args then begin
             (* Keep call as-is, but transform term arguments *)
             let* term_args' = traverse_result (List.map (transform_term ctx) term_args) in
             Ok (T.Call (def_path, type_args, term_args'))
           end
           else begin
-            (* The definition was monomorphized and we have concrete types!
-              Transform: Call(foo, [T], args) 
-              becomes:   Call(foo.mono, [], [Dtor(For, inst_i, args)]) *)
+            (* The definition was monomorphized and we have concrete types for inhabitable params!
+              Transform: Call(foo, [T, k], args) where T is inhabitable, k is data-kind
+              becomes:   Call(foo.mono, [], [Dtor(For, inst_i, [k], args)]) *)
             let* transformed_args = traverse_result (List.map (transform_term ctx) term_args) in
             
-            (* Build the current instantiation from type_args *)
-            let current_inst = List.map typ_to_ground_arg type_args in
+            (* Build the current instantiation from inhabitable type_args only *)
+            let current_inst = List.map typ_to_ground_arg inhabitable_type_args in
             
             (* Find the matching instantiation index *)
             (match List.find_index (fun i -> i = current_inst) info.instantiations with
@@ -900,8 +586,8 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
                 Error (NoMatchingInstantiation { def_path; instantiation = current_inst })
             | Some idx ->
                 let dtor_path = dtor_name_for_inst info.generated_codata.name idx in
-                (* Build: Call(foo.mono, [], [Dtor(For, inst_i, [], args)]) *)
-                let dtor = T.Dtor (info.generated_codata, dtor_path, [], transformed_args) in
+                (* Build: Call(foo.mono, [], [Dtor(For, inst_i, [data_kind_args], term_args)]) *)
+                let dtor = T.Dtor (info.generated_codata, dtor_path, data_kind_type_args, transformed_args) in
                 Ok (T.Call (info.mono_path, [], [dtor])))
           end)
   
@@ -945,6 +631,9 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
             inst_1(x, k) => body[t1/a]
             ...
           ]) | u⟩
+    
+    Note: Only inhabitable-kind type params are monomorphized.
+    Data-kind params (like `k: nat`) are kept as type params on foo.mono.
 *)
 let transform_definition 
     (ctx: transform_ctx)
@@ -955,18 +644,31 @@ let transform_definition
   let codata = info.generated_codata in
   let codata_typ = Sgn (codata.name, []) in
   
+  (* Filter type params to only inhabitable-kind ones (these get monomorphized) *)
+  let inhabitable_type_params = List.filter (fun (_v, kind) ->
+    Mono_spec.is_inhabitable_kind ctx.types_ctx kind
+  ) def.type_params in
+  
+  (* Data-kind type params are kept on the mono definition *)
+  let data_kind_params = List.filter (fun (_v, kind) ->
+    not (Mono_spec.is_inhabitable_kind ctx.types_ctx kind)
+  ) def.type_params in
+  
   (* Fresh variable for the consumer parameter *)
   let u = Ident.mk "u" in
   
   (* Generate one branch per instantiation *)
   let* branches = traverse_result (List.mapi (fun idx inst ->
-    (* Create substitution: type_param_i -> inst_arg_i *)
+    (* Create substitution: inhabitable type_param_i -> inst_arg_i *)
     let subst = List.fold_left2 (fun acc (tvar, _kind) arg ->
       Ident.add tvar (ground_arg_to_typ arg) acc
-    ) Ident.emptytbl def.type_params inst in
+    ) Ident.emptytbl inhabitable_type_params inst in
     
     (* The branch binds the original term parameter names *)
     let param_vars = List.map fst def.term_params in
+    
+    (* Data-kind type vars for this branch (quantified on the dtor) *)
+    let data_kind_tvars = List.map fst data_kind_params in
     
     (* Specialize the body by applying the type substitution *)
     let specialized_body = subst_command subst def.body in
@@ -974,9 +676,9 @@ let transform_definition
     (* Also transform any nested calls in the specialized body *)
     let* transformed_body = transform_command ctx specialized_body in
     
-    (* Branch: (dtor_name, [], param_vars, transformed_body) *)
+    (* Branch: (dtor_name, data_kind_tvars, param_vars, transformed_body) *)
     let dtor_path = dtor_name_for_inst codata.name idx in
-    Ok (dtor_path, [], param_vars, transformed_body)
+    Ok (dtor_path, data_kind_tvars, param_vars, transformed_body)
   ) info.instantiations) in
   
   (* Body: ⟨Comatch(For, branches) | u⟩ *)
@@ -984,229 +686,7 @@ let transform_definition
   let body = T.Cut (codata_typ, comatch, T.Var u) in
   
   Ok { T.path = info.mono_path
-     ; type_params = []                          (* Monomorphic! *)
+     ; type_params = data_kind_params            (* Keep data-kind params *)
      ; term_params = [(u, Cns codata_typ)]       (* Single consumer param *)
      ; body = body
      }
-
-(* ========================================================================= *)
-(* Main Entry Point                                                          *)
-(* ========================================================================= *)
-
-(** Monomorphize an execution context *)
-let monomorphize (exe: Specialization.exe_ctx): mono_result mono_check =
-  (* First, run the flow analysis *)
-  match Specialization.analyze exe with
-    Specialization.HasGrowingCycle cycle ->
-      Error (GrowingCycle cycle)
-  
-  | Specialization.Solvable flows ->
-      (* Group flows by destination definition *)
-      let flows_by_def = 
-        List.fold_left (fun acc (flow: Specialization.ground_flow) ->
-          let existing = 
-            match Path.find_opt flow.dst acc with
-              Some lst -> lst | None -> []
-          in
-          Path.add flow.dst (flow.src :: existing) acc
-        ) Path.emptytbl flows
-      in
-      
-      (* Generate mono_info for each polymorphic definition that has instantiations *)
-      let poly_defs = Path.to_list exe.defs 
-        |> List.filter (fun (_path, (def: T.definition)) -> def.type_params <> [])
-      in
-      let mono_infos = poly_defs
-        |> List.filter_map (fun (path, (def: T.definition)) ->
-            let instantiations = 
-              match Path.find_opt path flows_by_def with
-                Some insts -> List.sort_uniq compare insts | None -> []
-            in
-            (* Only monomorphize if there are actual instantiations *)
-            if instantiations = [] then None
-            else begin
-              let (codata, _codata_path) = 
-                generate_codata_for_def def instantiations in
-              let higher_rank = analyze_higher_rank_params def in
-              let info = 
-                { original_path = path
-                ; type_params = def.type_params
-                ; term_params = def.term_params
-                ; instantiations
-                ; generated_codata = codata
-                ; mono_path = Path.access path "mono"
-                ; higher_rank_params = higher_rank
-                } in
-              Some (path, info)
-            end
-          )
-        |> Path.of_list
-      in
-      
-      (* Helper to group flows by a path predicate, accumulating source types *)
-      let group_flows_by pred (flows: Specialization.ground_flow list) =
-        List.fold_left (fun acc (flow: Specialization.ground_flow) ->
-          if pred (Path.name flow.dst) then
-            let existing = match Path.find_opt flow.dst acc with
-                Some lst -> List.fold_left (fun l g -> if List.mem g l then l else g :: l) lst flow.src
-              | None -> flow.src
-            in
-            Path.add flow.dst existing acc
-          else acc
-        ) Path.emptytbl flows
-      in
-      
-      (* Build dtor_flows: group flows by destructor path (contains '.') *)
-      let dtor_flows = group_flows_by (fun s -> String.contains s '.') flows in
-      
-      (* Build forall_flows: collect all types flowing to simple paths (forall type vars) *)
-      let forall_flows = group_flows_by (fun s -> not (String.contains s '.')) flows in
-      
-      (* Build forall_param_flows: for paths like "def.param.forall_param" -> types *)
-      let forall_param_flows = group_flows_by (String.ends_with ~suffix:".forall_param") flows in
-      
-      (* For each forall_param flow, check if there's a matching mono_info.
-         If not, generate an inline For-codata for that higher-rank parameter. *)
-      let inline_for_codatas: (dec * instantiation list) Path.tbl =
-        Path.to_list forall_param_flows |> List.filter_map (fun (param_path, forall_types) ->
-          let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
-          (* Check if any mono_info has matching instantiations *)
-          let has_matching_mono = Path.to_list mono_infos |> List.exists (fun (_path, info) ->
-            List.sort compare info.instantiations = forall_insts
-          ) in
-          if has_matching_mono then None
-          else begin
-            (* Generate an inline For-codata for this higher-rank parameter.
-               
-               For a higher-rank param like f: {c} c -> c, the destructor needs:
-               - arg: Prd inst_typ (the argument being passed)
-               - cont: Cns inst_typ (the continuation for the result)
-               
-               This matches the transform pattern:
-               f{T}(x) → ⟨f | inst_T(x, k)⟩ where k is the result continuation *)
-            let codata_name = fresh_inline_for_name () in
-            let codata_typ = Sgn (codata_name, []) in
-            (* Sort the types to ensure consistent ordering between declaration and usage *)
-            let sorted_types = List.sort compare forall_types in
-            let xtors = List.mapi (fun idx garg ->
-              let inst_typ = ground_arg_to_typ garg in
-              { name = dtor_name_for_inst codata_name idx
-              ; quantified = []
-              ; existentials = []
-              ; argument_types = [Prd inst_typ; Cns inst_typ]  (* arg and continuation *)
-              ; main = codata_typ
-              }
-            ) sorted_types in
-            let inline_dec = 
-              { name = codata_name
-              ; data_sort = Codata
-              ; param_kinds = []
-              ; type_args = []
-              ; xtors
-              } in
-            Some (param_path, (inline_dec, forall_insts))
-          end
-        ) |> Path.of_list
-      in
-      
-      (* Build forall_to_for mapping: for each higher-rank parameter of a definition,
-        find which mono_info or inline For-codata has matching instantiation types.
-        Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
-      let build_forall_to_for mono_infos_tbl (def: T.definition): (dec * instantiation list * bool) Ident.tbl =
-        List.fold_left (fun acc (param_var, param_ty) ->
-          let ty = strip_chirality param_ty in
-          if contains_forall ty then
-            let param_path = Path.access def.path (Ident.name param_var ^ ".forall_param") in
-            match Path.find_opt param_path forall_param_flows with
-              Some forall_types ->
-                let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
-                (* First check mono_infos *)
-                let matching_info = Path.to_list mono_infos_tbl |> List.find_opt (fun (_path, info) ->
-                  List.sort compare info.instantiations = forall_insts
-                ) in
-                (match matching_info with
-                  Some (_path, info) ->
-                    (* Named function case: is_inline=false *)
-                    Ident.add param_var (info.generated_codata, info.instantiations, false) acc
-                | None -> 
-                    (* Check inline_for_codatas *)
-                    (match Path.find_opt param_path inline_for_codatas with
-                      Some (inline_dec, insts) ->
-                        (* Inline lambda case: is_inline=true *)
-                        Ident.add param_var (inline_dec, insts, true) acc
-                    | None -> acc))
-            | None -> acc
-          else
-            acc
-        ) Ident.emptytbl def.term_params
-      in
-      
-      (* Transform a declaration's parameter types from Forall to For types *)
-      let transform_dec_param_types (def: T.definition) (dec: dec): dec =
-        let forall_to_for = build_forall_to_for mono_infos def in
-        let transformed_xtors = List.map (fun (xtor: xtor) ->
-          let transformed_args = List.mapi (fun i ct ->
-            let (param_var, _orig_ct) = List.nth def.term_params i in
-            match Ident.find_opt param_var forall_to_for with
-              Some (for_dec, _insts, is_inline) ->
-                let for_typ = Sgn (for_dec.name, []) in
-                if is_inline then begin
-                  (* Inline lambda case: type is raise(For) *)
-                  let raise_for_typ = Sgn (Prim.raise_sym, [for_typ]) in
-                  chiral_map (fun _ -> raise_for_typ) ct
-                end else
-                  (* Named function case: type is just For *)
-                  chiral_map (fun _ -> for_typ) ct
-            | None -> ct
-          ) xtor.argument_types in
-          { xtor with argument_types = transformed_args }
-        ) dec.xtors in
-        { dec with xtors = transformed_xtors }
-      in
-      
-      (* Transform mono_infos to have the correct For-type in generated_codata *)
-      let transformed_mono_infos = Path.map_tbl (fun info ->
-        let orig_def = List.assoc info.original_path (Path.to_list exe.defs) in
-        let transformed_codata = transform_dec_param_types orig_def info.generated_codata in
-        { info with generated_codata = transformed_codata }
-      ) mono_infos in
-      
-      let inline_forall_decs = ref [] in
-      
-      (* Build list of inline For-codatas with their instantiations for lookup during transformation *)
-      let inline_for_by_insts = Path.to_list inline_for_codatas |> List.map snd in
-      
-      (* Transform all definitions using transformed_mono_infos *)
-      let* transformed_defs = traverse_result (Path.to_list exe.defs |> List.map (fun (path, def) ->
-        let forall_to_for = build_forall_to_for transformed_mono_infos def in
-        let ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for; inline_for_by_insts } in
-        
-        match Path.find_opt path transformed_mono_infos with
-          Some info -> transform_definition ctx def info
-        | None -> 
-            (* Non-polymorphic definition: just transform calls *)
-            let* body' = transform_command ctx def.body in
-            Ok { def with body = body' }
-      )) in
-      
-      (* Also transform main (main is typically monomorphic) *)
-      let main_forall_to_for = build_forall_to_for transformed_mono_infos exe.main in
-      let main_ctx = { mono_infos = transformed_mono_infos; dtor_flows; forall_flows; forall_bound = []; inline_forall_decs; forall_to_for = main_forall_to_for; inline_for_by_insts } in
-      let* main_body' = transform_command main_ctx exe.main.body in
-      let transformed_main = { exe.main with body = main_body' } in
-      
-      (* The declarations are already transformed in transformed_mono_infos *)
-      let new_decs = Path.to_list transformed_mono_infos 
-        |> List.map (fun (_, info) -> info.generated_codata) in
-      
-      (* Include inline For-codata declarations: both pre-generated ones and those from transformation *)
-      let pregenerated_inline_decs = Path.to_list inline_for_codatas
-        |> List.map (fun (_, (dec, _)) -> dec) in
-      let all_new_decs = new_decs @ pregenerated_inline_decs @ !inline_forall_decs in
-      
-      Ok
-        { main = transformed_main
-        ; definitions = transformed_defs
-        ; new_declarations = all_new_decs
-        ; mono_infos = transformed_mono_infos
-        }

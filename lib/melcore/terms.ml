@@ -313,9 +313,13 @@ type tc_context =
 
 (* Create an initial tc_context from type declarations and term definitions *)
 let make_tc_context (type_defs: dec list) (term_defs: definitions) : tc_context =
-  (* Build type-level context with declarations *)
-  let tyctx = List.fold_left (fun ctx (dec: dec) ->
-    { ctx with decs = Path.add dec.name dec ctx.decs }
+  (* Build type-level context with declarations using add_declaration which 
+     does kind checking and automatically handles promoted constructors.
+     Fall back to add_dec if kind checking fails. *)
+  let tyctx = List.fold_left (fun ctx dec ->
+    match add_declaration ctx dec with
+    | Some ctx' -> ctx'
+    | None -> add_dec ctx dec  (* Fall back without kind checking *)
   ) empty_context type_defs in
   { tyctx; term_vars = Ident.emptytbl; defs = term_defs }
 
@@ -778,17 +782,31 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 ; expected = List.length xtor.argument_types
                 ; got = List.length tm_vars })
             else
+              (* For GADT refinement: convert rigid type variables in scrutinee type to
+                 fresh metas, so they can be unified with constructor result types.
+                 This enables patterns like nil: vec(a)(zero) to refine k to zero when
+                 matching against vec(a)(k). Fresh metas are created per-branch. *)
+              let (fresh_metas, meta_type_args) =
+                List.fold_right (fun ty (metas, args) ->
+                  match apply_subst sbs ty with
+                  | TVar v ->
+                      let m = Ident.mk (Ident.name v) in
+                      ((v, m) :: metas, TMeta m :: args)
+                  | other -> (metas, other :: args)
+                ) type_args ([], [])
+              in
+              
               (* For pattern matching, we freshen all type params rather than
                  substituting with known types. Pass [] to trigger freshening. *)
               let fresh_exist, inst_args, inst_main = instantiate_xtor xtor [] in
 
-              (* Unify the xtor's main type with the scrutinee type.
+              (* Unify the xtor's main type with the scrutinee type (using metas).
                  This determines what the quantified vars should be.
-                 For GADT: lit's main is expr(int), which must match scrutinee expr(int).
-                 For poly: ifthenelse's main is expr(?a), unified with expr(int) → ?a=int. *)
-              let* sbs = unify_or_error inst_main (Sgn (dec.name, type_args)) sbs in
+                 For GADT: nil's main is vec(?a)(zero), unified with vec(?a')(?k')
+                 produces ?k' = zero, enabling type refinement. *)
+              let* branch_sbs = unify_or_error inst_main (Sgn (dec.name, meta_type_args)) sbs in
               (* Apply substitution to get instantiated argument types *)
-              let inst_args' = List.map (apply_subst sbs) inst_args in
+              let inst_args' = List.map (apply_subst branch_sbs) inst_args in
               
               (* Build type bindings for pattern type vars:
                  - Quantified vars: bind to the original declaration params 
@@ -808,15 +826,23 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
               let ctx' = extend_tyvars ctx (quant_bindings @ exist_bindings) in
               
               (* Add substitutions mapping pattern exist vars to fresh metas *)
-              let sbs = List.fold_left2 (fun s pattern_var (fresh_var, _) ->
+              let branch_sbs = List.fold_left2 (fun s pattern_var (fresh_var, _) ->
                 Ident.add pattern_var (TVar fresh_var) s
-              ) sbs exist_tyvars fresh_exist in
+              ) branch_sbs exist_tyvars fresh_exist in
+              
+              (* For GADT refinement: add mappings from original rigid type vars
+                 to their refined metas, so the branch body sees the refinement.
+                 This is local to this branch and doesn't escape. *)
+              let branch_sbs = List.fold_left (fun s (orig_var, meta_var) ->
+                Ident.add orig_var (TMeta meta_var) s
+              ) branch_sbs fresh_metas in
               
               let ctx' = extend_vars ctx'
                 (List.combine tm_vars inst_args')
               in
-              let* (body', _, sbs) = check ctx' sbs body result_ty in
+              let* (body', _, _branch_sbs) = check ctx' branch_sbs body result_ty in
               let clause = (xtor_name, ty_vars, tm_vars, body') in
+              (* Use original sbs for next branch, not branch_sbs with GADT refinements *)
               go sbs (clause :: acc) rest)
   in
   go sbs [] branches
