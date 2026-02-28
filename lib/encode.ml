@@ -557,27 +557,37 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedDtor (dec, dtor, ty_args, args, ty) ->
       (* Dtor(d, c, {ty_args}, this :: rest) where this : raise(codata)
          
-         ty_args contains BOTH dec params AND xtor existentials.
-         We need to split them: only dec params go to instantiate_dec.
+         ty_args contains xtor's quantified AND existential args (NOT dec params).
+         For GADT codata, the dec params come from the subject's type, not ty_args.
          
          Since codata types are wrapped in raise, we need to unwrap before calling.
          μα.⟨this' | match { thunk(g) => ⟨g | Dtor(inst_dec, c, rest' @ [α])⟩ }⟩ *)
       let ty' = encode_type ctx.data_sorts ty in
       let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
-      (* Get the original dec to find how many params it has *)
+      (* Get the original dec and xtor to find how many quantified/existential args *)
       let orig_dec = match Path.find_opt dec ctx.types.decs with
           Some d -> d
         | None -> failwith ("Unknown declaration: " ^ Path.name dec)
       in
-      let n_dec_params = List.length orig_dec.param_kinds in
-      let dec_type_args = List.filteri (fun i _ -> i < n_dec_params) ty_args' in
-      let exist_type_args = List.filteri (fun i _ -> i >= n_dec_params) ty_args' in
-      let inst_dec = get_instantiated_dec ctx dec dec_type_args in
+      let orig_xtor = match List.find_opt (fun (x: CTy.xtor) -> Path.equal x.name dtor) orig_dec.xtors with
+          Some x -> x
+        | None -> failwith ("Unknown xtor: " ^ Path.name dtor)
+      in
+      let n_quantified = List.length orig_xtor.quantified in
+      (* ty_args = [quantified...; existentials...], we only want existentials for Core *)
+      let exist_type_args = List.filteri (fun i _ -> i >= n_quantified) ty_args' in
       (match args with
         [] -> failwith "Dtor must have at least a subject argument"
       | this_arg :: rest_args ->
           let this' = encode_term ctx this_arg in
           let this_ty = encode_type ctx.data_sorts (MTm.get_type this_arg) in
+          (* Extract dec type args from subject type: raise(D(args)) -> args *)
+          let dec_type_args = match this_ty with
+            | CTy.Sgn (s, [CTy.Sgn (_, args)]) when Path.equal s Prim.raise_sym -> args
+            | CTy.Sgn (_, args) -> args  (* Fallback for unwrapped *)
+            | _ -> failwith "Could not extract dec type args from subject type"
+          in
+          let inst_dec = get_instantiated_dec ctx dec dec_type_args in
           (* rest' needs to be reversed because:
             - Melcore rest_args are in surface order: [arg1, arg2, ...]
             - Core argument_types are stored reversed: [result; argN; ...; arg1]

@@ -558,37 +558,40 @@ data unit: type where
   }
 
 data message: type where
-  { Hello: message
-  ; this_is_my_key: int -> message
-  ; Goodbye: message
+  { hello: message
+  ; this_is_your_key: int -> message
   }
 
 data socket_state: type where
-  { Raw: socket_state
-  ; Bound: socket_state
-  ; Live: socket_state
+  { raw: socket_state
+  ; bound: socket_state
+  ; live: socket_state
   }
 
 code socket: socket_state -> type where
-  { bind: socket(Raw) -> int -> socket(Bound)
-  ; connect: socket(Bound) -> socket(Live)
-  ; send: socket(Live) -> message -> unit
-  ; receive: socket(Live) -> message
-  ; close: socket(Live) -> unit
+  { bind: socket(raw) -> int -> socket(bound)
+  ; connect: socket(bound) -> socket(live)
+  ; send: socket(live) -> message -> unit
+  ; receive: socket(live) -> message
+  ; close: socket(live) -> unit
   }
 
 let main: int =
   let s =
-    new socket(Raw)
+    new socket(raw)
     { bind(port) =>
         new { connect => 
           new { send(msg) => U
-              ; receive => Hello
+              ; receive => this_is_your_key(8)
               ; close => U
               }
         }
-    }
-  in 8
+    } in
+  let answer = receive(connect(bind(s)(8080))) in
+  match answer with
+  { hello => 0
+  ; this_is_your_key(k) => k
+  }
     |};
 
   
