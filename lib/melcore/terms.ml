@@ -625,14 +625,10 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       let* (typed_branches, sbs) =
         infer_new_branches ctx sbs dec type_args branches
       in
-      (* Check exhaustiveness *)
-      let covered = List.map (fun (xtor_name, _, _, _) ->
-        xtor_name
-      ) branches in
-      let missing = List.filter_map (fun (x: xtor) ->
-        if List.exists (Path.equal x.name) covered
-        then None else Some x.name
-      ) dec.xtors in
+      (* GADT-aware exhaustiveness check using common/types.ml *)
+      let covered = List.map (fun (xtor_name, _, _, _) -> xtor_name) branches in
+      let tyctx = { ctx.tyctx with subst = sbs } in
+      let missing = check_exhaustive tyctx dec type_args covered in
       let* () =
         if missing = [] then Ok ()
         else Error (NonExhaustive { dec = dec.name; missing })
@@ -730,10 +726,10 @@ and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
       let* (typed_branches, sbs) =
         infer_new_branches ctx sbs dec type_args branches
       in
+      (* GADT-aware exhaustiveness check using common/types.ml *)
       let covered = List.map (fun (xtor_name, _, _, _) -> xtor_name) branches in
-      let missing = List.filter_map (fun (x: xtor) ->
-        if List.exists (Path.equal x.name) covered then None else Some x.name
-      ) dec.xtors in
+      let tyctx = { ctx.tyctx with subst = sbs } in
+      let missing = check_exhaustive tyctx dec type_args covered in
       let* () =
         if missing = [] then Ok ()
         else Error (NonExhaustive { dec = dec.name; missing })

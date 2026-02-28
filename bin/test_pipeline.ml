@@ -525,6 +525,72 @@ let main: int =
   length{int}{succ(succ(succ(zero)))}(v2)
     |};
 
+  (* Test 23: List length *)
+  run_test
+    ~name:"List length (for comparison with vectors)"
+    ~expected:3
+    {|
+data list: type -> type where
+  { nil: {a} list(a)
+  ; cons: {a} a -> list(a) -> list(a)
+  }
+
+let length{a}(xs: list(a)): int =
+  match xs with
+  { nil{_} => 0
+  ; cons{_}(x)(xs) => 1 + length{a}(xs)
+  }
+
+let main: int =
+  let l0 = cons{int}(0)(nil{int}) in
+  let l1 = cons{int}(1)(l0) in
+  let l2 = cons{int}(2)(l1) in
+  length{int}(l2)
+  |};
+
+  (* Test 24: GADT codata *)
+  run_test
+    ~name:"GADT codata (streams of even/odd numbers)"
+    ~expected:8
+    {|
+data unit: type where
+  { U: unit
+  }
+
+data message: type where
+  { Hello: message
+  ; this_is_my_key: int -> message
+  ; Goodbye: message
+  }
+
+data socket_state: type where
+  { Raw: socket_state
+  ; Bound: socket_state
+  ; Live: socket_state
+  }
+
+code socket: socket_state -> type where
+  { bind: socket(Raw) -> int -> socket(Bound)
+  ; connect: socket(Bound) -> socket(Live)
+  ; send: socket(Live) -> message -> unit
+  ; receive: socket(Live) -> message
+  ; close: socket(Live) -> unit
+  }
+
+let main: int =
+  let s =
+    new socket(Raw)
+    { bind(port) =>
+        new { connect => 
+          new { send(msg) => U
+              ; receive => Hello
+              ; close => U
+              }
+        }
+    }
+  in 8
+    |};
+
   
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
