@@ -66,7 +66,18 @@ let rec close_ret_var (ret_ty: typ) (ret_k: Ident.t) (cmd: command) : command =
       ) branches in
       New (v, sg, branches', Ret (ret_ty, v))
   | Let (v, dec, xtor, args, body) -> 
-      Let (v, dec, xtor, args, close_ret_var ret_ty ret_k body)
+      (* If ret_k appears in args (e.g., as a continuation argument to a destructor),
+        we need to wrap with NewInt to capture the result that flows to ret_k *)
+      if List.exists (Ident.equal ret_k) args then
+        let result_v = Ident.fresh () in
+        let new_ret_k = Ident.fresh () in
+        let new_args = List.map (fun a ->
+          if Ident.equal a ret_k then new_ret_k else a
+        ) args in
+        NewInt (new_ret_k, result_v, Ret (ret_ty, result_v),
+          Let (v, dec, xtor, new_args, close_ret_var ret_ty ret_k body))
+      else
+        Let (v, dec, xtor, args, close_ret_var ret_ty ret_k body)
   | New (v, sg, branches, body) ->
       let branches' = List.map (fun (xtor, ty_vars, tm_vars, b) ->
         (xtor, ty_vars, tm_vars, close_ret_var ret_ty ret_k b)

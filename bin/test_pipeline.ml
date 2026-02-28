@@ -83,6 +83,9 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     List.iter (fun dec ->
       Printf.printf "   New dec: %s\n" (Core.Printing.dec_to_string dec)
     ) mono_result.new_declarations;
+    (* Debug: print mono main term_params *)
+    Printf.printf "   Mono main term_params: [%s]\n"
+      (String.concat "; " (List.map (fun (v, _ct) -> Ident.name v) mono_result.main.term_params));
     (* Debug: print mono main *)
     Printf.printf "   Mono main: %s\n" (Core.Printing.command_to_string mono_result.main.body);
     (* Debug: print mono definitions *)
@@ -509,24 +512,17 @@ data vec: type -> nat -> type where
   ; cons: {a}{n: nat} a -> vec(a)(n) -> vec(a)(succ(n))
   }
 
-let to_int(n: nat): int =
-  match n with
-  { zero => 0
-  ; succ(m) => 1 + to_int(m)
-  }
-
-let length{a}{k: nat}(v: vec(a)(k)): nat =
+let length{a}{k: nat}(v: vec(a)(k)): int =
   match v with
-  { nil{_} => zero
-  ; cons{_}{n}(x)(xs) => succ(length{a}{n}(xs))
+  { nil{_} => 0
+  ; cons{_}{n}(x)(xs) => 1 + length{a}{n}(xs)
   }
 
 let main: int =
   let v0 = cons{int}{zero}(0)(nil{int}) in
   let v1 = cons{int}{succ(zero)}(1)(v0) in
   let v2 = cons{int}{succ(succ(zero))}(2)(v1) in
-  let n = length{int}{succ(succ(succ(zero)))}(v2) in
-  to_int(n)
+  length{int}{succ(succ(succ(zero)))}(v2)
     |};
 
   
