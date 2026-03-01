@@ -91,17 +91,29 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
               match Path.find_opt path flows_by_def with
                 Some insts -> List.sort_uniq compare insts | None -> []
             in
-            (* Only monomorphize if there are actual instantiations *)
-            if instantiations = [] then None
+            (* Check if this definition has any inhabitable-kind type params *)
+            let has_inhabitable_params = List.exists (fun (_v, kind) ->
+              Mono_spec.is_inhabitable_kind exe.types kind
+            ) def.type_params in
+            (* Monomorphize if:
+               1. There are actual instantiations from flow analysis, OR
+               2. All type params are data-kind only (need trivial monomorphization
+                  to produce the For-type wrapper) *)
+            let final_instantiations = 
+              if instantiations <> [] then instantiations
+              else if not has_inhabitable_params then [[]]  (* Single trivial instantiation *)
+              else []  (* No instantiations and has inhabitable params - skip *)
+            in
+            if final_instantiations = [] then None
             else begin
               let (codata, _codata_path) = 
-                generate_codata_for_def exe.types def instantiations in
+                generate_codata_for_def exe.types def final_instantiations in
               let higher_rank = analyze_higher_rank_params def in
               let info = 
                 { original_path = path
                 ; type_params = def.type_params
                 ; term_params = def.term_params
-                ; instantiations
+                ; instantiations = final_instantiations
                 ; generated_codata = codata
                 ; mono_path = Path.access path "mono"
                 ; higher_rank_params = higher_rank

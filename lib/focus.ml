@@ -807,7 +807,7 @@ module Collapse = struct
     | Target.Sub (x, y, k, cont) -> FTm.Sub (x, y, k, collapse_command ctx parity cont)
     | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command ctx parity s1, collapse_command ctx parity s2)
     | Target.Call (path, [], args) -> FTm.Jump (path, args)
-    | Target.Call _ -> failwith "Unexpected type args in Call -- not monomorphic"
+    | Target.Call _ -> failwith " -- not monomorphic"
     | Target.Ret (ty, x) -> FTm.Ret (focus_type ty, x)
     | Target.End -> FTm.End
 

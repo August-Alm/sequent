@@ -612,6 +612,18 @@ data single_nat: nat -> type where
   ; single_succ: {n: nat} single_nat(n) -> single_nat(succ(n))
   }
 
+let to_nat{n: nat}(k: single_nat(n)): nat =
+  match k with
+  { single_zero => zero
+  ; single_succ{m}(k') => succ(to_nat{m}(k'))
+  }
+
+let to_int{n: nat}(k: single_nat(n)): int =
+  match k with
+  { single_zero => 0
+  ; single_succ{m}(k') => 1 + to_int{m}(k')
+  }
+
 data vec: type -> nat -> type where
   { nil: {a} vec(a)(zero)
   ; cons: {a}{n: nat} a -> vec(a)(n) -> vec(a)(succ(n))
@@ -623,17 +635,20 @@ let replicate{a}{n: nat}(x: a)(k: single_nat(n)): vec(a)(n) =
   ; single_succ{m}(k') => cons{a}{m}(x)(replicate{a}{m}(x)(k'))
   }
 
-let length{a}{k: nat}(v: vec(a)(k)): int =
+let length{a}{n: nat}(v: vec(a)(n)): single_nat(n) =
   match v with
-  { nil{_} => 0
-  ; cons{_}{n}(x)(xs) => 1 + length{a}{n}(xs)
+  { nil{_} => single_zero
+  ; cons{_}{m}(x)(xs) => single_succ{m}(length{a}{m}(xs))
   }
 
 let main: int =
-  let n3 = succ(succ(succ(zero))) in
-  let n3_single = single_succ{succ(succ(zero))}(single_succ{succ(zero)}(single_succ{zero}(single_zero))) in
+  let n3_single =
+    single_succ{succ(succ(zero))}
+      (single_succ{succ(zero)}
+        (single_succ{zero}(single_zero))) in
   let v = replicate{int}{succ(succ(succ(zero)))}(42)(n3_single) in
-  length{int}{succ(succ(succ(zero)))}(v)
+  let l = length{int}{succ(succ(succ(zero)))}(v) in
+  to_int{succ(succ(succ(zero)))}(l)
   |};
 
   
