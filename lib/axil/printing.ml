@@ -1,11 +1,11 @@
 (**
-  Module: Focused.Printing
-  Description: Pretty-printing for Focused.Terms commands
+  Module: Axil.Printing
+  Description: Pretty-printing for Axil.Terms commands
 *)
 
 open Common.Identifiers
-open Types.FocusedBase
-open Types.FocusedTypes
+open Types.AxilBase
+open Types.AxilTypes
 open Terms
 
 (* ========================================================================= *)
@@ -142,6 +142,19 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
       ind ^ pp_var v ^ "." ^ pp_sym x ^ args_str ^ dec_str
 
+  (* jump l(args) *)
+  | Jump (label, args) ->
+      let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
+      ind ^ "jump " ^ pp_sym label ^ args_str
+
+  (* substitute [v'₁ → v₁, ..., v'ₙ → vₙ]; s *)
+  | Substitute (mapping, body) ->
+      let arrow = if cfg.unicode then " ← " else " <- " in
+      let pp_pair (v', v) = pp_var v' ^ arrow ^ pp_var v in
+      let mapping_str = comma_sep (List.map pp_pair mapping) in
+      ind ^ "substitute [" ^ mapping_str ^ "];\n" ^
+      pp_cmd ~cfg n body
+
   (* ⟨v | k⟩ *)
   | Axiom (ty, v, k) ->
       let ty_ann = if cfg.show_types then "[" ^ pp_typ (Ext ty) ^ "]" else "" in
@@ -149,11 +162,6 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
         ind ^ "⟨" ^ pp_var v ^ " | " ^ pp_var k ^ "⟩" ^ ty_ann
       else
         ind ^ "axiom" ^ ty_ann ^ "(" ^ pp_var v ^ ", " ^ pp_var k ^ ")"
-
-  (* jump l(args) *)
-  | Jump (label, args) ->
-      let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
-      ind ^ "jump " ^ pp_sym label ^ args_str
 
   (* =========== Primitives =========== *)
 
@@ -242,6 +250,13 @@ let pp_check_error ?(cfg=default_config) (err: check_error) : string =
       " arguments, got " ^ string_of_int got
   | ExpectedSignature t ->
       "expected signature type, got " ^ pp_typ ~cfg t
+  | LinearOrderViolation { expected; got } ->
+      "linear order violation: expected " ^ pp_var expected ^
+      " at head of context, but got " ^ pp_var got
+  | ContextNotEmpty remaining ->
+      let pp_binding (v, ct) = pp_var v ^ " : " ^ pp_chiral_typ ~cfg ct in
+      "context not empty after command: remaining bindings [" ^
+      comma_sep (List.map pp_binding remaining) ^ "]"
 
 let check_error_to_string = pp_check_error ~cfg:default_config
 

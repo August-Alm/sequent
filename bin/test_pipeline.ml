@@ -10,7 +10,9 @@
   6. Runs Monomorphize to generate monomorphic definitions
   7. Focuses to Focused IR
   8. Type-checks in Focused using Focused.Terms
-  9. Evaluates using the abstract machine
+  9. Linearizes to Axil using Linearize
+  10. Type-checks in Axil using Axil.Terms
+  11. Evaluates using the abstract machine
   
   All test inputs contain a monomorphic "main" function that returns an int.
 *)
@@ -21,8 +23,10 @@ module Pipe = Sequent.Pipeline
 module MPrint = Melcore.Printing
 module CPrint = Core.Printing
 module FPrint = Focused.Printing
+module APrint = Axil.Printing
 module FTerms = Focused.Terms
-module FMachine = Focused.Semantics
+module ATerms = Axil.Terms
+module AMachine = Axil.Semantics
 
 (* Test harness *)
 let test_count = ref 0
@@ -115,16 +119,38 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in
     print_endline "8. Focused type-check: OK";
     
-    (* Stage 9: Evaluate *)
+    (* Stage 9: Linearize to Axil *)
+    let* (axil_decs, axil_main, axil_defs) = 
+      Pipe.AxilStage.linearize focused_decs focused_main focused_defs in
+    print_endline "9. Linearize to Axil: OK";
+    
+    (* Print axil main *)
+    print_endline "\nAxil main:";
+    Printf.printf "%s\n\n" (APrint.command_to_string axil_main.body);
+
+    (* Print axil defs for debugging *)
+    let axil_def_list = Path.to_list axil_defs in
+    if List.length axil_def_list > 0 then begin
+      print_endline "Axil definitions:";
+      List.iter (fun (_, (def: ATerms.definition)) ->
+        Printf.printf "  %s:\n%s\n\n" (Path.name def.path) (APrint.command_to_string def.body)
+      ) axil_def_list
+    end;
+    
+    (* Stage 10: Axil type-check *)
+    let* _ = Pipe.AxilStage.type_check axil_decs axil_defs in
+    print_endline "10. Axil type-check: OK";
+    
+    (* Stage 11: Evaluate (using Axil semantics) *)
     let* (final_cmd, final_env, steps) = 
-      Pipe.FocusedStage.eval ~trace focused_main focused_defs in
-    Printf.printf "9. Evaluate: OK (%d steps)\n" steps;
+      Pipe.AxilStage.eval ~trace axil_main axil_defs in
+    Printf.printf "11. Evaluate: OK (%d steps)\n" steps;
     
     (* Extract result using the semantics helper *)
-    (match FMachine.get_result (final_cmd, final_env) with
-    | Some (FMachine.IntVal n) -> Ok n
+    (match AMachine.get_result (final_cmd, final_env) with
+    | Some (AMachine.IntVal n) -> Ok n
     | Some _ -> Error "Final result is not an int"
-    | None -> Error ("Machine did not halt with a result. Final: " ^ FPrint.command_to_string final_cmd))
+    | None -> Error ("Machine did not halt with a result. Final: " ^ APrint.command_to_string final_cmd))
   in
   
   print_newline ();

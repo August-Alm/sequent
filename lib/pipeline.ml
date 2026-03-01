@@ -189,3 +189,55 @@ module FocusedStage = struct
       Error (Printf.sprintf "Evaluation error: %s" (Printexc.to_string e))
 
 end
+
+
+module AxilStage = struct
+
+  open Common.Identifiers
+  module FTypes = Focused.Types.FocusedTypes
+  module FTerms = Focused.Terms
+  module ATypes = Axil.Types.AxilTypes
+  module ATerms = Axil.Terms
+  module AMachine = Axil.Semantics
+
+  let linearize (decs: FTypes.dec Path.tbl) (main: FTerms.definition) 
+      (defs: FTerms.definition Path.tbl)
+      : (ATypes.dec Path.tbl * ATerms.definition * ATerms.definition Path.tbl, string) result =
+    try
+      let axil_decs = Path.map_tbl Linearize.convert_dec decs in
+      let axil_main = Linearize.linearize_def main in
+      let axil_defs = Path.map_tbl Linearize.linearize_def defs in
+      Ok (axil_decs, axil_main, axil_defs)
+    with e ->
+      Error (Printf.sprintf "Linearization error: %s" (Printexc.to_string e))
+
+  let type_check (decs: ATypes.dec Path.tbl) (defs: ATerms.definition Path.tbl)
+      : (ATerms.definition Path.tbl, string) result =
+    let ctx = ATerms.make_tc_context decs defs in
+    Path.to_list defs
+    |> List.fold_left (fun acc (path, def) ->
+      match acc with
+        Error _ -> acc
+      | Ok acc_defs ->
+        (match ATerms.check_def ctx def with
+            Ok tdef -> Ok ((path, tdef) :: acc_defs)
+        | Error e ->
+            let msg = "Type error in " ^ Path.name path ^ ":\n" ^
+            (Axil.Printing.check_error_to_string e) in
+            Error msg)
+    ) (Ok [])
+    |> function
+      | Ok lst -> Ok (Path.of_list (List.rev lst))
+      | Error msg -> Error msg
+
+  (** Returns the final command, environment, and step count *)
+  let eval ?(trace=false) ?(max_steps=5000) (main: ATerms.definition) (defs: ATerms.definition Path.tbl)
+      : (ATerms.command * AMachine.env * int, string) result =
+    try
+      let env = { AMachine.empty_env with defs = defs } in
+      let ((cmd, env), steps) = AMachine.run ~trace ~max_steps (main.body, env) in
+      Ok (cmd, env, steps)
+    with e ->
+      Error (Printf.sprintf "Evaluation error: %s" (Printexc.to_string e))
+
+end
