@@ -192,31 +192,43 @@ let expect_sgn (t: typ) (subs: subst) : (Path.t * typ list, check_error) result 
 (* ========================================================================= *)
 
 (** Freshen an xtor's type parameters for pattern matching.
-    Both quantified and existential parameters become existentially bound when matching. *)
+    Both quantified and existential parameters become existentially bound when matching.
+    Returns: (fresh_metas, inst_args, inst_main) where fresh_metas maps original params to fresh TMetas *)
 let freshen_xtor_type_params (xtor: xtor)
-    : (chiral_typ list * typ) =
+    : (Ident.t list * chiral_typ list * typ) =
   (* For pattern matching, both quantified and existentials are freshened *)
   let all_params = xtor.quantified @ xtor.existentials in
-  let _, subst = freshen_meta all_params in
+  let fresh_metas_with_kinds, subst = freshen_meta all_params in
+  let fresh_metas = List.map fst fresh_metas_with_kinds in
   let inst_args =
     List.map (chiral_map (apply_fresh_subst subst))
       xtor.argument_types in
   let inst_main = apply_fresh_subst subst xtor.main in
-  (inst_args, inst_main)
+  (fresh_metas, inst_args, inst_main)
 
 (** Bind term variables with xtor argument types *)
 let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var list)
     : context =
   List.fold_left2 (fun ctx var ct -> extend ctx var ct) ctx vars arg_types
 
+(** Apply a type substitution to all variable types in a context.
+    Used for GADT refinement so that variables from outer scope get their TVars
+    converted to TMetas that can be unified with the refined types. *)
+let refine_context (subst: typ Ident.tbl) (ctx: context) : context =
+  let refine_chiral ct = chiral_map (apply_fresh_subst subst) ct in
+  { ctx with term_vars = Ident.map_tbl refine_chiral ctx.term_vars }
+
 (* ========================================================================= *)
 (* Branch Checking                                                           *)
 (* ========================================================================= *)
 
-(** Check a single branch.
+(** Check a single branch with GADT refinement.
     For data: quantified is existentially bound (matching introduces them).
     For codata: quantified is also existentially bound (matching on codata introduces them).
-    So type_vars should match the total of quantified + existentials. *)
+    So type_vars should match the total of quantified + existentials.
+    
+    GADT Refinement: When dec.type_args contains TVars, we unify the xtor's result
+    type with the scrutinee type to learn constraints (e.g., n = 'zero). *)
 let check_branch
     (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
@@ -241,25 +253,78 @@ let check_branch
         ; expected = List.length xtor.argument_types
         ; got = List.length term_vars })
       else
-        (* Freshen all type params for pattern matching *)
-        let inst_args, _ = freshen_xtor_type_params xtor in
-        (* Substitute user-provided type variable names for all type params *)
-        let type_subst =
-          List.fold_left2 (fun s (old_v, _) new_v ->
-            Ident.add old_v (TVar new_v) s
-          ) Ident.emptytbl all_type_params type_vars
+        (* GADT Refinement: For types in dec.type_args that are TMetas or TVars,
+           we'll include them in scrutinee_ty for unification with xtor.main.
+           TMetas can be directly refined; TVars need fresh metas. *)
+        let (tvar_to_meta, scrutinee_meta_args) =
+          List.fold_right (fun ty (mapping, args) ->
+            (* Don't apply subs here - we want the actual types from unified_dec,
+               not the resolved values. The unified_dec already has TMetas. *)
+            match ty with
+              TMeta _ -> mapping, ty :: args
+            | TVar v ->
+                (* TVar - create fresh meta *)
+                let m = Ident.mk (Ident.name v) in
+                ((v, m) :: mapping, TMeta m :: args)
+            | other -> (mapping, other :: args)
+          ) dec.type_args ([], [])
         in
-        let inst_args' =
-          List.map (chiral_map (apply_fresh_subst type_subst))
-            inst_args
+        let scrutinee_ty = Sgn (dec.name, scrutinee_meta_args) in
+        
+        (* Unify xtor's result type with scrutinee type to learn GADT constraints.
+           IMPORTANT: Use empty substitution, not incoming subs. The incoming subs
+           may have TMeta -> TVar mappings that would prevent GADT refinement.
+           We merge the GADT refinements with subs afterward. *)
+        let branch_subs = match unify xtor.main scrutinee_ty Ident.emptytbl with
+            Some gadt_subs ->
+              (* Merge: GADT refinements override incoming subs for TMetas we care about *)
+              List.fold_left (fun acc (k, v) ->
+                Ident.add k v acc
+              ) subs (Ident.to_list gadt_subs)
+          | None -> 
+              subs  (* If unification fails, continue with original subs *)
         in
-        (* Extend context with type vars and term vars *)
+        
+        (* Convert TVars in context to TMetas so apply_subst can resolve them.
+           Only needed if we created new TMetas for TVars in dec.type_args.
+           If dec.type_args already had TMetas, the context should too - no refinement needed. *)
+        let refined_ctx = if tvar_to_meta = [] then ctx else begin
+          let tvar_subst = List.fold_left (fun s (orig_var, meta_var) ->
+            Ident.add orig_var (TMeta meta_var) s
+          ) Ident.emptytbl tvar_to_meta in
+          refine_context tvar_subst ctx
+        end in
+        
+        (* For pattern matching:
+           - quantified: need to freshen (not yet freshened by instantiate_dec)
+           - existentials: already fresh from instantiate_dec (for GADT xtors)
+           We must use the SAME metas that GADT unification used for existentials. *)
+        let fresh_quant_metas, quant_subst = freshen_meta xtor.quantified in
+        let fresh_quant_ids = List.map fst fresh_quant_metas in
+        let existing_exist_ids = List.map fst xtor.existentials in
+        let all_fresh_metas = fresh_quant_ids @ existing_exist_ids in
+        
+        (* Apply substitution only to quantified parts of argument types *)
+        let inst_args = List.map (chiral_map (apply_fresh_subst quant_subst)) xtor.argument_types in
+        
+        (* Instead of substituting user names into inst_args, we keep the fresh metas
+           and add user_var -> fresh_meta mappings to the substitution.
+           This way, when the body uses TVar m, it resolves to TMeta n#1127.
+           Skip adding mapping if user_var IS the meta (from eta-expansion). *)
+        let branch_subs_with_tyvars =
+          List.fold_left2 (fun s meta user_var ->
+            if Ident.equal meta user_var then s  (* Already a meta, no mapping needed *)
+            else Ident.add user_var (TMeta meta) s
+          ) branch_subs all_fresh_metas type_vars
+        in
+        
+        (* Extend context with type vars (for kind checking) *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
-            ctx type_vars all_type_params
+            refined_ctx type_vars all_type_params
         in
-        let ctx'' = bind_xtor_term_args ctx' inst_args' term_vars in
-        check_cmd ctx'' subs cmd
+        let ctx'' = bind_xtor_term_args ctx' inst_args term_vars in
+        check_cmd ctx'' branch_subs_with_tyvars cmd
 
 (** Check all branches and verify exhaustiveness.
     For instantiated declarations, exhaustiveness is just checking all xtors are covered. *)
@@ -294,12 +359,12 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
     : unit check_result =
   match cmd with
   (* let v = m(xi's); s -- dec is pre-instantiated *)
-  | Let (v, dec, xtor_name, term_vars, body) ->
+    Let (v, dec, xtor_name, term_vars, body) ->
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
           (* Freshen type params for construction *)
-          let inst_args, inst_main = freshen_xtor_type_params xtor in
+          let _, inst_args, inst_main = freshen_xtor_type_params xtor in
           if List.length term_vars <> List.length inst_args then
             Error (XtorArityMismatch
               { xtor = xtor_name
@@ -317,13 +382,22 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
   | Switch (v, dec, branches) ->
       let* v_ct = lookup_var ctx v in
       let* v_ty = expect_prd v_ct in
+      (* Apply subs to get the actual scrutinee type *)
+      let resolved_v_ty = apply_subst subs v_ty in
+      (* Extract actual type args from resolved scrutinee type for GADT refinement *)
+      let actual_type_args = match resolved_v_ty with
+          Sgn (_, args) -> args
+        | _ -> dec.type_args  (* Fallback to dec.type_args if not a Sgn *)
+      in
+      (* Create unified dec with actual type args for branch checking *)
+      let unified_dec = { dec with type_args = actual_type_args } in
       (* The expected type is the instantiated signature *)
       let expected_ty = Sgn (dec.name, dec.type_args) in
       (* Unify v's type with the expected signature *)
       (match unify v_ty expected_ty subs with
         None -> Error (UnificationFailed (v_ty, expected_ty))
       | Some subs' ->
-          check_branches ctx dec branches check_command subs')
+          check_branches ctx unified_dec branches check_command subs')
 
   (* new v = {...}; s -- dec is pre-instantiated *)
   | New (v, dec, branches, body) ->
@@ -340,20 +414,16 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       | Some xtor ->
           let* v_ct = lookup_var ctx v in
           (match expect_cns v_ct with
-          | Error e -> 
-              Printf.eprintf "CHIRALITY ERROR in Invoke %s.%s: v=%s expected Cns, got %s\n" 
-                (Path.name dec.name) (Path.name xtor_name) (Ident.name v)
-                (match v_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
-              Error e
+            Error e -> Error e
           | Ok v_ty ->
-          let expected_ty = Sgn (dec.name, dec.type_args) in
-          (match unify v_ty expected_ty subs with
-            None -> Error (UnificationFailed (v_ty, expected_ty))
-          | Some subs' ->
-              (* Freshen type params for invocation *)
-              let inst_args, _ = freshen_xtor_type_params xtor in
-              check_xtor_args ctx xtor_name inst_args term_vars subs'
-              |> Result.map (fun _ -> ()))))
+              let expected_ty = Sgn (dec.name, dec.type_args) in
+              (match unify v_ty expected_ty subs with
+                None -> Error (UnificationFailed (v_ty, expected_ty))
+              | Some subs' ->
+                  (* Freshen type params for invocation *)
+                  let _, inst_args, _ = freshen_xtor_type_params xtor in
+                  check_xtor_args ctx xtor_name inst_args term_vars subs'
+                  |> Result.map (fun _ -> ()))))
 
   (* ⟨v | k⟩ at ty *)
   | Axiom (ty, v, k) ->
@@ -361,10 +431,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let* k_ct = lookup_var ctx k in
       let* v_ty = expect_prd v_ct in
       (match expect_cns k_ct with
-      | Error e ->
-          Printf.eprintf "CHIRALITY ERROR in Axiom: k=%s expected Cns, got %s\n"
-            (Ident.name k) (match k_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
-          Error e
+        Error e -> Error e
       | Ok k_ty ->
       (match unify v_ty (Ext ty) subs with
         None -> Error (UnificationFailed (v_ty, Ext ty))
@@ -464,12 +531,9 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               | Some subs' ->
                   (* Check chirality matches *)
                   (match exp_ct, arg_ct with
-                  | Prd _, Prd _ | Cns _, Cns _ ->
+                    Prd _, Prd _ | Cns _, Cns _ ->
                       check_args subs' params' args'
                   | _ -> 
-                      Printf.eprintf "CHIRALITY MISMATCH in Jump to %s:\n" (Path.name label);
-                      Printf.eprintf "  expected param chirality: %s\n" (match exp_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
-                      Printf.eprintf "  actual arg %s chirality: %s\n" (Ident.name arg) (match arg_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
                       Error (ChiralityMismatch
                       { expected_chirality =
                           (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
@@ -507,9 +571,6 @@ and check_xtor_args (ctx: context) (xtor_name: Path.t)
                 Prd _, Prd _ | Cns _, Cns _ ->
                   check_args (idx + 1) subs' exps' vars'
               | _ -> 
-                  Printf.eprintf "CHIRALITY MISMATCH in xtor %s arg %d:\n" (Path.name xtor_name) idx;
-                  Printf.eprintf "  expected: %s\n" (match exp_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
-                  Printf.eprintf "  actual var %s: %s\n" (Ident.name var) (match var_ct with Prd _ -> "Prd" | Cns _ -> "Cns");
                   Error (ChiralityMismatch
                   { expected_chirality =
                       (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)

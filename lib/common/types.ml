@@ -151,7 +151,11 @@ module TypeSystem(Base: BASE) = struct
         (match Ident.find_opt v sbs with
           Some t' -> apply_subst sbs t'
         | None -> t)
-    | TVar _ -> t
+    | TVar v ->
+        (* Also resolve TVars if mapped (for pattern-bound type vars) *)
+        (match Ident.find_opt v sbs with
+          Some t' -> apply_subst sbs t'
+        | None -> t)
     | Arrow (t1, t2) -> Arrow (apply_subst sbs t1, apply_subst sbs t2)
     | Sgn (name, args) -> Sgn (name, List.map (apply_subst sbs) args)
     | PromotedCtor (data_name, ctor_name, args) ->
@@ -523,16 +527,39 @@ module TypeSystem(Base: BASE) = struct
       Then instantiate_dec expr_dec [Int] would only include IntLit.
   *)
   let instantiate_dec (dec: dec) (type_args: typ list) : dec =
+    (* Collect all TMeta identifiers in a type *)
+    let rec collect_metas acc t =
+      match t with
+      | TMeta m -> m :: acc
+      | TVar _ | Base _ | Ext _ -> acc
+      | Arrow (t1, t2) -> collect_metas (collect_metas acc t1) t2
+      | Sgn (_, args) -> List.fold_left collect_metas acc args
+      | PromotedCtor (_, _, args) -> List.fold_left collect_metas acc args
+      | Forall (_, k, body) -> collect_metas (collect_metas acc k) body
+    in
     (* Instantiate a single xtor with a substitution derived from unification.
       For GADTs, xtor.quantified may have different length than type_args,
-      so we use the substitution from unifying xtor.main with the target type. *)
-    let instantiate_xtor (xtor: xtor) (xtor_subst: subst) : xtor =
+      so we use the substitution from unifying xtor.main with the target type.
+      
+      fresh_quant_metas/fresh_exist_metas: the fresh metas created from xtor.quantified/existentials. 
+      Only those that still appear in the instantiated types become existentially bound. *)
+    let instantiate_xtor (xtor: xtor) ((fresh_quant_metas, fresh_exist_metas): (Ident.t * typ) list * (Ident.t * typ) list) (xtor_subst: subst) : xtor =
+      let inst_args = List.map (chiral_map (apply_fresh_subst xtor_subst)) xtor.argument_types in
+      let inst_main = apply_fresh_subst xtor_subst xtor.main in
+      (* Only keep fresh metas that still appear in the instantiated types *)
+      let all_metas = 
+        collect_metas (List.fold_left (fun acc ct -> collect_metas acc (strip_chirality ct)) [] inst_args) inst_main in
+      let remaining_quant = List.filter (fun (m, _) ->
+        List.exists (Ident.equal m) all_metas
+      ) fresh_quant_metas in
+      let remaining_exist = List.filter (fun (m, _) ->
+        List.exists (Ident.equal m) all_metas
+      ) fresh_exist_metas in
       { name = xtor.name
       ; quantified = []  (* No longer quantified after instantiation *)
-      ; existentials = xtor.existentials  (* Keep existentials *)
-      ; argument_types = 
-          List.map (chiral_map (apply_fresh_subst xtor_subst)) xtor.argument_types
-      ; main = apply_fresh_subst xtor_subst xtor.main
+      ; existentials = remaining_quant @ remaining_exist  (* Fresh metas from both become existential *)
+      ; argument_types = inst_args
+      ; main = inst_main
       }
     in
     (* For GADT filtering, convert TVars in type_args to fresh metas so they can
@@ -567,8 +594,11 @@ module TypeSystem(Base: BASE) = struct
     let reachable_xtors = 
       List.filter_map (fun (xtor: xtor) ->
         (* Check if xtor's main type can unify with the scrutinee type.
-          Freshen quantified vars to metas so they can unify with type_args. *)
-        let _, fresh_subst = freshen_meta xtor.quantified in
+          Freshen ALL type params (both quantified and existentials) to metas. *)
+        let all_params = xtor.quantified @ xtor.existentials in
+        let fresh_all_metas, fresh_subst = freshen_meta all_params in
+        let fresh_quant_metas = List.filteri (fun i _ -> i < List.length xtor.quantified) fresh_all_metas in
+        let fresh_exist_metas = List.filteri (fun i _ -> i >= List.length xtor.quantified) fresh_all_metas in
         let fresh_main = apply_fresh_subst fresh_subst xtor.main in
         let result = unify fresh_main meta_scrutinee Ident.emptytbl in
         match result with
@@ -578,7 +608,7 @@ module TypeSystem(Base: BASE) = struct
               metas from meta_scrutinee). We need to convert those back to TVars. *)
             let resolve_meta t = apply_fresh_subst meta_to_tvar (apply_subst unified_subst t) in
             let combined_subst = Ident.map_tbl resolve_meta fresh_subst in
-            Some (instantiate_xtor xtor combined_subst)
+            Some (instantiate_xtor xtor (fresh_quant_metas, fresh_exist_metas) combined_subst)
         | None -> None
       ) dec.xtors
     in

@@ -370,7 +370,10 @@ module Transform = struct
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
-              (xtor.name, [], ps, Target.LetCtor (dec, xtor.name, ps, z, k Sub.empty z))
+              (* For instantiated decs, xtor.existentials has the type params to bind.
+                 These are fresh metas created by instantiate_dec/instantiate_xtor. *)
+              let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+              (xtor.name, ty_vars, ps, Target.LetCtor (dec, xtor.name, ps, z, k Sub.empty z))
             ) dec.xtors in
             let x' = Ident.fresh () in
             Target.LetMatch (dec, branches, x', transform_command ctx s (Sub.add x x' h))
@@ -408,7 +411,9 @@ module Transform = struct
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
-              (xtor.name, [], ps,
+              (* For instantiated decs, xtor.existentials has the type params to bind. *)
+              let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+              (xtor.name, ty_vars, ps,
                 Target.LetDtor (dec, xtor.name, ps, z, k Sub.empty z))
             ) dec.xtors in
             let a' = Ident.fresh () in
@@ -559,14 +564,16 @@ module Transform = struct
             Target.CutMatch (dec, Sub.apply h x,
               List.map (fun (xtor: CTy.xtor) ->
                 let ps = fresh_params xtor.argument_types in
-                (xtor.name, [], ps, Target.CutCtor (dec, xtor.name, ps, Sub.apply h y))
+                let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+                (xtor.name, ty_vars, ps, Target.CutCtor (dec, xtor.name, ps, Sub.apply h y))
               ) dec.xtors)
         | Some dec ->
             (* Negative: CutComatch [branches: CutDtor x n freshNames] y *)
             Target.CutComatch (dec,
               List.map (fun (xtor: CTy.xtor) ->
                 let ps = fresh_params xtor.argument_types in
-                (xtor.name, [], ps, Target.CutDtor (dec, xtor.name, Sub.apply h x, ps))
+                let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+                (xtor.name, ty_vars, ps, Target.CutDtor (dec, xtor.name, Sub.apply h x, ps))
               ) dec.xtors,
               Sub.apply h y)
         | None ->
@@ -621,7 +628,8 @@ module Transform = struct
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
-              (xtor.name, [], ps, 
+              let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+              (xtor.name, ty_vars, ps, 
                 Target.LetCtor (dec, xtor.name, ps, z, 
                   transform_command ctx r (Sub.add a z h)))
             ) dec.xtors in
@@ -632,7 +640,8 @@ module Transform = struct
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
-              (xtor.name, [], ps,
+              let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
+              (xtor.name, ty_vars, ps,
                 Target.LetDtor (dec, xtor.name, ps, z,
                   transform_command ctx s (Sub.add x z h)))
             ) dec.xtors in

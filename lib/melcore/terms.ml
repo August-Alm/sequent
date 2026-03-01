@@ -833,10 +833,20 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 Ident.add orig_var (TMeta meta_var) s
               ) branch_sbs fresh_metas in
               
+              (* Convert refinable TVars in result_ty to their corresponding metas.
+                 This is crucial for GADT refinement: result_ty may contain TVar n,
+                 and branch_sbs has n → TMeta ?m with ?m = zero. But apply_subst
+                 doesn't substitute TVars, only TMetas. So we use apply_fresh_subst
+                 to convert vec(a)(TVar n) → vec(a)(TMeta ?m). *)
+              let tvar_to_meta = List.fold_left (fun s (orig_var, meta_var) ->
+                Ident.add orig_var (TMeta meta_var) s
+              ) Ident.emptytbl fresh_metas in
+              let refined_result_ty = apply_fresh_subst tvar_to_meta result_ty in
+              
               let ctx' = extend_vars ctx'
                 (List.combine tm_vars inst_args')
               in
-              let* (body', _, _branch_sbs) = check ctx' branch_sbs body result_ty in
+              let* (body', _, _branch_sbs) = check ctx' branch_sbs body refined_result_ty in
               let clause = (xtor_name, ty_vars, tm_vars, body') in
               (* Use original sbs for next branch, not branch_sbs with GADT refinements *)
               go sbs (clause :: acc) rest)

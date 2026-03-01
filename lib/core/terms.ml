@@ -218,6 +218,58 @@ let freshen_xtor_existentials (xtor: xtor)
   let inst_main = apply_fresh_subst exist_subst xtor.main in
   (inst_args, inst_main)
 
+(** Apply a type substitution to all types in a command.
+    Used for GADT refinement to convert TVars to TMetas before checking. *)
+let rec refine_cmd_types (subst: typ Ident.tbl) (cmd: command) : command =
+  let refine_typ = apply_fresh_subst subst in
+  let refine_term t = refine_term_types subst t in
+  match cmd with
+    Cut (ty, t1, t2) -> Cut (refine_typ ty, refine_term t1, refine_term t2)
+  | Call (path, type_args, term_args) ->
+      Call (path, List.map refine_typ type_args, List.map refine_term term_args)
+  | Add (t1, t2, t3) -> Add (refine_term t1, refine_term t2, refine_term t3)
+  | Sub (t1, t2, t3) -> Sub (refine_term t1, refine_term t2, refine_term t3)
+  | Ifz (t, c1, c2) ->
+      Ifz (refine_term t, refine_cmd_types subst c1, refine_cmd_types subst c2)
+  | Ret (ty, t) -> Ret (refine_typ ty, refine_term t)
+  | End -> End
+
+and refine_term_types (subst: typ Ident.tbl) (term: term) : term =
+  let refine_typ = apply_fresh_subst subst in
+  let refine_chiral ct = chiral_map refine_typ ct in
+  let refine_term t = refine_term_types subst t in
+  let refine_dec (d: dec) : dec =
+    { d with
+      type_args = List.map refine_typ d.type_args
+    ; xtors = List.map (fun (x: xtor) ->
+        { x with
+          argument_types = List.map refine_chiral x.argument_types
+        ; main = refine_typ x.main
+        }) d.xtors
+    }
+  in
+  let refine_branch (xtor, tvs, tms, cmd) = (xtor, tvs, tms, refine_cmd_types subst cmd) in
+  match term with
+    Var v -> Var v
+  | Lit n -> Lit n
+  | Ctor (dec, xtor, args) -> Ctor (refine_dec dec, xtor, List.map refine_term args)
+  | Dtor (dec, xtor, ty_args, args) ->
+      Dtor (refine_dec dec, xtor, List.map refine_typ ty_args, List.map refine_term args)
+  | Match (dec, branches) -> Match (refine_dec dec, List.map refine_branch branches)
+  | Comatch (dec, branches) -> Comatch (refine_dec dec, List.map refine_branch branches)
+  | MuPrd (ty, v, cmd) -> MuPrd (refine_typ ty, v, refine_cmd_types subst cmd)
+  | MuCns (ty, v, cmd) -> MuCns (refine_typ ty, v, refine_cmd_types subst cmd)
+  | NewForall (a, k, body_ty, cont, cmd) ->
+      NewForall (a, refine_typ k, refine_typ body_ty, cont, refine_cmd_types subst cmd)
+  | InstantiateDtor ty -> InstantiateDtor (refine_typ ty)
+
+(** Apply a type substitution to all variable types in a context.
+    Used for GADT refinement so that variables from outer scope get their TVars
+    converted to TMetas that can be unified with the refined types. *)
+let refine_context (subst: typ Ident.tbl) (ctx: context) : context =
+  let refine_chiral ct = chiral_map (apply_fresh_subst subst) ct in
+  { ctx with term_vars = Ident.map_tbl refine_chiral ctx.term_vars }
+
 (** Check a single branch: bind vars with xtor's chiralities, check command.
     For instantiated declarations, xtor.quantified is empty. *)
 let check_branch
@@ -242,6 +294,39 @@ let check_branch
           ; expected = List.length xtor.argument_types
           ; got = List.length term_vars })
       else
+        (* GADT refinement: create fresh metas from TVars in dec.type_args so they
+           can be unified with the xtor's result type. *)
+        let (fresh_metas, meta_type_args) =
+          List.fold_right (fun ty (metas, args) ->
+            match apply_subst subs ty with
+              TVar v ->
+                let m = Ident.mk (Ident.name v) in
+                ((v, m) :: metas, TMeta m :: args)
+            | other -> (metas, other :: args)
+          ) dec.type_args ([], [])
+        in
+        
+        (* Unify xtor's main type with the scrutinee type (using metas).
+           The xtor.main in instantiated decs already has quantified vars resolved. *)
+        let scrutinee_type = Sgn (dec.name, meta_type_args) in
+        let branch_subs = match unify xtor.main scrutinee_type subs with
+            Some s -> s
+          | None -> subs  (* If unification fails, continue with original subs *)
+        in
+        
+        (* For GADT refinement: convert TVars in the command to their corresponding metas.
+           This is crucial: the command may contain types like vec(a, n) where n is a TVar.
+           After unification, branch_subs has ?m = zero. But apply_subst doesn't substitute
+           TVars, only TMetas. So we use apply_fresh_subst to convert vec(a, TVar n) →
+           vec(a, TMeta ?m), which then unifies correctly via apply_subst. *)
+        let tvar_to_meta = List.fold_left (fun s (orig_var, meta_var) ->
+          Ident.add orig_var (TMeta meta_var) s
+        ) Ident.emptytbl fresh_metas in
+        let refined_cmd = refine_cmd_types tvar_to_meta cmd in
+        (* Also refine the context: variables from outer scope have TVars that need to be
+           converted to the same TMetas, so apply_subst can resolve GADT refinements *)
+        let refined_ctx = refine_context tvar_to_meta ctx in
+        
         (* Substitute user-provided type variable names for existentials.
            Don't freshen - the user's type vars are the "fresh" names for this branch. *)
         let exist_subst =
@@ -255,10 +340,10 @@ let check_branch
         (* Extend context with existential type vars and term vars *)
         let ctx' =
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
-            ctx type_vars xtor.existentials
+            refined_ctx type_vars xtor.existentials
         in
         let ctx'' = bind_xtor_term_args ctx' inst_args term_vars in
-        check_cmd ctx'' subs cmd
+        check_cmd ctx'' branch_subs refined_cmd
 
 (** Check all branches and verify exhaustiveness.
     For instantiated declarations, exhaustiveness is just checking all xtors are covered. *)

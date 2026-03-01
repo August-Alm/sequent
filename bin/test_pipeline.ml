@@ -580,19 +580,61 @@ let main: int =
   let s =
     new socket(raw)
     { bind(port) =>
-        new { connect => 
-          new { send(msg) => U
-              ; receive => this_is_your_key(8)
-              ; close => U
-              }
+        new
+        { connect =>
+            new
+            { send(msg) => U
+            ; receive => this_is_your_key(8)
+            ; close => U
+            }
         }
-    } in
+    }
+  in
   let answer = receive(connect(bind(s)(8080))) in
   match answer with
   { hello => 0
   ; this_is_your_key(k) => k
   }
     |};
+
+  (* Test 25: Singleton types *)
+  run_test
+    ~name:"Singleton types"
+    ~expected:3
+    {|
+data nat: type where
+  { zero: nat
+  ; succ: nat -> nat
+  }
+
+data single_nat: nat -> type where
+  { single_zero: single_nat(zero)
+  ; single_succ: {n: nat} single_nat(n) -> single_nat(succ(n))
+  }
+
+data vec: type -> nat -> type where
+  { nil: {a} vec(a)(zero)
+  ; cons: {a}{n: nat} a -> vec(a)(n) -> vec(a)(succ(n))
+  }
+
+let replicate{a}{n: nat}(x: a)(k: single_nat(n)): vec(a)(n) =
+  match k with
+  { single_zero => nil{a}
+  ; single_succ{m}(k') => cons{a}{m}(x)(replicate{a}{m}(x)(k'))
+  }
+
+let length{a}{k: nat}(v: vec(a)(k)): int =
+  match v with
+  { nil{_} => 0
+  ; cons{_}{n}(x)(xs) => 1 + length{a}{n}(xs)
+  }
+
+let main: int =
+  let n3 = succ(succ(succ(zero))) in
+  let n3_single = single_succ{succ(succ(zero))}(single_succ{succ(zero)}(single_succ{zero}(single_zero))) in
+  let v = replicate{int}{succ(succ(succ(zero)))}(42)(n3_single) in
+  length{int}{succ(succ(succ(zero)))}(v)
+  |};
 
   
   (* Final Summary *)
