@@ -32,11 +32,11 @@ module Ident = struct
   let add id data tbl = (id, data) :: tbl
   let rec find x tb =
     match tb with
-    | [] -> raise Not_found
+      [] -> raise Not_found
     | (y, v) :: rest -> if equal x y then v else find x rest
   let rec find_opt x tb =
     match tb with
-    | [] -> None
+      [] -> None
     | (y, v) :: rest -> if equal x y then Some v else find_opt x rest
   let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
   let remove x tbl = List.filter (fun (k, _) -> not (equal x k)) tbl
@@ -102,11 +102,11 @@ module Path = struct
   let add id data tbl = (id, data) :: tbl
   let rec find x tb =
     match tb with
-    | [] -> raise Not_found
+      [] -> raise Not_found
     | (y, v) :: rest -> if equal x y then v else find x rest
   let rec find_opt x tb =
     match tb with
-    | [] -> None
+      [] -> None
     | (y, v) :: rest -> if equal x y then Some v else find_opt x rest
   let filter f tbl = List.filter (fun (k, v) -> f k v) tbl
   let join tbl1 tbl2 = tbl1 @ tbl2
@@ -119,7 +119,7 @@ module Path = struct
 
   let rec path p sub =
     match p with
-    | Pident id -> (try Ident.find id sub with Not_found -> p)
+      Pident id -> (try Ident.find id sub with Not_found -> p)
     | Pdot (root, field) -> Pdot (path root sub, field)
   
   let add_subst = Ident.add

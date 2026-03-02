@@ -364,14 +364,14 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedAll ((tv, k), body, ty) ->
       (* Λa:k. body → thunk(NewForall(a, k', alpha, ⟨body' | alpha⟩))
          
-         Forall types are encoded as raise(∀a:k. body_ty).
-         The NewForall binds both the type variable and the continuation.
-         
-         The NewForall body produces body_ty', and the continuation α
-         (now bound by NewForall) receives that value. When instantiated, 
-         the body runs and the result flows to the instantiation continuation.
-         
-         NewForall is negative, so wrap in thunk. *)
+        Forall types are encoded as raise(∀a:k. body_ty).
+        The NewForall binds both the type variable and the continuation.
+        
+        The NewForall body produces body_ty', and the continuation α
+        (now bound by NewForall) receives that value. When instantiated, 
+        the body runs and the result flows to the instantiation continuation.
+        
+        NewForall is negative, so wrap in thunk. *)
       let k' = encode_type ctx.data_sorts k in
       let body_ty' = match ty with
           MTy.Forall (_, _, inner) -> encode_type ctx.data_sorts inner
@@ -390,14 +390,14 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedApp (f, arg, result_ty) ->
       (* f(arg) where f : raise(fun(dom, cod))
          
-         Note: Saturated definition calls are already handled by try_encode_def_call
-         at the start of encode_term_inner. This case handles regular function application.
-         
-         Since function types are encoded as raise(fun(...)), we need to:
-         1. Unwrap the raise to get the actual function
-         2. Apply it
-         
-         μα.⟨f' | match { thunk(g) => ⟨g | apply(α, arg')⟩ }⟩ *)
+        Note: Saturated definition calls are already handled by try_encode_def_call
+        at the start of encode_term_inner. This case handles regular function application.
+        
+        Since function types are encoded as raise(fun(...)), we need to:
+        1. Unwrap the raise to get the actual function
+        2. Apply it
+        
+        μα.⟨f' | match { thunk(g) => ⟨g | apply(α, arg')⟩ }⟩ *)
       let f' = encode_term ctx f in
       let arg' = encode_term ctx arg in
       let f_ty = encode_type ctx.data_sorts (MTm.get_type f) in
@@ -435,7 +435,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       (match cod with
         CTy.Sgn (s, [inner_ty]) when Path.equal s Prim.lower_sym ->
           (* cod = Lower(inner_ty), function returns suspended computation.
-             Need to force it. *)
+            Need to force it. *)
           let lower_dec = get_instantiated_dec ctx Prim.lower_sym [inner_ty] in
           let thunk = Ident.fresh () in
           let ret = Ident.fresh () in
@@ -457,13 +457,13 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedIns (f, ty_arg, _k, result_ty) ->
       (* f{ty_arg} where f : raise(∀a:k. body)
          
-         Since forall types are encoded as raise(∀...), we need to:
-         1. Unwrap the raise to get the actual forall
-         2. Instantiate it to get body[a:=ty_arg]
-         
-         μα.⟨f' | match { thunk(g) => ⟨g | instantiate[ty_arg']⟩ }⟩ 
-         
-         Note: We removed the lower wrapping, so result_ty' is directly the result. *)
+        Since forall types are encoded as raise(∀...), we need to:
+        1. Unwrap the raise to get the actual forall
+        2. Instantiate it to get body[a:=ty_arg]
+        
+        μα.⟨f' | match { thunk(g) => ⟨g | instantiate[ty_arg']⟩ }⟩ 
+        
+        Note: We removed the lower wrapping, so result_ty' is directly the result. *)
       let f' = encode_term ctx f in
       let ty_arg' = encode_type ctx.data_sorts ty_arg in
       let result_ty' = encode_type ctx.data_sorts result_ty in
@@ -513,9 +513,8 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
 
   | MTm.TypedNew (branches, ty) ->
       (* new { ... } → thunk(Comatch(d, branches'))
-         
-         Since codata types are encoded as raise(codata), we wrap the comatch
-         in thunk to produce a positive value. *)
+        Since codata types are encoded as raise(codata), we wrap the comatch
+        in thunk to produce a positive value. *)
       let ty' = encode_type ctx.data_sorts ty in
       (* ty' is raise(inner_codata_ty) *)
       let inner_codata_ty = match ty' with
@@ -535,8 +534,8 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
 
   | MTm.TypedCtor (dec, ctor, ty_args, args, result_ty) ->
       (* Ctor(d, c, {ty_args}, args) → Ctor(inst_dec, c, args')
-         For GADTs, ty_args may not have all dec params - some are fixed by the ctor.
-         We extract the actual type args from result_ty which is the full result type. *)
+        For GADTs, ty_args may not have all dec params - some are fixed by the ctor.
+        We extract the actual type args from result_ty which is the full result type. *)
       let args' = List.map (encode_term ctx) args in
       (* Extract type args from result type *)
       let dec_type_args = match result_ty with
@@ -557,11 +556,11 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedDtor (dec, dtor, ty_args, args, ty) ->
       (* Dtor(d, c, {ty_args}, this :: rest) where this : raise(codata)
          
-         ty_args contains xtor's quantified AND existential args (NOT dec params).
-         For GADT codata, the dec params come from the subject's type, not ty_args.
+        ty_args contains xtor's quantified AND existential args (NOT dec params).
+        For GADT codata, the dec params come from the subject's type, not ty_args.
          
-         Since codata types are wrapped in raise, we need to unwrap before calling.
-         μα.⟨this' | match { thunk(g) => ⟨g | Dtor(inst_dec, c, rest' @ [α])⟩ }⟩ *)
+        Since codata types are wrapped in raise, we need to unwrap before calling.
+        μα.⟨this' | match { thunk(g) => ⟨g | Dtor(inst_dec, c, rest' @ [α])⟩ }⟩ *)
       let ty' = encode_type ctx.data_sorts ty in
       let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
       (* Get the original dec and xtor to find how many quantified/existential args *)
@@ -583,7 +582,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
           let this_ty = encode_type ctx.data_sorts (MTm.get_type this_arg) in
           (* Extract dec type args from subject type: raise(D(args)) -> args *)
           let dec_type_args = match this_ty with
-            | CTy.Sgn (s, [CTy.Sgn (_, args)]) when Path.equal s Prim.raise_sym -> args
+              CTy.Sgn (s, [CTy.Sgn (_, args)]) when Path.equal s Prim.raise_sym -> args
             | CTy.Sgn (_, args) -> args  (* Fallback for unwrapped *)
             | _ -> failwith "Could not extract dec type args from subject type"
           in
@@ -608,7 +607,7 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
               (CTm.Match (raise_dec,
                 [(Prim.thunk_sym, [], [g],
                   (* In Core, dtor args are: [continuation, rest args reversed]
-                     The continuation (alpha) comes FIRST *)
+                    The continuation (alpha) comes FIRST *)
                   make_cut inner_codata_ty (CTm.Var g)
                     (CTm.Dtor (inst_dec, dtor, exist_type_args, [CTm.Var alpha] @ rest')))]))))
 
@@ -651,13 +650,17 @@ and wrap_body_for_cod (ctx: encode_ctx) (body: CTm.term) (body_ty: CTy.typ)
     The inst_dec is the instantiated declaration, which has quantified = []
     and only existentials remain. We need to filter ty_vars to keep only
     the existential part (drop the quantified vars that are now fixed). *)
-and encode_match_branch (ctx: encode_ctx) (inst_dec: CTy.dec) (result_ty: CTy.typ) (alpha: Ident.t)
+and encode_match_branch
+(ctx: encode_ctx) (inst_dec: CTy.dec) (result_ty: CTy.typ) (alpha: Ident.t)
     ((xtor, ty_vars, tm_vars, body): MTm.typed_clause) : CTm.branch =
   let body' = encode_term_tail ctx body in  (* branch body is in tail position *)
   let cmd = make_cut result_ty body' (CTm.Var alpha) in
   (* Find the xtor in the instantiated dec to get existential count *)
-  let n_exist = match List.find_opt (fun (x: CTy.xtor) -> Path.equal x.name xtor) inst_dec.xtors with
-    | Some inst_xtor -> List.length inst_xtor.existentials
+  let n_exist = match List.find_opt (fun (x: CTy.xtor) ->
+      Path.equal x.name xtor
+    ) inst_dec.xtors
+    with
+      Some inst_xtor -> List.length inst_xtor.existentials
     | None -> 0  (* Should not happen for valid code *)
   in
   (* Keep only the last n_exist type vars (existentials come after quantified) *)
@@ -674,7 +677,7 @@ and encode_match_branch (ctx: encode_ctx) (inst_dec: CTy.dec) (result_ty: CTy.ty
     Similar to encode_match_branch, filter ty_vars to keep only existentials.
     
     In Core, codata xtor arguments are ordered: [cns return_type, prd argN, ...prd arg1]
-    (reversed from surface order). So the continuation k comes FIRST, then tm_vars reversed. *)
+    (reversed from surface order). The continuation k comes FIRST, then tm_vars reversed. *)
 and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
     ((xtor, ty_vars, tm_vars, body): MTm.typed_clause) : CTm.branch =
   let body' = encode_term_tail ctx body in  (* branch body is in tail position *)
@@ -682,8 +685,11 @@ and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
   let k = Ident.fresh () in
   let cmd = make_cut body_ty body' (CTm.Var k) in
   (* Find the xtor in the instantiated dec to get existential count *)
-  let n_exist = match List.find_opt (fun (x: CTy.xtor) -> Path.equal x.name xtor) inst_dec.xtors with
-    | Some inst_xtor -> List.length inst_xtor.existentials
+  let n_exist = match List.find_opt (fun (x: CTy.xtor) ->
+      Path.equal x.name xtor
+    ) inst_dec.xtors
+    with
+      Some inst_xtor -> List.length inst_xtor.existentials
     | None -> 0
   in
   (* Keep only the last n_exist type vars (existentials come after quantified) *)
@@ -695,7 +701,7 @@ and encode_new_branch (ctx: encode_ctx) (inst_dec: CTy.dec)
       List.filteri (fun i _ -> i >= start) ty_vars
   in
   (* k comes first (consumer for return), then the pattern variables REVERSED
-     to match the reversed order in argument_types *)
+    to match the reversed order in argument_types *)
   (xtor, exist_ty_vars, [k] @ List.rev tm_vars, cmd)
 
 (* ========================================================================= *)

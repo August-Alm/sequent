@@ -37,3 +37,7 @@ Thumbs.db
 
 __azurite_db_table__.json
 AzuriteConfig
+
+# Test output
+output.txt
+outputs/

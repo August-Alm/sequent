@@ -1,4 +1,4 @@
 (library
  (name sequent)
- (modules simple desugar encode focus linearize pipeline pcf sequent)
- (libraries utility common lang melcore core focused axil))
+ (modules simple desugar encode focus linearize compile_aarch64 pipeline pcf sequent)
+ (libraries utility common lang melcore core focused axil aarch64))

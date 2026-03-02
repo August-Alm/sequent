@@ -241,3 +241,22 @@ module AxilStage = struct
       Error (Printf.sprintf "Evaluation error: %s" (Printexc.to_string e))
 
 end
+
+module EmitStage = struct
+
+  open Common.Identifiers
+  module ATm = Axil.Terms
+  
+  type architecture = AARCH64
+
+  let compile_to_string
+      (target: architecture) 
+      (name: string) (main: ATm.definition) (defs: ATm.definition Path.tbl)
+      : (string, string) result =
+    match target with
+      AARCH64 ->
+        try Ok (Compile_aarch64.compile_to_string name main defs)
+        with e ->
+          Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
+
+end

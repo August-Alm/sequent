@@ -12,7 +12,8 @@
   8. Type-checks in Focused using Focused.Terms
   9. Linearizes to Axil using Linearize
   10. Type-checks in Axil using Axil.Terms
-  11. Evaluates using the abstract machine
+  11. Evaluates using the Axil abstract machine
+  12. Optionally compiles to Aarch64 assembly
   
   All test inputs contain a monomorphic "main" function that returns an int.
 *)
@@ -38,7 +39,7 @@ let pass_count = ref 0
 
 let ( let* ) = Result.bind
 
-let run_test ?(trace=false) ~name ~expected (source: string) =
+let run_test ?(trace=false) ?(compile=false) ?(compile_name="test") ~name ~expected (source: string) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
@@ -148,20 +149,36 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     
     (* Extract result using the semantics helper *)
     (match AMachine.get_result (final_cmd, final_env) with
-    | Some (AMachine.IntVal n) -> Ok n
+      Some (AMachine.IntVal n) ->
+        if compile then
+          let _ = print_endline "12. Compile to Aarch64: Compiling..." in
+          match Pipe.EmitStage.compile_to_string Pipe.EmitStage.AARCH64 compile_name axil_main axil_defs with
+          | Ok asm_str ->
+              let dir = "outputs" in
+              let () = if not (Sys.file_exists dir) then Sys.mkdir dir 0o755 in
+              let filename = dir ^ "/" ^ compile_name ^ ".aarch64.asm" in
+              let oc = open_out filename in
+              output_string oc asm_str;
+              close_out oc;
+              Printf.printf "12. Compile to Aarch64: OK (output written to %s)\n" filename;
+              Ok n
+          | Error msg -> Error msg
+        else Ok n
     | Some _ -> Error "Final result is not an int"
     | None -> Error ("Machine did not halt with a result. Final: " ^ APrint.command_to_string final_cmd))
+  
   in
   
   print_newline ();
   (match result with
-  | Ok actual ->
+    Ok actual ->
       Printf.printf "Result: %d\n" actual;
       if actual = expected then begin
         Printf.printf "PASS ✓ (expected %d)\n" expected;
         incr pass_count
       end else
-        Printf.printf "FAIL ✗ (expected %d, got %d)\n" expected actual
+        Printf.printf "FAIL ✗ (expected %d, got %d)\n" expected actual;
+      
   | Error msg ->
       Printf.printf "FAIL ✗: %s\n" msg);
   print_newline ()
@@ -246,6 +263,8 @@ let main: int =
   run_test
     ~name:"Function application"
     ~expected:15
+    ~compile:true
+    ~compile_name:"funapp"
     {|
 let double(x: int): int = x + x
 
@@ -341,6 +360,8 @@ let main: int = get_or_zero(none{int})
   run_test
     ~name:"Option some"
     ~expected:42
+    ~compile:true
+     ~compile_name:"option_some"
     {|
 data option: type -> type where
   { none: {a: type} option(a)

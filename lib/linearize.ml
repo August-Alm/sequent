@@ -36,7 +36,7 @@ module ATm = Axil.Terms
 
 let rec convert_typ (t: FTy.typ) : ATy.typ =
   match t with
-  | FTy.Base _ -> ATy.Base AB.Typ
+    FTy.Base _ -> ATy.Base AB.Typ
   | FTy.Arrow (t1, t2) -> ATy.Arrow (convert_typ t1, convert_typ t2)
   | FTy.Ext e -> ATy.Ext e
   | FTy.TVar v -> ATy.TVar v
@@ -94,7 +94,7 @@ let add_vars (vs: Common.Identifiers.Ident.t list) (counts: int VarMap.t) : int 
 let merge_counts (c1: int VarMap.t) (c2: int VarMap.t) : int VarMap.t =
   VarMap.merge (fun _ a b ->
     match a, b with
-    | Some x, Some y -> Some (max x y)  (* For branches, take max *)
+      Some x, Some y -> Some (max x y)  (* For branches, take max *)
     | Some x, None -> Some x
     | None, Some y -> Some y
     | None, None -> None
@@ -107,7 +107,7 @@ let merge_counts (c1: int VarMap.t) (c2: int VarMap.t) : int VarMap.t =
 
 let rec free_vars_cmd (cmd: FTm.command) : int VarMap.t =
   match cmd with
-  | FTm.Let (v, _dec, _xtor, args, body) ->
+    FTm.Let (v, _dec, _xtor, args, body) ->
       let body_fv = free_vars_cmd body in
       let body_fv' = VarMap.remove v body_fv in
       add_vars args body_fv'
@@ -215,7 +215,7 @@ let build_reordering_with_contraction
   let copy_names = ref VarMap.empty in
   let get_copy_name v =
     match VarMap.find_opt v !copy_names with
-    | Some name -> name
+      Some name -> name
     | None ->
         let name = fresh_var st v in
         copy_names := VarMap.add v name !copy_names;
@@ -271,9 +271,9 @@ let is_identity_reordering
     (current_ctx: Common.Identifiers.Ident.t list)
     (subst: (Common.Identifiers.Ident.t * Common.Identifiers.Ident.t) list) : bool =
   (* Identity requires:
-     1. Same length (no weakening)
-     2. Same order (no exchange)
-     3. Same names (no renaming for contraction) *)
+    1. Same length (no weakening)
+    2. Same order (no exchange)
+    3. Same names (no renaming for contraction) *)
   if List.length subst <> List.length current_ctx then
     false  (* Different length means weakening occurred *)
   else
@@ -299,9 +299,9 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
   let fv = free_vars_cmd cmd in
   match cmd with
   (* let v = m(args); s
-     Consumes: args (in order as prefix)
-     Continues with: v prepended to remaining context *)
-  | FTm.Let (v, dec, xtor, args, body) ->
+    Consumes: args (in order as prefix)
+    Continues with: v prepended to remaining context *)
+    FTm.Let (v, dec, xtor, args, body) ->
       let (subst, new_ctx) = build_reordering st ctx args fv in
       (* After consuming args, new_ctx has remaining vars; v is prepended *)
       let body_ctx = v :: (List.filter (fun x ->
@@ -311,8 +311,8 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       wrap_with_reordering ctx subst (ATm.Let (v, convert_dec dec, xtor, args, body'))
 
   (* switch v { branches }
-     Consumes: v (at head)
-     Each branch gets its bound vars prepended to remaining context *)
+    Consumes: v (at head)
+    Each branch gets its bound vars prepended to remaining context *)
   | FTm.Switch (v, dec, branches) ->
       let (subst, new_ctx) = build_reordering st ctx [v] fv in
       (* After consuming v, branches get term_vars prepended to remaining *)
@@ -323,8 +323,8 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       wrap_with_reordering ctx subst (ATm.Switch (v, convert_dec dec, branches'))
 
   (* new v = { branches }; s
-     Doesn't consume from head; v prepended for continuation 
-     Branches get term_vars prepended to context *)
+    Doesn't consume from head; v prepended for continuation 
+    Branches get term_vars prepended to context *)
   | FTm.New (v, dec, branches, body) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
       let branches' = List.map (linearize_branch st new_ctx) branches in
@@ -332,7 +332,7 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       wrap_with_reordering ctx subst (ATm.New (v, convert_dec dec, branches', body'))
 
   (* invoke v m(args)
-     Consumes: args at prefix, then v at head after args *)
+    Consumes: args at prefix, then v at head after args *)
   | FTm.Invoke (v, dec, xtor, args) ->
       let consumed = args @ [v] in
       let (subst, _) = build_reordering st ctx consumed fv in
@@ -354,7 +354,7 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
 
   | FTm.Add (x, y, r, body) ->
       (* Add does NOT consume x and y - unrestricted discipline for primitives.
-         Just need x, y present in context; r is prepended for body *)
+        Just need x, y present in context; r is prepended for body *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
       let body' = linearize_cmd st (r :: new_ctx) body in
       wrap_with_reordering ctx subst (ATm.Add (x, y, r, body'))
@@ -373,7 +373,7 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
 
   | FTm.Ifz (v, then_cmd, else_cmd) ->
       (* Ifz does NOT consume v - unrestricted discipline for primitives.
-         Both branches get the same context with v still present *)
+        Both branches get the same context with v still present *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
       let then' = linearize_cmd st new_ctx then_cmd in
       let else' = linearize_cmd st new_ctx else_cmd in
