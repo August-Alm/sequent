@@ -1,4 +1,4 @@
-(* Test replicate with 2 elements *)
+(* Simplest failing test - length on replicate(2) *)
 module Pipe = Sequent.Pipeline
 
 let source = {|
@@ -30,8 +30,8 @@ let length{a}{n: nat}(v: vec(a)(n)): int =
   }
 
 let main: int =
-  let n2_single = single_succ{succ(zero)}(single_succ{zero}(single_zero)) in
-  let v = replicate{int}{succ(succ(zero))}(42)(n2_single) in
+  let n2 = single_succ{succ(zero)}(single_succ{zero}(single_zero)) in
+  let v = replicate{int}{succ(succ(zero))}(42)(n2) in
   length{int}{succ(succ(zero))}(v)
 |}
 
@@ -51,14 +51,14 @@ let () =
     let* (axil_decs, axil_main, axil_defs) = 
       Pipe.AxilStage.linearize focused_decs focused_main focused_defs in
     let* _ = Pipe.AxilStage.type_check axil_decs axil_defs in
-    Printf.printf "=== Compiling ===\n";
+    Printf.printf "=== Compiling ===\n%!";
     let (code, _arg_count) = Sequent.Compile_checked.compile axil_main axil_defs in
-    Printf.printf "\n=== Running ===\n";
-    let* result = Pipe.EmitStage.eval ~trace:true ~max_steps:50000 code in
-    Printf.printf "Result: %d (expected: 2)\n" result;
+    Printf.printf "\n=== Running (max 500 steps, trace=true) ===\n%!";
+    let* result = Pipe.EmitStage.eval ~trace:true ~max_steps:500 code in
+    Printf.printf "Result: %d (expected: 2)\n%!" result;
     Ok ()
   in
   match result with
   | Ok () -> ()
-  | Error msg -> Printf.printf "Error: %s\n" msg
+  | Error msg -> Printf.printf "Error: %s\n%!" msg
 

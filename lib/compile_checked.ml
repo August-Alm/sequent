@@ -21,6 +21,9 @@ open Aarch64.Substitution
 (* State Monad for Fresh Label Generation                                    *)
 (* ========================================================================= *)
 
+(* Debug flags - defined early so store/load can use them *)
+let debug_store = ref false
+
 type 'a state = int -> 'a * int
 
 let return (x: 'a) : 'a state = fun s -> (x, s)
@@ -200,6 +203,12 @@ let release_block (accu: Register.t) (this: Register.t) : code list state =
     Corresponds to Idris's storeValue v as. *)
 let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: int) 
     : code list =
+  if !debug_store then 
+    Printf.eprintf "  store_value: %s at k=%d, src r1=X%d r2=X%d, offset1=%d offset2=%d\n" 
+      (Ident.name v) k 
+      (Register.to_int (symbol_location1 src_ctx v))
+      (Register.to_int (symbol_location2 src_ctx v))
+      (Offset.field1 k) (Offset.field2 k);
   if is_ext_type ct then
     STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
     MOVI (Register.temp, 0) ::
@@ -213,6 +222,12 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
     Corresponds to Idris's loadBinder x as. *)
 let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
+  if !debug_store then 
+    Printf.eprintf "  load_binder: %s at k=%d, tgt r1=X%d r2=X%d, offset1=%d offset2=%d\n" 
+      (Ident.name x) k 
+      (Register.to_int (symbol_location1 x_ctx x))
+      (Register.to_int (symbol_location2 x_ctx x))
+      (Offset.field1 k) (Offset.field2 k);
   if is_ext_type ct then
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) :: []
   else
@@ -583,7 +598,7 @@ let label_index (lmap: label_map) (p: Path.t) : int =
     The context is embedded in each AST node, so no manual threading needed.
     Corresponds to Idris's codeStatement. *)
 
-let debug_subst = ref true  (* Set to true to enable debug output *)
+let debug_subst = ref false  (* Set to true to enable debug output *)
 
 let pp_ctx ctx =
   String.concat ", " (List.map (fun (v, ct) ->
@@ -603,8 +618,8 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   | CSubstitute { src_ctx; mapping; tgt_ctx; body } ->
       if !debug_subst then begin
         Printf.eprintf "CSubstitute:\n";
-        Printf.eprintf "  src_ctx: [%s]\n" (pp_ctx src_ctx);
-        Printf.eprintf "  tgt_ctx: [%s]\n" (pp_ctx tgt_ctx);
+        Printf.eprintf "  src_ctx (len=%d): [%s]\n" (List.length src_ctx) (pp_ctx src_ctx);
+        Printf.eprintf "  tgt_ctx (len=%d): [%s]\n" (List.length tgt_ctx) (pp_ctx tgt_ctx);
         Printf.eprintf "  mapping: [%s]\n" (String.concat ", " (List.map (fun (t, s) ->
           Printf.sprintf "%s<-%s" (Ident.name t) (Ident.name s)) mapping))
       end;
@@ -713,9 +728,11 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       ) 0 branches in
       if !debug_subst then begin
         Printf.eprintf "CSwitch: v=%s dec=%s\n" (Ident.name v) (Path.name dec.name);
+        Printf.eprintf "  ctx (len=%d): [%s]\n" (List.length ctx) (pp_ctx ctx);
+        Printf.eprintf "  v pos_from_end=%d\n" (position_from_end ctx v);
         Printf.eprintf "  dec.xtors: [%s]\n" (String.concat ", " (List.map (fun (x: xtor) -> Printf.sprintf "%s(orig_idx=%d)" (Path.name x.name) x.original_index) dec.xtors));
         Printf.eprintf "  branches: [%s]\n" (String.concat ", " (List.map (fun b -> Printf.sprintf "%s->%d" (Path.name b.xtor) (get_original_index b.xtor)) branches));
-        Printf.eprintf "  max_idx=%d\n" max_idx
+        Printf.eprintf "  max_idx=%d base_lab=%d tag_reg=X%d\n" max_idx base_lab (Register.to_int tag_reg)
       end;
       (* Create sparse jump table: entries at original_index positions *)
       let* branch_codes = code_clauses_sparse lmap tail_ctx branches base_lab get_original_index in
@@ -780,8 +797,9 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let num_methods = List.length dec.xtors in
       if !debug_subst then begin
         Printf.eprintf "CInvoke: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
-        Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
+        Printf.eprintf "  ctx (len=%d): [%s]\n" (List.length ctx) (pp_ctx ctx);
         Printf.eprintf "  args: [%s]\n" (pp_ctx args);
+        Printf.eprintf "  v pos_from_end=%d\n" (position_from_end ctx v);
         Printf.eprintf "  tab_reg=X%d block_reg=X%d\n" (Register.to_int tab_reg) (Register.to_int block_reg)
       end;
       (* Build substitute graph: positions args, block ptr, AND tab_reg
@@ -816,7 +834,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
         end
       ) args;
       let substitute = code_exhange (Array.to_list graph) in
-      if !debug_subst then Printf.eprintf "  substitute: %d instructions\n" (List.length substitute);
+      if !debug_subst then begin
+        Printf.eprintf "  substitute: %d instructions\n" (List.length substitute);
+        List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) substitute
+      end;
       return (
         substitute @                              (* Substitute positions block ptr, args, AND tab_reg *)
         (if num_methods <= 1 then
@@ -1024,6 +1045,12 @@ and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
     : code list state =
   let args = branch.args in
   let full_ctx = branch.branch_ctx in
+  if !debug_subst then begin
+    Printf.eprintf "code_method: xtor=%s\n" (Path.name branch.xtor);
+    Printf.eprintf "  args: [%s]\n" (pp_ctx args);
+    Printf.eprintf "  captured_ctx: [%s]\n" (pp_ctx captured_ctx);
+    Printf.eprintf "  full_ctx: [%s]\n" (pp_ctx full_ctx)
+  end;
   (* Build move graph for args: src_reg -> [tgt_regs]
      Args arrive at positions starting at X4 (after block pointer X3) *)
   let arg_base = Register.reserved + 1 in  (* X4 *)
@@ -1032,11 +1059,13 @@ and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
     let src_r2 = Register.mk (arg_base + 2 * i + 1) in
     let tgt_r2 = symbol_location2 full_ctx arg in
     if is_ext_type ct then begin
+      if !debug_subst then Printf.eprintf "  method arg %d: %s (ext) X%d -> X%d\n" i (Ident.name arg) (Register.to_int src_r2) (Register.to_int tgt_r2);
       if not (Register.equal src_r2 tgt_r2) then
         graph.(Register.to_int src_r2) <- tgt_r2 :: graph.(Register.to_int src_r2)
     end else begin
       let src_r1 = Register.mk (arg_base + 2 * i) in
       let tgt_r1 = symbol_location1 full_ctx arg in
+      if !debug_subst then Printf.eprintf "  method arg %d: %s (non-ext) X%d,X%d -> X%d,X%d\n" i (Ident.name arg) (Register.to_int src_r1) (Register.to_int src_r2) (Register.to_int tgt_r1) (Register.to_int tgt_r2);
       if not (Register.equal src_r1 tgt_r1) then
         graph.(Register.to_int src_r1) <- tgt_r1 :: graph.(Register.to_int src_r1);
       if not (Register.equal src_r2 tgt_r2) then
@@ -1044,6 +1073,10 @@ and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
     end
   ) args;
   let arg_moves = code_exhange (Array.to_list graph) in
+  if !debug_subst then begin
+    Printf.eprintf "  arg_moves: %d instructions\n" (List.length arg_moves);
+    List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) arg_moves
+  end;
   (* Load captured environment from block. Block pointer is in X3, set by CInvoke.
      branch_ctx = branch.args @ captured_ctx, so captured_ctx goes at tail. *)
   let* loads = load_method captured_ctx full_ctx in

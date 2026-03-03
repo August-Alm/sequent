@@ -19,16 +19,16 @@ open Types.AxilBase
 type ctx = (var * chiral_typ) list
 
 (** Checked branch for switch/new *)
-type checked_branch = {
-  xtor: Path.t;
-  type_vars: var list;
-  (** Arguments with their types, derived from xtor *)
-  args: (var * chiral_typ) list;
-  (** Context for the branch body: args @ tail_ctx *)
-  branch_ctx: ctx;
-  (** Branch body *)
-  body: checked_command;
-}
+type checked_branch =
+  { xtor: Path.t
+  ; type_vars: var list
+    (** Arguments with their types, derived from xtor *)
+  ; args: (var * chiral_typ) list
+    (** Context for the branch body: args @ tail_ctx *)
+  ; branch_ctx: ctx
+    (** Branch body *)
+  ; body: checked_command
+  }
 
 (** Checked command: command annotated with typing contexts.
     Each constructor carries all context information needed for compilation.
@@ -301,7 +301,7 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
   | Jump (label, args) ->
       (* Look up definition to get param types - must match what the definition expects *)
       let def = match Path.find_opt label defs with
-        | Some d -> d
+          Some d -> d
         | None -> failwith ("definition not found for Jump: " ^ Path.name label)
       in
       (* Use definition's param types for consistency *)
