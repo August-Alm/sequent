@@ -559,11 +559,17 @@ let rec code_command (lmap: label_map) (ctx: ctx) (cmd: command)
           ADDI (Register.temp, tab_reg, Offset.jump_length xtor_idx) ::
           BR Register.temp :: [])
 
-  (* Axiom: cut between producer and consumer - for primitives, just return *)
-  | Axiom (_, v, _k) ->
+  (* Axiom: cut between producer and consumer - invoke the continuation.
+     For int continuations created by NewInt, the continuation expects
+     the parameter in the same register position as k (since param replaces k
+     in the context). So we save k's address, move v to k's register, then jump. *)
+  | Axiom (_, v, k) ->
+      let k_reg = symbol_register2 ctx k in
+      let v_reg = symbol_register2 ctx v in
       return (
-        MOVR (Register.return2, symbol_register2 ctx v) ::
-        B "cleanup" :: [])
+        MOVR (Register.temp, k_reg) ::   (* Save continuation address *)
+        MOVR (k_reg, v_reg) ::           (* Put value where param expects it *)
+        BR Register.temp :: [])          (* Jump to continuation *)
 
   (* Literal: create integer value *)
   | Lit (n, v, body) ->

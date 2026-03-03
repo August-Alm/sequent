@@ -49,9 +49,10 @@ end
 module Offset = struct
   let jump_length n = 4 * n
   let address n = 8 * n
-  let fields_per_block = 3
+  let fields_per_block = 3  (* Original value *)
   let reference_count = address 0
   let next_element = address 0
+  let code_pointer = address 1  (* For int consumers: method code address *)
   let field1 i = address (2 + 2 * i)
   let field2 i = address (2 + 2 * i + 1)
 end

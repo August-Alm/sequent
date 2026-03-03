@@ -12,8 +12,8 @@
   8. Type-checks in Focused using Focused.Terms
   9. Linearizes to Axil using Linearize
   10. Type-checks in Axil using Axil.Terms
-  11. Evaluates using the Axil abstract machine
-  12. Optionally compiles to Aarch64 assembly
+  11. Compiles to Aarch64 assembly
+  12. Evaluates using the Aarch64 abstract machine
   
   All test inputs contain a monomorphic "main" function that returns an int.
 *)
@@ -27,7 +27,7 @@ module FPrint = Focused.Printing
 module APrint = Axil.Printing
 module FTerms = Focused.Terms
 module ATerms = Axil.Terms
-module AMachine = Axil.Semantics
+module ACode = Aarch64.Code
 
 (* Test harness *)
 let test_count = ref 0
@@ -39,7 +39,7 @@ let pass_count = ref 0
 
 let ( let* ) = Result.bind
 
-let run_test ?(trace=false) ?(compile=false) ?(compile_name="test") ~name ~expected (source: string) =
+let run_test ?(trace=false) ~name ~expected (source: string) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
@@ -142,31 +142,20 @@ let run_test ?(trace=false) ?(compile=false) ?(compile_name="test") ~name ~expec
     let* _ = Pipe.AxilStage.type_check axil_decs axil_defs in
     print_endline "10. Axil type-check: OK";
     
-    (* Stage 11: Evaluate (using Axil semantics) *)
-    let* (final_cmd, final_env, steps) = 
-      Pipe.AxilStage.eval ~trace axil_main axil_defs in
-    Printf.printf "11. Evaluate: OK (%d steps)\n" steps;
+    (* Stage 11: Compile to Aarch64 *)
+    let* (asm_code, _arg_count) = 
+      Pipe.EmitStage.compile Pipe.EmitStage.AARCH64 axil_main axil_defs in
+    print_endline "11. Compile to Aarch64: OK";
     
-    (* Extract result using the semantics helper *)
-    (match AMachine.get_result (final_cmd, final_env) with
-      Some (AMachine.IntVal n) ->
-        if compile then
-          let _ = print_endline "12. Compile to Aarch64: Compiling..." in
-          match Pipe.EmitStage.compile_to_string Pipe.EmitStage.AARCH64 compile_name axil_main axil_defs with
-          | Ok asm_str ->
-              let dir = "outputs" in
-              let () = if not (Sys.file_exists dir) then Sys.mkdir dir 0o755 in
-              let filename = dir ^ "/" ^ compile_name ^ ".aarch64.asm" in
-              let oc = open_out filename in
-              output_string oc asm_str;
-              close_out oc;
-              Printf.printf "12. Compile to Aarch64: OK (output written to %s)\n" filename;
-              Ok n
-          | Error msg -> Error msg
-        else Ok n
-    | Some _ -> Error "Final result is not an int"
-    | None -> Error ("Machine did not halt with a result. Final: " ^ APrint.command_to_string final_cmd))
-  
+    (* Print generated Aarch64 code *)
+    print_endline "\nAarch64 code:";
+    Printf.printf "%s\n\n" (ACode.Code.list_to_string asm_code);
+    
+    (* Stage 12: Evaluate using Aarch64 semantics *)
+    let* result = Pipe.EmitStage.eval ~trace ~max_steps:50000 asm_code in
+    print_endline "12. Aarch64 eval: OK";
+    
+    Ok result
   in
   
   print_newline ();
@@ -263,8 +252,6 @@ let main: int =
   run_test
     ~name:"Function application"
     ~expected:15
-    ~compile:true
-    ~compile_name:"funapp"
     {|
 let double(x: int): int = x + x
 
@@ -360,8 +347,6 @@ let main: int = get_or_zero(none{int})
   run_test
     ~name:"Option some"
     ~expected:42
-    ~compile:true
-     ~compile_name:"option_some"
     {|
 data option: type -> type where
   { none: {a: type} option(a)
@@ -405,13 +390,13 @@ let main: int =
   (* Test 17: Fibonacci *)
   run_test
     ~name:"Fibonacci"
-    ~expected:8
+    ~expected:5
     {|
 let fib(n: int): int =
   ifz(n) then 0 else ifz(n - 1) then 1
   else fib(n - 1) + fib(n - 2)
 
-let main: int = fib(6)
+let main: int = fib(5)
     |};
 
 

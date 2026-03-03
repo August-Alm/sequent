@@ -232,7 +232,7 @@ let rec free_type_vars_in_typ (t: MT.typ) : Ident.t list =
       List.filter (fun x -> not (Ident.equal x v)) fv @
       free_type_vars_in_typ k
 
-let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (xtor: ast_xtor) : MT.xtor =
+let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (idx: int) (xtor: ast_xtor) : MT.xtor =
   (* Build context with type parameters *)
   let params, ctx' =
     List.fold_left (fun (acc, ctx_acc) (x, k_opt) ->
@@ -287,6 +287,7 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (xtor: ast_xtor) : 
   ; existentials = existentials
   ; argument_types = chiral_args
   ; main = main_from_ast
+  ; original_index = idx
   }
 
 (* Build a signature with self-referential lazy.
@@ -300,7 +301,7 @@ let build_recursive_signature
     let ctx = add_type_symbol ctx dec.name path ds lazy_sgn in
     (* Now resolve the kind with full context *)
     let params = params_of_kind_ctx ctx dec.kind in
-    let xtors = List.map (xtor_of_ast ctx ds) dec.clauses in
+    let xtors = List.mapi (xtor_of_ast ctx ds) dec.clauses in
     {MT.name = path; data_sort = ds; param_kinds = params; type_args = []; xtors = xtors}
   end in
   lazy_sgn

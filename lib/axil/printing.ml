@@ -147,7 +147,7 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       let args_str = if args = [] then "" else "(" ^ pp_vars args ^ ")" in
       ind ^ "jump " ^ pp_sym label ^ args_str
 
-  (* substitute [v'₁ → v₁, ..., v'ₙ → vₙ]; s *)
+  (* substitute [v'₁ ← v₁, ..., v'ₙ ← vₙ]; s *)
   | Substitute (mapping, body) ->
       let arrow = if cfg.unicode then " ← " else " <- " in
       let pp_pair (v', v) = pp_var v' ^ arrow ^ pp_var v in

@@ -76,6 +76,7 @@ let encode_xtor (sorts: data_sort Path.tbl) (ds: data_sort) (x: MTy.xtor) : CTy.
   ; existentials = List.map (fun (v, k) -> (v, encode_type sorts k)) x.existentials
   ; argument_types = List.mapi encode_xtor_arg x.argument_types
   ; main = encode_main x.main
+  ; original_index = x.original_index
   }
 
 (** Encode a declaration *)

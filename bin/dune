@@ -1,6 +1,22 @@
 (executables
  (names test_parsing test_simple test_pcf test_melcore test_pipeline)
- (public_names test_parsing test_simple test_pcf test_melcore test_pipeline)
  (libraries sequent lang)
  (flags (:standard -w -27)))
 
+(executable (name debug_checked_simple) (libraries sequent))
+
+(executable (name debug_identity) (libraries sequent))
+
+(executable (name debug_higherorder) (libraries sequent))
+
+(executable (name debug_test19) (libraries sequent))
+
+(executable (name trace_test19) (libraries sequent lang))
+
+(executable (name test_hr) (libraries sequent))
+
+(executable (name test24_trace) (libraries sequent))
+
+(executable (name test22_trace) (libraries sequent))
+
+(executable (name test25_trace) (libraries sequent))

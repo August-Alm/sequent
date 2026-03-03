@@ -58,6 +58,7 @@ let convert_xtor (x: FTy.xtor) : ATy.xtor =
   ; existentials = List.map (fun (v, k) -> (v, convert_typ k)) x.existentials
   ; argument_types = List.map convert_chiral x.argument_types
   ; main = convert_typ x.main
+  ; original_index = x.original_index
   }
 
 let convert_dec (d: FTy.dec) : ATy.dec =

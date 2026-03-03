@@ -88,6 +88,9 @@ module TypeSystem(Base: BASE) = struct
     (* `main` is the result type of data types and the "this"
       type of codata types *)
     ; main: typ
+    (* Original position in the declaration's xtor list.
+       Used for consistent tag dispatch across instantiations. *)
+    ; original_index: int
     }
 
   (* Declaration 
@@ -560,6 +563,7 @@ module TypeSystem(Base: BASE) = struct
       ; existentials = remaining_quant @ remaining_exist  (* Fresh metas from both become existential *)
       ; argument_types = inst_args
       ; main = inst_main
+      ; original_index = xtor.original_index  (* Preserve for consistent tag dispatch *)
       }
     in
     (* For GADT filtering, convert TVars in type_args to fresh metas so they can
@@ -639,6 +643,7 @@ module TypeSystem(Base: BASE) = struct
         ; Base.mk_producer (TVar a)
         ]
     ; main = Sgn (Prim.fun_sym, [TVar a; TVar b])
+    ; original_index = 0
     }
   
   let fun_dec =
@@ -660,6 +665,7 @@ module TypeSystem(Base: BASE) = struct
     ; existentials = []
     ; argument_types = [ Base.mk_producer (TVar a) ]  (* Lhs a = producer *)
     ; main = Sgn (Prim.raise_sym, [TVar a])
+    ; original_index = 0
     }
   
   let raise_dec =
@@ -681,6 +687,7 @@ module TypeSystem(Base: BASE) = struct
     ; existentials = []
     ; argument_types = [ Base.mk_consumer (TVar a) ]  (* Rhs a = consumer *)
     ; main = Sgn (Prim.lower_sym, [TVar a])
+    ; original_index = 0
     }
 
   let lower_dec =

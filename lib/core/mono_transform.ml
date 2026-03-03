@@ -189,6 +189,7 @@ let generate_inline_for_codata
     ; existentials = []
     ; argument_types = [Cns inst_typ]  (* Just the continuation *)
     ; main = codata_typ
+    ; original_index = idx
     }
   ) inst_types in
   
@@ -284,6 +285,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                        ; existentials = []
                        ; argument_types = [Prd for_typ]
                        ; main = raise_for_typ
+                       ; original_index = 0
                        }]
                   } in
                 let inner_cut = T.Cut (for_typ, T.Var g_var, dtor) in
@@ -385,6 +387,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                        ; existentials = []
                        ; argument_types = [Cns inst_typ; Prd inst_typ]
                        ; main = fun_typ
+                       ; original_index = 0
                        }]
                   } in
                 let raise_dec =
@@ -398,6 +401,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                        ; existentials = []
                        ; argument_types = [Prd fun_typ]
                        ; main = raise_fun_typ
+                       ; original_index = 0
                        }]
                   } in
                 (* Extract the producer from cmd' (should be Cut(_, producer, Var cont)) *)

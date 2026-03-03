@@ -147,12 +147,26 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
       let forall_param_flows = group_flows_by (String.ends_with ~suffix:".forall_param") flows in
       
       (* For each forall_param flow, check if there's a matching mono_info.
-         If not, generate an inline For-codata for that higher-rank parameter. *)
+         If not, generate an inline For-codata for that higher-rank parameter.
+         When checking mono_infos, we EXCLUDE the definition that CONTAINS the 
+         parameter - a definition's For type cannot be used for its own params. *)
       let inline_for_codatas: (dec * instantiation list) Path.tbl =
         Path.to_list forall_param_flows |> List.filter_map (fun (param_path, forall_types) ->
           let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
-          (* Check if any mono_info has matching instantiations *)
-          let has_matching_mono = Path.to_list mono_infos |> List.exists (fun (_path, info) ->
+          (* Extract the parent definition path from param_path 
+             (e.g., "map_mk_tuple.f.forall_param" -> "map_mk_tuple") *)
+          let param_path_str = Path.name param_path in
+          let parent_def_path = 
+            match String.rindex_opt param_path_str '.' with
+              Some dot1_idx -> 
+                (match String.rindex_from_opt param_path_str (dot1_idx - 1) '.' with
+                  Some dot2_idx -> String.sub param_path_str 0 dot2_idx
+                | None -> String.sub param_path_str 0 dot1_idx)
+            | None -> param_path_str
+          in
+          (* Check if any mono_info has matching instantiations, EXCLUDING the parent def *)
+          let has_matching_mono = Path.to_list mono_infos |> List.exists (fun (path, info) ->
+            Path.name path <> parent_def_path &&  (* Exclude the containing definition *)
             List.sort compare info.instantiations = forall_insts
           ) in
           if has_matching_mono then None
@@ -176,6 +190,7 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
               ; existentials = []
               ; argument_types = [Prd inst_typ; Cns inst_typ]  (* arg and continuation *)
               ; main = codata_typ
+              ; original_index = idx
               }
             ) sorted_types in
             let inline_dec = 
@@ -191,8 +206,8 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
       in
       
       (* Build forall_to_for mapping: for each higher-rank parameter of a definition,
-        find which mono_info or inline For-codata has matching instantiation types.
-        Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
+         find which mono_info or inline For-codata has matching instantiation types.
+         Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
       let build_forall_to_for mono_infos_tbl (def: T.definition): (dec * instantiation list * bool) Ident.tbl =
         List.fold_left (fun acc (param_var, param_ty) ->
           let ty = strip_chirality param_ty in
@@ -201,8 +216,9 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
             match Path.find_opt param_path forall_param_flows with
               Some forall_types ->
                 let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
-                (* First check mono_infos *)
-                let matching_info = Path.to_list mono_infos_tbl |> List.find_opt (fun (_path, info) ->
+                (* First check mono_infos, EXCLUDING the current definition *)
+                let matching_info = Path.to_list mono_infos_tbl |> List.find_opt (fun (path, info) ->
+                  not (Path.equal path def.path) &&  (* Exclude self *)
                   List.sort compare info.instantiations = forall_insts
                 ) in
                 (match matching_info with

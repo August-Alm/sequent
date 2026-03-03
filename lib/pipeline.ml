@@ -130,16 +130,7 @@ module CoreStage = struct
       in
       let focused_decs = Focus.focus_decs decs_with_new in
       let focused_main = Focus.focus_def decs_with_new mono_defs.main in
-      (* Close main's return continuation - main's term_params should have the 
-         return continuation as the last parameter. Replace references to it with Ret. *)
-      let closed_main = 
-        match List.rev focused_main.term_params with
-        | (ret_k, Focused.Types.FocusedBase.Cns ret_ty) :: _ ->
-            (* Use close_ret_var to close over the specific return continuation variable *)
-            let closed_body = FReturn.close_ret_var ret_ty ret_k focused_main.body in
-            { focused_main with body = closed_body }
-        | _ -> focused_main
-      in
+      let closed_main = FReturn.close_main focused_main in
       let focused_defs =
         List.fold_left (fun acc (def: CTerms.definition) ->
           let focused_def = Focus.focus_def decs_with_new def in
@@ -246,17 +237,41 @@ module EmitStage = struct
 
   open Common.Identifiers
   module ATm = Axil.Terms
+  module ACode = Aarch64.Code
+  module AMachine = Aarch64.Semantics
   
   type architecture = AARCH64
 
+  (** Compile Axil to assembly code list *)
+  let compile (target: architecture) (main: ATm.definition) (defs: ATm.definition Path.tbl)
+      : (ACode.code list * int, string) result =
+    match target with
+      AARCH64 ->
+        try Ok (Compile_checked.compile main defs)
+        with e ->
+          Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
+
+  (** Compile Axil to assembly string *)
   let compile_to_string
       (target: architecture) 
       (name: string) (main: ATm.definition) (defs: ATm.definition Path.tbl)
       : (string, string) result =
     match target with
       AARCH64 ->
-        try Ok (Compile_aarch64.compile_to_string name main defs)
+        try Ok (Compile_checked.compile_to_string name main defs)
         with e ->
           Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
+
+  (** Evaluate compiled assembly using abstract machine semantics *)
+  let eval ?(trace=false) ?(max_steps=500) (code: ACode.code list) : (int, string) result =
+    try
+      if trace then begin
+        let st = AMachine.initial code in
+        AMachine.trace ~max_steps st;
+        Ok (AMachine.run_and_get_result ~max_steps code)
+      end else
+        Ok (AMachine.run_and_get_result ~max_steps code)
+    with e ->
+      Error (Printf.sprintf "Assembly evaluation error: %s" (Printexc.to_string e))
 
 end

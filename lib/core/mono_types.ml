@@ -217,6 +217,7 @@ let generate_codata_for_def
     ; existentials = []
     ; argument_types = specialized_params
     ; main = codata_typ
+    ; original_index = idx
     }
   ) instantiations in
   

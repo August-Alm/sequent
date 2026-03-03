@@ -11,3 +11,4 @@ module Pipeline = Pipeline
 module Aarch64 = Aarch64
 module Simple = Simple
 module Pcf = Pcf
+module Compile_checked = Compile_checked

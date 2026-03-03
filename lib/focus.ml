@@ -92,6 +92,7 @@ let subst_xtor (ts: TySub.t) (x: CTy.xtor) : CTy.xtor =
   ; existentials = List.map (fun (v, k) -> (v, subst_type ts k)) x.existentials
   ; argument_types = List.map (subst_chiral_type ts) x.argument_types
   ; main = subst_type ts x.main
+  ; original_index = x.original_index
   }
 
 let subst_dec (ts: TySub.t) (d: CTy.dec) : CTy.dec =
@@ -195,6 +196,7 @@ let collapse_xtor (ctx: focus_ctx) (x: CTy.xtor) : FTy.xtor =
   ; existentials = List.map (fun (v, k) -> (v, focus_type k)) x.existentials
   ; argument_types = List.map (collapse_chiral extended_ctx) x.argument_types
   ; main = focus_type x.main
+  ; original_index = x.original_index
   }
 
 let collapse_dec (ctx: focus_ctx) (d: CTy.dec) : FTy.dec =
