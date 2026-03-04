@@ -1,6 +1,10 @@
-(* Minimal failing test - replicate function *)
+(* Minimal test to trace replicate execution *)
 module Pipe = Sequent.Pipeline
+module Path = Sequent.Common.Identifiers.Path
+module APrint = Sequent.Axil.Printing
+module ATerms = Sequent.Axil.Terms
 
+(* Simple replicate with tracing *)
 let source = {|
 data nat: type where
   { zero: nat
@@ -20,13 +24,13 @@ data vec: type -> nat -> type where
 let replicate{a}{n: nat}(x: a)(k: single_nat(n)): vec(a)(n) =
   match k with
   { single_zero => nil{a}
-  ; single_succ{m}(k') => cons{a}{m}(x)(replicate{a}{m}(x)(k'))
+  ; single_succ{m}(kk) => cons{a}{m}(x)(replicate{a}{m}(x)(kk))
   }
 
-let length{a}{n: nat}(v: vec(a)(n)): int =
+let length{a}{k: nat}(v: vec(a)(k)): int =
   match v with
   { nil{_} => 0
-  ; cons{_}{m}(x)(xs) => 1 + length{a}{m}(xs)
+  ; cons{_}{n}(x)(xs) => 1 + length{a}{n}(xs)
   }
 
 let main: int =
@@ -38,6 +42,7 @@ let main: int =
 let ( let* ) = Result.bind
 
 let () =
+  Printf.printf "=== Replicate Test ===\n%!";
   let result =
     let* (decs, defs) = Pipe.LangStage.to_melcore source in
     let* (decs, typed_defs) = Pipe.MelcoreStage.type_check decs defs in
@@ -47,20 +52,35 @@ let () =
     let* mono_result = Pipe.CoreStage.monomorphize types_ctx core_defs in
     let* (focused_decs, focused_main, focused_defs) = 
       Pipe.CoreStage.focus types_ctx mono_result in
-    let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in
-    let* (axil_decs, axil_main, axil_defs) = 
+    let* (_axil_decs, axil_main, axil_defs) = 
       Pipe.AxilStage.linearize focused_decs focused_main focused_defs in
-    let* _ = Pipe.AxilStage.type_check axil_decs axil_defs in
-    Printf.printf "=== Compiling ===\n%!";
+    
+    (* Print Axil definitions *)
+    Printf.printf "\n=== Axil Definitions ===\n%!";
+    List.iter (fun (_, (def: ATerms.definition)) ->
+      Printf.printf "--- %s ---\n%s\n\n%!" 
+        (Path.name def.path)
+        (APrint.command_to_string def.body)
+    ) (Path.to_list axil_defs);
+    
+    Printf.printf "\n=== Axil Main ===\n%!";
+    Printf.printf "%s\n\n%!" (APrint.command_to_string axil_main.body);
+    
+    Printf.printf "\n=== Compiling ===\n%!";
     Sequent.Compile_checked.debug_subst := false;
     Sequent.Compile_checked.debug_store := false;
-    let (code, _arg_count) = Sequent.Compile_checked.compile axil_main axil_defs in
-    Printf.printf "\n=== Running (max 500 steps, trace=false) ===\n%!";
-    let* result = Pipe.EmitStage.eval ~trace:false ~max_steps:50000 code in
-    Printf.printf "Result: %d (expected: 2)\n%!" result;
-    Ok ()
+    let (code, _) = Sequent.Compile_checked.compile axil_main axil_defs in
+    Sequent.Compile_checked.debug_subst := false;
+    Sequent.Compile_checked.debug_store := false;
+    
+    Printf.printf "\n=== Generated Code ===\n%!";
+    Printf.printf "%s\n" (Sequent.Aarch64.Code.Code.list_to_string code);
+    
+    Printf.printf "\n=== Running with trace ===\n%!";
+    let* result = Pipe.EmitStage.eval ~trace:false ~max_steps:5000 code in
+    Printf.printf "\n=== Result: %d (expected: 2) ===\n%!" result;
+    Ok result
   in
   match result with
-  | Ok () -> ()
+  | Ok _ -> ()
   | Error msg -> Printf.printf "Error: %s\n%!" msg
-

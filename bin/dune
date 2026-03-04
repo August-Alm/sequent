@@ -20,3 +20,13 @@
 (executable (name test22_trace) (libraries sequent))
 
 (executable (name test25_trace) (libraries sequent))
+
+(executable (name test_vec_debug) (libraries sequent))
+
+(executable (name test_cons_tail) (libraries sequent))
+
+(executable (name test_replicate_trace) (libraries sequent))
+
+(executable (name test_depth) (libraries sequent))
+
+(executable (name test_compare) (libraries sequent))

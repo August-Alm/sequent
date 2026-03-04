@@ -1,4 +1,5 @@
 (* Re-export submodules for convenient access *)
+module Common = Common
 module Lang = Lang
 module Melcore = Melcore
 module Core = Core
