@@ -268,15 +268,15 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
         | None -> failwith ("xtor not found in Invoke: " ^ Path.name xtor_name)
       in
       (* Debug: print xtor info *)
-      let pp_ct ct = match ct with 
+      let _pp_ct ct = match ct with 
         | Prd (Ext _) -> "PrdExt" 
         | Cns (Ext _) -> "CnsExt"
         | Prd _ -> "Prd"
         | Cns _ -> "Cns"
       in
-      Printf.eprintf "Invoke check: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor_name) (Path.name dec.name);
+      (* Printf.eprintf "Invoke check: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor_name) (Path.name dec.name);
       Printf.eprintf "  xtor.argument_types: [%s]\n" (String.concat ", " (List.map pp_ct xtor.argument_types));
-      Printf.eprintf "  args: [%s]\n" (String.concat ", " (List.map Ident.name args));
+      Printf.eprintf "  args: [%s]\n" (String.concat ", " (List.map Ident.name args)); *)
       (* Use xtor.argument_types for consistency with method loading *)
       let args_bindings = List.map2 (fun v ct -> (v, ct)) args xtor.argument_types in
       let v_typ = lookup_ctx_exn ctx v in

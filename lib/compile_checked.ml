@@ -200,9 +200,11 @@ let release_block (accu: Register.t) (this: Register.t) : code list state =
 
 (** Store a single value into a block.
     src_ctx is the context where v's registers can be looked up.
+    For non-ext types, we must call share_block on the block pointer before storing,
+    because storing creates an additional reference to that block.
     Corresponds to Idris's storeValue v as. *)
 let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: int) 
-    : code list =
+    : code list state =
   if !debug_store then 
     Printf.eprintf "  store_value: %s at k=%d, src r1=X%d r2=X%d, offset1=%d offset2=%d\n" 
       (Ident.name v) k 
@@ -210,12 +212,18 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
       (Register.to_int (symbol_location2 src_ctx v))
       (Offset.field1 k) (Offset.field2 k);
   if is_ext_type ct then
-    STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
-    MOVI (Register.temp, 0) ::
-    STR (Register.temp, into, Offset.field1 k) :: []
+    return (
+      STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
+      MOVI (Register.temp, 0) ::
+      STR (Register.temp, into, Offset.field1 k) :: [])
   else
-    STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
-    STR (symbol_location1 src_ctx v, into, Offset.field1 k) :: []
+    (* Non-ext types have a block pointer - share it before storing *)
+    let loc1 = symbol_location1 src_ctx v in
+    let* share_code = share_block loc1 in
+    return (
+      share_code @
+      STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
+      STR (loc1, into, Offset.field1 k) :: [])
 
 (** Load a binder from a block.
     x_ctx is the context where x is at the head (x :: as).
@@ -252,13 +260,14 @@ let rec store_zeroes (into: Register.t) (k: int) : code list =
     src_ctx: context for looking up source registers
     Corresponds to Idris's storeValues vs as. *)
 let rec store_values (vs: ctx) (src_ctx: ctx) (into: Register.t) (k: int) 
-    : code list =
+    : code list state =
   match vs with
-  | [] -> store_zeroes into k
-  | _ when k = 0 -> []
+  | [] -> return (store_zeroes into k)
+  | _ when k = 0 -> return []
   | (v, ct) :: rest_vs ->
-      store_value v ct src_ctx into (k - 1) @
-      store_values rest_vs src_ctx into (k - 1)
+      let* this_store = store_value v ct src_ctx into (k - 1) in
+      let* rest_store = store_values rest_vs src_ctx into (k - 1) in
+      return (this_store @ rest_store)
 
 (** Load multiple binders from a block.
     xs: binders to load (in order)
@@ -321,9 +330,10 @@ let rec store_rest (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
       let accu = fresh_location2 rest_ctx in
       let* acquire = acquire_block accu this in
       let* store_rest_code = store_rest rest src_ctx as_ctx in
+      let* stores = store_values vars src_ctx Register.heap (Offset.fields_per_block - 1) in
       return (
         store_block (vars @ rest_ctx) Register.heap (Offset.fields_per_block - 1) @
-        store_values vars src_ctx Register.heap (Offset.fields_per_block - 1) @
+        stores @
         acquire @
         store_rest_code)
 
@@ -344,8 +354,9 @@ let store (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
       let accu = fresh_location2 rest_ctx in
       let* acquire = acquire_block accu this in
       let* store_rest_code = store_rest rest src_ctx as_ctx in
+      let* stores = store_values vars src_ctx Register.heap Offset.fields_per_block in
       return (
-        store_values vars src_ctx Register.heap Offset.fields_per_block @
+        stores @
         acquire @
         store_rest_code)
 
@@ -433,7 +444,7 @@ let load_method (xs: ctx) (full_ctx: ctx) : code list state =
       let accu = fresh_location2 full_ctx in
       (* Note: we don't have load_rest_tail for multi-block captured envs yet.
          For now, assume captured env fits in one block. *)
-      (* IMPORTANT: Release block THEN load binders (like Idris's load).
+      (* IMPORTANT: Release block THEN load binders.
          Release uses accu as scratch which may overlap load targets. *)
       let* release = release_block accu this in
       return (
@@ -490,6 +501,7 @@ let load_newint_method (xs: ctx) (as_ctx: ctx) : code list state =
          1. Load back-pointer from X3 into back_ptr_reg
          2. Load first chunk [a,b,c] from back_ptr_reg's block  
          3. Load rest values [u$26] from X3's block
+         4. Release X3
       *)
       let* release = release_block accu this in
       return (

@@ -129,12 +129,14 @@ let step (st: state) (mem_ref: int array ref) : state =
   
   | LDR (rt, rn, offset) ->
       let addr = get st.registers rn + offset in
-      set st.registers rt (load !mem_ref addr);
+      let v = load !mem_ref addr in
+      set st.registers rt v;
       { st with counter = st.counter + 4 }
   
   | STR (rs, rn, offset) ->
       let addr = get st.registers rn + offset in
-      store mem_ref addr (get st.registers rs);
+      let value = get st.registers rs in
+      store mem_ref addr value;
       { st with counter = st.counter + 4; memory = !mem_ref }
   
   | CMPR (rs1, rs2) ->
@@ -175,11 +177,17 @@ let step (st: state) (mem_ref: int array ref) : state =
 (** Create initial state from code *)
 let initial (code: code list) : state =
   let regs = Array.make 31 0 in
-  (* x0 = heap pointer, x1 = free list pointer *)
-  regs.(0) <- 64;   (* heap starts at 64 *)
-  regs.(1) <- 128;  (* free list starts at 128 *)
+  (* x0 = heap pointer, x1 = free list pointer 
+     Each block needs 144 bytes (18 words × 8 bytes each):
+     - offset 0: ref_count/next_element
+     - offset 8: code_pointer (for int consumers)
+     - offsets 16-143: 8 fields × 2 words × 8 bytes
+     We need multiple blocks, so space them 144 bytes apart. *)
+  let block_size = 144 in
+  regs.(0) <- 64;                    (* heap starts at first block *)
+  regs.(1) <- 64 + block_size;       (* free list starts at second block *)
   { code; counter = 0; registers = regs; 
-    memory = Array.make 256 0; o_flag = false; s_flag = false; z_flag = false }
+    memory = Array.make (64 + 10 * block_size) 0; o_flag = false; s_flag = false; z_flag = false }
 
 (** Run until counter returns to 0 (cleanup jumped to lab0) *)
 let run ?(max_steps=10000) (st: state) : int array =
