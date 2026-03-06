@@ -199,24 +199,25 @@ let step ((cmd, e): config) : config option =
                 Some (branch_body, { e with values = new_values }))
        | _ -> failwith "switch: expected data value at head")
 
-  (* (invoke) ⟨invoke v m(args) ∥ [args..., v, E]⟩ → ⟨b(m) ∥ params, E0⟩
-     args are at prefix, then v at head after args. Pop args first, then v. *)
+  (* (invoke) ⟨invoke v m(args) ∥ [v, args..., E]⟩ → ⟨b(m) ∥ E0, params⟩
+     Following Idris pattern: v at head, then args. Pop v first, then args. *)
   | Invoke (v, _, m, args) ->
-      (* First, pop arg values from the head (they're at the prefix) *)
-      let (arg_bindings, e_after_args) = pop (List.length args) e.values in
-      let arg_vals = List.map snd arg_bindings in
-      (* Now v should be at head *)
-      let ((head_var, head_val), _e_tail) = pop_head e_after_args in
+      (* First, pop v from the head *)
+      let ((head_var, head_val), e_after_v) = pop_head e.values in
       if not (Ident.equal head_var v) then
-        failwith (Printf.sprintf "invoke: expected %s at head after args, got %s" 
+        failwith (Printf.sprintf "invoke: expected %s at head, got %s" 
           (Ident.name v) (Ident.name head_var));
+      (* Now pop arg values *)
+      let (arg_bindings, e_tail) = pop (List.length args) e_after_v in
+      let _ = e_tail in  (* remaining context, not used *)
+      let arg_vals = List.map snd arg_bindings in
       (match head_val with
         CodataVal (e0, branches) ->
           let (_, _, params, branch_body) = select_branch m branches in
           (* Bind params to arg values *)
           let param_bindings = List.combine params arg_vals in
-          (* New env: params at head, then captured e0 *)
-          let new_values = prepend param_bindings e0 in
+          (* New env: captured e0 at head, params at tail (Idris pattern) *)
+          let new_values = e0 @ param_bindings in
           Some (branch_body, { e with values = new_values })
       | _ -> failwith "invoke: expected codata value at head")
 

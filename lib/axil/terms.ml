@@ -215,6 +215,13 @@ let prepend_many (ctx: context) (bindings: (var * chiral_typ) list) : context =
   let vars_list = Ident.to_list ctx.term_vars in
   { ctx with term_vars = Ident.of_list (bindings @ vars_list) }
 
+(** Append multiple bindings at the tail of context.
+    append_many ctx [(x1,τ1), (x2,τ2)] results in Γ, x1:τ1, x2:τ2
+    i.e., the bindings are added at the end *)
+let append_many (ctx: context) (bindings: (var * chiral_typ) list) : context =
+  let vars_list = Ident.to_list ctx.term_vars in
+  { ctx with term_vars = Ident.of_list (vars_list @ bindings) }
+
 (** Extend context with a type variable binding *)
 let extend_tyvar (ctx: context) (v: var) (k: typ) : context =
   { ctx with types = { ctx.types with typ_vars = Ident.add v k ctx.types.typ_vars } }
@@ -323,14 +330,16 @@ let freshen_xtor_type_params (xtor: xtor)
 (* Branch Checking                                                           *)
 (* ========================================================================= *)
 
-(** Check a single branch with GADT refinement.
-    For SWITCH: branch gets Γi (xtor args) prepended to Γ (tail after consuming v).
-    Rule: Γ, Γi ⊢ si  where Γi are the xtor argument bindings. *)
-let check_branch
+(** Common branch checking logic with GADT refinement.
+    The `build_ctx` function determines context ordering:
+    - For clauses (Switch): args @ tail (xtor_bindings prepended)
+    - For methods (New): captured @ args (xtor_bindings appended) *)
+let check_branch_common
     (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
     (check_cmd: context -> subst -> command -> unit check_result)
     (subs: subst)
+    (build_ctx: context -> (var * chiral_typ) list -> context)
     : unit check_result =
   match find_xtor dec xtor_name with
     None -> Error (UnboundXtor (dec.name, xtor_name))
@@ -398,14 +407,37 @@ let check_branch
           List.fold_left2 (fun c new_v (_, k) -> extend_tyvar c new_v k)
             refined_ctx type_vars all_type_params
         in
-        (* ORDERED: Prepend xtor argument bindings Γi at head of context Γ.
-           Result: Γi, Γ (with Γi at head = front of list) *)
         let xtor_bindings = List.map2 (fun v ct -> (v, ct)) term_vars inst_args in
-        let ctx'' = prepend_many ctx' xtor_bindings in
+        (* Use build_ctx to determine ordering *)
+        let ctx'' = build_ctx ctx' xtor_bindings in
         check_cmd ctx'' branch_subs_with_tyvars cmd
 
-(** Check all branches and verify exhaustiveness *)
-let check_branches
+(** Check a clause branch (for Switch).
+    ORDERED: xtor args Γi prepended to tail context Γ.
+    Result context: Γi, Γ (args @ tail) - matches Idris `cs ++ as` *)
+let check_clause
+    (ctx: context) (dec: dec)
+    (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
+    (check_cmd: context -> subst -> command -> unit check_result)
+    (subs: subst)
+    : unit check_result =
+  check_branch_common ctx dec xtor_name type_vars term_vars cmd check_cmd subs
+    (fun ctx' xtor_bindings -> prepend_many ctx' xtor_bindings)
+
+(** Check a method branch (for New).
+    ORDERED: captured context Γ at head, xtor args Γi appended at tail.
+    Result context: Γ, Γi (captured @ args) - matches Idris `as ++ cs` *)
+let check_method
+    (ctx: context) (dec: dec)
+    (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
+    (check_cmd: context -> subst -> command -> unit check_result)
+    (subs: subst)
+    : unit check_result =
+  check_branch_common ctx dec xtor_name type_vars term_vars cmd check_cmd subs
+    (fun ctx' xtor_bindings -> append_many ctx' xtor_bindings)
+
+(** Check all clauses (for Switch) and verify exhaustiveness *)
+let check_clauses
     (ctx: context) (dec: dec) (branches: branch list)
     (check_cmd: context -> subst -> command -> unit check_result)
     (subs: subst)
@@ -413,7 +445,28 @@ let check_branches
   let* () =
     List.fold_left (fun acc (xtor_name, type_vars, term_vars, cmd) ->
       let* _ = acc in
-      check_branch ctx dec xtor_name
+      check_clause ctx dec xtor_name
+        type_vars term_vars cmd check_cmd subs
+    ) (Ok ()) branches
+  in
+  let covered = List.map (fun (xtor_name, _, _, _) -> xtor_name) branches in
+  let missing = List.filter_map (fun (x: xtor) ->
+    if List.exists (Path.equal x.name) covered then None
+    else Some x.name
+  ) dec.xtors in
+  if missing = [] then Ok ()
+  else Error (NonExhaustiveMatch { dec_name = dec.name; missing })
+
+(** Check all methods (for New) and verify exhaustiveness *)
+let check_methods
+    (ctx: context) (dec: dec) (branches: branch list)
+    (check_cmd: context -> subst -> command -> unit check_result)
+    (subs: subst)
+    : unit check_result =
+  let* () =
+    List.fold_left (fun acc (xtor_name, type_vars, term_vars, cmd) ->
+      let* _ = acc in
+      check_method ctx dec xtor_name
         type_vars term_vars cmd check_cmd subs
     ) (Ok ()) branches
   in
@@ -484,21 +537,20 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       (match unify v_ty expected_ty subs with
         None -> Error (UnificationFailed (v_ty, expected_ty))
       | Some subs' ->
-          (* ORDERED: Branches get Γi prepended to Γ (handled in check_branch) *)
-          check_branches tail_ctx unified_dec branches check_command subs')
+          (* ORDERED: Clauses get Γi prepended to Γ (args @ tail) *)
+          check_clauses tail_ctx unified_dec branches check_command subs')
 
   (* new v = (Γ0){...}; s
      
      Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ...}; s
-     where each branch: Γ1, Γ0 ⊢ si  and continuation: Γ, v : cns T ⊢ s
+     where each branch: Γ0, Γ1 ⊢ si  (captured @ args, Idris pattern)
+     and continuation: Γ, v : cns T ⊢ s
      
-     ORDERED: Γ0 is captured at prefix. Branches get Γi then Γ0.
-     Continuation gets v prepended to Γ. *)
+     ORDERED (Idris pattern): Methods get Γ0 (captured) at head, Γi (args) at tail. *)
   | New (v, dec, branches, body) ->
-      (* For now, check branches against current context.
-         TODO: explicit capture annotation for Γ0 *)
+      (* Check methods with captured context at head, args at tail *)
       let* _ =
-        check_branches ctx dec branches check_command subs
+        check_methods ctx dec branches check_command subs
       in
       let v_typ = Cns (Sgn (dec.name, dec.type_args)) in
       (* ORDERED: Prepend v at head *)
@@ -506,27 +558,28 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* invoke v m(xi's)
      
-     Γ, v : cns T ⊢ invoke v m(Γ)
+     v : cns T, Γ ⊢ invoke v m(Γ)
      
-     ORDERED: Γ is prefix (method args), v is at end (after Γ).
-     Consume Γ from prefix, then consume v. *)
+     ORDERED (Idris pattern): v is at head, Γ (method args) follows.
+     Consume v from head, then consume args Γ. *)
   | Invoke (v, dec, xtor_name, term_vars) ->
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
           let _, inst_args, _ = freshen_xtor_type_params xtor in
-          (* ORDERED: Consume method args Γ from prefix *)
-          let* (prefix_bindings, tail_ctx) = consume_prefix_vars ctx term_vars in
-          let* subs' = check_bindings_against_types prefix_bindings inst_args subs in
-          (* ORDERED: v should now be at head of tail *)
-          let* (v_ct, _final_ctx) = consume_head_var tail_ctx v in
+          (* ORDERED (Idris): Consume v from head first *)
+          let* (v_ct, tail_ctx) = consume_head_var ctx v in
           (match expect_cns v_ct with
             Error e -> Error e
           | Ok v_ty ->
               let expected_ty = Sgn (dec.name, dec.type_args) in
-              (match unify v_ty expected_ty subs' with
+              let* subs' = (match unify v_ty expected_ty subs with
                 None -> Error (UnificationFailed (v_ty, expected_ty))
-              | Some _ -> Ok ())))
+              | Some s -> Ok s) in
+              (* ORDERED (Idris): Then consume method args Γ *)
+              let* (arg_bindings, _final_ctx) = consume_prefix_vars tail_ctx term_vars in
+              let* _ = check_bindings_against_types arg_bindings inst_args subs' in
+              Ok ()))
 
   (* substitute [v'₁ → v₁, ...]; s
      The only place where weakening, contraction, and exchange can occur.

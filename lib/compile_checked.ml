@@ -78,14 +78,15 @@ let fresh_location1 (ctx: ctx) : Register.t =
 let fresh_location2 (ctx: ctx) : Register.t =
   Register.mk (Register.reserved + 2 * List.length ctx + 1)
 
-(** Check if type is external (primitive).
-    External types use only one register (the value/block-pointer).
-    - Prd (Ext _): just an integer value in location2
-    - Cns (Ext _): block pointer in location2 (code is inside block)
-    Both use only location2, unlike regular codata which uses both. *)
+(** Check if type is external (primitive) PRODUCER.
+    Only external PRODUCERS use one register (just the value in location2).
+    External CONSUMERS (Cns (Ext _)) use two registers like regular codata:
+    - location1 = block pointer (captured environment)
+    - location2 = code address
+    This unifies CNewInt with CNew and CAxiom with CInvoke. *)
 let is_ext_type (ct: chiral_typ) : bool =
   match ct with
-  | Prd (Ext _) | Cns (Ext _) -> true
+  | Prd (Ext _) -> true
   | _ -> false
 
 (* ========================================================================= *)
@@ -107,6 +108,7 @@ let if_zero_then_else (this: Register.t) (thn: code list) (els: code list)
   let* lab_else = fresh_label in
   let label_then = "lab" ^ string_of_int lab_then in
   let label_else = "lab" ^ string_of_int lab_else in
+  Printf.eprintf "if_zero_then_else: reg=X%d then_lab=%s else_lab=%s\n" (Register.to_int this) label_then label_else;
   return (
     CMPI (this, 0) ::
     BEQ label_then ::
@@ -230,13 +232,15 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
     Corresponds to Idris's loadBinder x as. *)
 let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
+  let is_ext = is_ext_type ct in
   if !debug_store then 
-    Printf.eprintf "  load_binder: %s at k=%d, tgt r1=X%d r2=X%d, offset1=%d offset2=%d\n" 
+    Printf.eprintf "  load_binder: %s at k=%d, from=X%d, tgt r1=X%d r2=X%d, offset1=%d offset2=%d, is_ext=%b\n" 
       (Ident.name x) k 
+      (Register.to_int from)
       (Register.to_int (symbol_location1 x_ctx x))
       (Register.to_int (symbol_location2 x_ctx x))
-      (Offset.field1 k) (Offset.field2 k);
-  if is_ext_type ct then
+      (Offset.field1 k) (Offset.field2 k) is_ext;
+  if is_ext then
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) :: []
   else
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) ::
@@ -276,6 +280,10 @@ let rec store_values (vs: ctx) (src_ctx: ctx) (into: Register.t) (k: int)
     Corresponds to Idris's loadBinders xs as. *)
 let rec load_binders (xs: ctx) (as_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
+  Printf.eprintf "load_binders: xs=[%s] as_ctx=[%s] k=%d\n"
+    (String.concat ", " (List.map (fun (v, ct) -> Printf.sprintf "%s:%s" (Ident.name v) (match ct with Prd (Ext _) -> "PrdExt" | Prd _ -> "Prd" | Cns _ -> "Cns")) xs))
+    (String.concat ", " (List.map (fun (v, ct) -> Printf.sprintf "%s:%s" (Ident.name v) (match ct with Prd (Ext _) -> "PrdExt" | Prd _ -> "Prd" | Cns _ -> "Cns")) as_ctx))
+    k;
   match xs with
   | [] -> []
   | _ when k = 0 -> []
@@ -285,20 +293,6 @@ let rec load_binders (xs: ctx) (as_ctx: ctx) (from: Register.t) (k: int)
       let x_ctx = xs @ as_ctx in
       load_binder x ct x_ctx from (k - 1) @
       load_binders rest_xs as_ctx from (k - 1)
-
-(** Load binders at the TAIL of a context.
-    xs: binders to load (in order) - they go at the END of full_ctx
-    full_ctx: the complete target context (head_ctx @ xs)
-    Used for loading captured environment in codata methods. *)
-let rec load_binders_tail (xs: ctx) (full_ctx: ctx) (from: Register.t) (k: int)
-    : code list =
-  match xs with
-  | [] -> []
-  | _ when k = 0 -> []
-  | (x, ct) :: rest_xs ->
-      (* x is from xs which is at tail of full_ctx, so use full_ctx for positions *)
-      load_binder x ct full_ctx from (k - 1) @
-      load_binders_tail rest_xs full_ctx from (k - 1)
 
 (** Helper to split list into chunks *)
 let take n lst = 
@@ -379,38 +373,12 @@ let rec load_rest (xs: ctx) (as_ctx: ctx) : code list state =
         load_block (vars @ rest_ctx) this (Offset.fields_per_block - 1) @
         load_binders vars rest_ctx this (Offset.fields_per_block - 1))
 
-(** Load rest of captured environment for CNewInt method.
-    Similar to load_rest but uses a fixed register for the block pointer chain.
-    current_block: register holding current block's back-pointer 
-    xs: remaining binders to load 
-    as_ctx: tail context after xs *)
-let rec load_newint_rest (current_block: Register.t) (xs: ctx) (as_ctx: ctx) : code list state =
-  match xs with
-  | [] -> return []
-  | _ ->
-      let vars = take (Offset.fields_per_block - 1) xs in
-      let rest = drop (Offset.fields_per_block - 1) xs in
-      let rest_ctx = rest @ as_ctx in
-      let accu = fresh_location2 rest_ctx in
-      (* Recursively load further blocks first *)
-      let* next_block = return (fresh_location1 rest_ctx) in
-      let* load_rest_code = 
-        if rest = [] then return []
-        else load_newint_rest next_block rest as_ctx in
-      let* release = release_block accu current_block in
-      return (
-        (* Load back-pointer to next block if there are more *)
-        (if rest <> [] then 
-          LDR (next_block, current_block, Offset.field1 (Offset.fields_per_block - 1)) :: []
-        else []) @
-        load_rest_code @
-        release @
-        load_binders vars rest_ctx current_block (Offset.fields_per_block - 1))
-
 (** Load environment: loads all values from linked blocks.
     xs: binders to load (become new prefix of context)
     as_ctx: tail context
-    Corresponds to Idris's load xs as. *)
+    Corresponds to Idris's load xs as.
+    After load, context is xs @ as_ctx (xs at HEAD, as_ctx at TAIL).
+    Used by both codeClause and codeMethod - they differ only in what xs and as_ctx are. *)
 let load (xs: ctx) (as_ctx: ctx) : code list state =
   match xs with
   | [] -> return []
@@ -426,96 +394,6 @@ let load (xs: ctx) (as_ctx: ctx) : code list state =
         load_rest_code @
         release @
         load_binders vars rest_ctx this Offset.fields_per_block)
-
-(** Load captured environment for a codata method.
-    xs: binders to load from block (the captured context)
-    full_ctx: the complete target context (head_ctx @ xs) where head_ctx has args
-    Block pointer is expected in X3 (set by CInvoke/caller).
-    
-    Unlike regular load, xs goes at TAIL of full_ctx. *)
-let load_method (xs: ctx) (full_ctx: ctx) : code list state =
-  match xs with
-  | [] -> return []
-  | _ ->
-      let vars = take Offset.fields_per_block xs in
-      let _rest = drop Offset.fields_per_block xs in
-      let this = Register.mk 3 in (* X3 - set by CInvoke *)
-      (* For accu, use a safe register not in full_ctx *)
-      let accu = fresh_location2 full_ctx in
-      (* Note: we don't have load_rest_tail for multi-block captured envs yet.
-         For now, assume captured env fits in one block. *)
-      (* IMPORTANT: Release block THEN load binders.
-         Release uses accu as scratch which may overlap load targets. *)
-      let* release = release_block accu this in
-      return (
-        release @
-        load_binders_tail vars full_ctx this Offset.fields_per_block)
-
-(** Load captured environment for CNewInt method.
-    Similar to load_method but loads into head positions (xs @ as_ctx layout).
-    Block pointer is expected in X3 (set by CAxiom).
-    
-    The block chain is: X3 → last chunk's block, with back-pointers to earlier blocks.
-    For xs = [a,b,c,u$26]: X3 points to block with [u$26], which has back-pointer
-    to block with [a,b,c]. *)
-let load_newint_method (xs: ctx) (as_ctx: ctx) : code list state =
-  match xs with
-  | [] -> return []
-  | _ when List.length xs <= Offset.fields_per_block ->
-      (* Single block case - all values in X3's block *)
-      let rest_ctx = as_ctx in
-      let this = Register.mk 3 in
-      let accu = fresh_location2 rest_ctx in
-      let* release = release_block accu this in
-      return (
-        release @
-        load_binders xs rest_ctx this Offset.fields_per_block)
-  | _ ->
-      (* Multi-block case:
-         X3 points to the LAST block (with the last few values).
-         Back-pointer at field1(fields_per_block-1) leads to earlier blocks.
-         
-         For xs = [a,b,c,u$26] with fields_per_block=3:
-         - Block at X3 has [u$26] (1 value) + back-pointer
-         - Back-pointer leads to block with [a,b,c] (3 values)
-         
-         The "rest" block (X3) has num_rest values where:
-         num_rest = length(xs) mod (fields_per_block-1) if >0, else fields_per_block-1
-         Actually it's simpler: rest block has the values that didn't fit in 
-         the (fields_per_block-1) slots of linked blocks.
-      *)
-      (* Split: vars = first (fields_per_block) values, rest = remaining *)
-      let vars = take Offset.fields_per_block xs in
-      let rest = drop Offset.fields_per_block xs in
-      let rest_ctx = rest @ as_ctx in
-      let this = Register.mk 3 in (* X3 - starting block (with rest values) *)
-      let accu = fresh_location2 as_ctx in
-      let back_ptr_reg = fresh_location1 rest_ctx in
-      (* First: load back-pointer from X3 to get address of first block *)
-      (* Then: recursively load from that block *)
-      (* Finally: release X3 and load rest values from it *)
-      (* 
-         But wait - the rest values are in X3's block, not in the back-pointed block!
-         The back-pointed block has the first chunk [a,b,c].
-         So we should:
-         1. Load back-pointer from X3 into back_ptr_reg
-         2. Load first chunk [a,b,c] from back_ptr_reg's block  
-         3. Load rest values [u$26] from X3's block
-         4. Release X3
-      *)
-      let* release = release_block accu this in
-      return (
-        (* Load back-pointer to earlier block *)
-        LDR (back_ptr_reg, this, Offset.field1 (Offset.fields_per_block - 1)) ::
-        (* Release X3's block (updates refcount) *)
-        release @
-        (* Load first chunk from back-pointed block.
-           vars goes into context at positions after rest_ctx. 
-           Use load_binders with that block. *)
-        load_binders vars rest_ctx back_ptr_reg Offset.fields_per_block @
-        (* Load rest values from X3's block at positions in as_ctx range.
-           rest values are in field2 slots of X3's block. *)
-        load_binders rest as_ctx this (Offset.fields_per_block - 1))
 
 (* ========================================================================= *)
 (* Branch Table Generation                                                   *)
@@ -663,6 +541,9 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   | CJump { ctx; label; args } ->
       let idx = label_index lmap label in
       let num_args = List.length args in
+      Printf.eprintf "CJump: label=%s idx=%d num_args=%d\n" (Path.name label) idx num_args;
+      Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
+      Printf.eprintf "  args: [%s]\n" (pp_ctx args);
       (* Move args from current positions to target positions.
          args[i] should go to position (num_args - 1 - i) from end.
          We build a graph of register moves and use exchange algorithm. *)
@@ -671,35 +552,32 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
         let src_r2 = symbol_location2 ctx arg in
         let tgt_pos = num_args - 1 - i in
         let tgt_r2 = Register.mk (Register.reserved + 2 * tgt_pos + 1) in
+        Printf.eprintf "  arg %d: %s src_r2=X%d tgt_r2=X%d is_ext=%b\n" i (Ident.name arg) (Register.to_int src_r2) (Register.to_int tgt_r2) (is_ext_type ct);
         if is_ext_type ct then
           graph.(Register.to_int src_r2) <- [tgt_r2]
         else begin
           let src_r1 = symbol_location1 ctx arg in
           let tgt_r1 = Register.mk (Register.reserved + 2 * tgt_pos) in
+          Printf.eprintf "    non-ext: src_r1=X%d tgt_r1=X%d\n" (Register.to_int src_r1) (Register.to_int tgt_r1);
           graph.(Register.to_int src_r1) <- [tgt_r1];
           graph.(Register.to_int src_r2) <- [tgt_r2]
         end
       ) args;
       let exchange = code_exhange (Array.to_list graph) in
+      Printf.eprintf "  exchange: %d instructions\n" (List.length exchange);
+      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) exchange;
       return (exchange @ [B ("lab" ^ string_of_int idx)])
 
   (* Let: construct data value *)
   | CLet { ctx; v; v_typ; dec; xtor; args; tail_ctx; body } ->
-      if !debug_subst then begin
-        Printf.eprintf "CLet: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
-        Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
-        Printf.eprintf "  args: [%s]\n" (pp_ctx args);
-        Printf.eprintf "  tail_ctx: [%s]\n" (pp_ctx tail_ctx);
-        Printf.eprintf "  fresh_location1 tail_ctx = X%d\n" (Register.to_int (fresh_location1 tail_ctx));
-        Printf.eprintf "  dec.xtors: [%s]\n" (String.concat ", " (List.map (fun (x: xtor) -> Path.name x.name) dec.xtors));
-        let xtor_info = List.find_opt (fun (x: xtor) -> Path.equal x.name xtor) dec.xtors in
-        (match xtor_info with
-        | Some x -> Printf.eprintf "  xtor.argument_types: [%s]\n" (pp_ctx (List.mapi (fun i ct -> (Ident.mk (Printf.sprintf "arg%d" i), ct)) x.argument_types))
-        | None -> Printf.eprintf "  xtor not found in dec!\n")
-      end;
-      (* args are stored, ctx defines where values are in registers, new_ctx = (v,v_typ) :: tail_ctx *)
+      Printf.eprintf "CLet: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
+      Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
+      Printf.eprintf "  args: [%s]\n" (pp_ctx args);
+      Printf.eprintf "  tail_ctx: [%s]\n" (pp_ctx tail_ctx);
       let new_ctx = (v, v_typ) :: tail_ctx in
+      Printf.eprintf "  new_ctx: [%s]\n" (pp_ctx new_ctx);
       let tag_reg = symbol_location2 new_ctx v in
+      Printf.eprintf "  tag_reg: X%d\n" (Register.to_int tag_reg);
       (* Use original_index to get consistent tag across filtered/unfiltered xtor lists *)
       let xtor_idx = 
         let rec find_xtor = function
@@ -710,11 +588,12 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
           | _ :: rest -> find_xtor rest
         in find_xtor dec.xtors
       in
-      if !debug_subst then
-        Printf.eprintf "  xtor_idx=%d tag=%d\n" xtor_idx (Offset.jump_length xtor_idx);
+      Printf.eprintf "  xtor_idx=%d tag=%d\n" xtor_idx (Offset.jump_length xtor_idx);
       (* Store args with ctx as source context, tail_ctx as the "as" context *)
       let* stores = store args ctx tail_ctx in
+      Printf.eprintf "  stores: %d instructions\n" (List.length stores);
       let* rest = code_command lmap body in
+      Printf.eprintf "  rest (body): %d instructions, first: %s\n" (List.length rest) (if rest = [] then "empty" else Code.to_string (List.hd rest));
       return (
         stores @
         MOVI (tag_reg, Offset.jump_length xtor_idx) ::
@@ -758,197 +637,177 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
          else code_table (max_idx + 1) base_lab 0) @
         List.concat branch_codes)
 
-  (* New: create codata value *)
-  | CNew { ctx; k; k_typ; branches; body; _ } ->
+  (* New: create codata value 
+     
+     IMPORTANT: Tags are based on original_index (for consistent GADT handling).
+     The jump table must be sparse - methods are at their original_index positions,
+     not sequentially packed. This mirrors CSwitch's sparse table. *)
+  | CNew { ctx; k; k_typ; dec; branches; body; _ } ->
       (* ctx is captured, new_ctx = (k,k_typ) :: ctx *)
       let new_ctx = (k, k_typ) :: ctx in
       let tab_reg = symbol_location2 new_ctx k in
+      (* Look up original_index for each branch's xtor *)
+      let get_original_index xtor_path =
+        match List.find_opt (fun (x: xtor) -> Path.equal x.name xtor_path) dec.xtors with
+        | Some x -> x.original_index
+        | None -> 0
+      in
+      (* Find max original_index to size the jump table *)
+      let max_idx = List.fold_left (fun acc branch ->
+        max acc (get_original_index branch.xtor)
+      ) 0 branches in
+      Printf.eprintf "CNew: k=%s k_typ=%s\n" (Ident.name k) (match k_typ with Prd _ -> "Prd" | Cns _ -> "Cns");
+      Printf.eprintf "  ctx (captured): [%s]\n" (pp_ctx ctx);
+      Printf.eprintf "  dec.xtors: [%s]\n" (String.concat ", " (List.map (fun (x: xtor) -> Printf.sprintf "%s(orig_idx=%d)" (Path.name x.name) x.original_index) dec.xtors));
+      Printf.eprintf "  branches: [%s]\n" (String.concat ", " (List.map (fun b -> Printf.sprintf "%s->%d" (Path.name b.xtor) (get_original_index b.xtor)) branches));
+      Printf.eprintf "  max_idx=%d base_lab=TBD tag_reg=X%d\n" max_idx (Register.to_int tab_reg);
       (* Store ctx (the captured environment).
          src_ctx = ctx (where values are now)
          as_ctx = ctx (so block ends up at fresh_location1(ctx) = k's position) *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
       let* rest = code_command lmap body in
-      let num_branches = List.length branches in
-      let* branch_codes = code_methods lmap ctx branches base_lab 0 in
+      (* Create sparse jump table: entries at original_index positions *)
+      let* branch_codes = code_methods_sparse lmap ctx branches base_lab get_original_index in
       return (
         stores @
         ADR (tab_reg, "lab" ^ string_of_int base_lab) ::
         rest @
         LAB ("lab" ^ string_of_int base_lab) ::
-        (if num_branches <= 1 then []
-         else code_table num_branches base_lab 0) @
+        (if max_idx < 1 then []
+         else code_table (max_idx + 1) base_lab 0) @
         List.concat branch_codes)
 
   (* Invoke: call codata method 
      
-     Args are currently at their ctx positions. We need to move them to 
-     "standard incoming positions" so the method can find them regardless
-     of caller's ctx size.
+     Following Idris pattern: args are already at tail positions (0..n-1)
+     from substitution. We just move block pointer and branch.
      
-     Standard incoming positions:
-     - arg i uses position_from_end = i
-     - For ext types: X(reserved + 2*i + 1)
-     - For non-ext: X(reserved + 2*i) and X(reserved + 2*i + 1)
+     IMPORTANT: Use original_index for consistent GADT handling.
      
-     IMPORTANT: We must save block_reg and tab_reg BEFORE arg moves,
-     because arg moves might clobber those registers!
-     *)
+     Method expects:
+     - Block at fresh_location1(args) = X(reserved + 2*len(args))
+     - Args already in place at positions 0..n-1 from end *)
   | CInvoke { ctx; v; dec; xtor; args; _ } ->
       let tab_reg = symbol_location2 ctx v in
-      let block_reg = symbol_location1 ctx v in  (* Block pointer for captured env *)
-      let this_reg = Register.mk 3 in (* X3 - where method expects block pointer *)
-      (* For codata, use list position since jump table is built from filtered list *)
+      let block_reg = symbol_location1 ctx v in
+      let this_reg = fresh_location1 args in  (* Block goes here *)
+      (* Use original_index for consistent tag across filtered/unfiltered xtor lists *)
       let xtor_idx = 
-        let rec find_idx i = function
-          | [] -> 0
-          | (y: xtor) :: _ when Path.equal y.name xtor -> i
-          | _ :: rest -> find_idx (i + 1) rest
-        in find_idx 0 dec.xtors
+        match List.find_opt (fun (y: xtor) -> Path.equal y.name xtor) dec.xtors with
+        | Some y -> y.original_index
+        | None -> 0
       in
-      let num_methods = List.length dec.xtors in
+      (* Find max original_index to determine if jump table is needed *)
+      let max_idx = List.fold_left (fun acc (y: xtor) -> max acc y.original_index) 0 dec.xtors in
       if !debug_subst then begin
         Printf.eprintf "CInvoke: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
         Printf.eprintf "  ctx (len=%d): [%s]\n" (List.length ctx) (pp_ctx ctx);
         Printf.eprintf "  args: [%s]\n" (pp_ctx args);
         Printf.eprintf "  v pos_from_end=%d\n" (position_from_end ctx v);
-        Printf.eprintf "  tab_reg=X%d block_reg=X%d\n" (Register.to_int tab_reg) (Register.to_int block_reg)
+        Printf.eprintf "  xtor_idx=%d max_idx=%d\n" xtor_idx max_idx;
+        Printf.eprintf "  tab_reg=X%d block_reg=X%d this_reg=X%d\n" 
+          (Register.to_int tab_reg) (Register.to_int block_reg) (Register.to_int this_reg)
       end;
-      (* Build substitute graph: positions args, block ptr, AND tab_reg
-         
-         CRITICAL: tab_reg must be included in the graph because arg positions
-         starting at X4 may overlap with tab_reg. If we move tab_reg -> X2 
-         OUTSIDE the substitute, it may get clobbered by the substitute.
-         
-         By including tab_reg in the graph, the permutation algorithm will
-         handle it correctly, moving it at the right time. *)
+      (* Following Idris pattern: args are already in place at positions 0..n-1.
+         We just need to move block pointer and branch.
+         Use exchange graph to safely handle overlapping moves. *)
       let graph = Array.make 32 [] in
       (* tab_reg -> X2 (Register.temp) - save code pointer for branch *)
       if not (Register.equal tab_reg Register.temp) then
         graph.(Register.to_int tab_reg) <- Register.temp :: graph.(Register.to_int tab_reg);
-      (* block_reg -> X3 (this_reg) - the method's block pointer *)
+      (* block_reg -> this_reg - move block pointer to where method expects it *)
       if not (Register.equal block_reg this_reg) then
         graph.(Register.to_int block_reg) <- this_reg :: graph.(Register.to_int block_reg);
-      (* args -> standard incoming positions (starting at X4, after block pointer X3) *)
-      let arg_base = Register.reserved + 1 in  (* X4 *)
-      List.iteri (fun i (arg, ct) ->
-        let src_r2 = symbol_location2 ctx arg in
-        let tgt_r2 = Register.mk (arg_base + 2 * i + 1) in
-        if is_ext_type ct then begin
-          if !debug_subst then Printf.eprintf "  arg %d: %s (ext) X%d -> X%d\n" i (Ident.name arg) (Register.to_int src_r2) (Register.to_int tgt_r2);
-          graph.(Register.to_int src_r2) <- tgt_r2 :: graph.(Register.to_int src_r2)
-        end else begin
-          let src_r1 = symbol_location1 ctx arg in
-          let tgt_r1 = Register.mk (arg_base + 2 * i) in
-          if !debug_subst then Printf.eprintf "  arg %d: %s (non-ext) X%d,X%d -> X%d,X%d\n" i (Ident.name arg) (Register.to_int src_r1) (Register.to_int src_r2) (Register.to_int tgt_r1) (Register.to_int tgt_r2);
-          graph.(Register.to_int src_r1) <- tgt_r1 :: graph.(Register.to_int src_r1);
-          graph.(Register.to_int src_r2) <- tgt_r2 :: graph.(Register.to_int src_r2)
-        end
-      ) args;
       let substitute = code_exhange (Array.to_list graph) in
       if !debug_subst then begin
         Printf.eprintf "  substitute: %d instructions\n" (List.length substitute);
         List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) substitute
       end;
       return (
-        substitute @                              (* Substitute positions block ptr, args, AND tab_reg *)
-        (if num_methods <= 1 then
-          BR Register.temp :: []                  (* X2 now has the code pointer *)
+        substitute @
+        (if max_idx < 1 then
+          BR Register.temp :: []
         else
           ADDI (Register.temp, Register.temp, Offset.jump_length xtor_idx) ::
           BR Register.temp :: []))
 
-  (* Axiom: cut between producer and consumer 
+  (* Axiom: cut between producer and consumer
      
-     There are two cases based on how k was created:
+     Exactly like CInvoke but for Cns (Ext Int) - a single-method codata.
+     Block pointer goes to fresh_location1(args) where args has length 1.
+     Arg goes to standard incoming position X(reserved + 1) = X4.
      
-     1. k was created by CNewInt (int continuation):
-        - k's type is `Cns (Ext Int)`
-        - k_reg (symbol_location2) holds block pointer
-        - Code address stored in block at Offset.code_pointer
-        - Method expects arg in same position (X4), then loads captured env
-     
-     2. k is a codata consumer (from CNew, e.g., single-branch lambda):
-        - k's type is `Cns (codata type)`  
-        - symbol_location1(ctx,k) = block pointer
-        - symbol_location2(ctx,k) = branch table address (code pointer)
-        - Method expects X3 = block pointer and arg at specific position
-     
-     We distinguish by checking if k's type is `Cns (Ext _)`. *)
+     IMPORTANT: Save code pointer to X2 first, as arg_reg=X4 might clobber it. *)
   | CAxiom { ctx; v; k; _ } ->
-      let k_typ = lookup_ctx_exn ctx k in
       let v_reg = symbol_location2 ctx v in
-      let this_reg = Register.mk 3 in (* X3 - method's block pointer register *)
-      let arg_base = Register.reserved + 1 in  (* X4 - args start after block ptr *)
-      let arg_reg = Register.mk (arg_base + 2 * 0 + 1) in (* X5 for ext arg 0 *)
-      (match k_typ with
-      | Cns (Ext _) ->
-          (* CNewInt-style: block pointer in symbol_location2, code in block *)
-          let k_block_reg = symbol_location2 ctx k in
-          return (
-            MOVR (this_reg, k_block_reg) ::      (* X3 = block pointer *)
-            LDR (Register.temp, k_block_reg, Offset.code_pointer) ::  (* Load code addr *)
-            MOVR (arg_reg, v_reg) ::             (* Put value in arg position *)
-            BR Register.temp :: [])
-      | Cns _ ->
-          (* CNew-style codata: block in location1, code in location2 *)
-          let k_block_reg = symbol_location1 ctx k in
-          let k_code_reg = symbol_location2 ctx k in
-          return (
-            MOVR (this_reg, k_block_reg) ::      (* X3 = block pointer *)
-            MOVR (arg_reg, v_reg) ::             (* Put value in arg position *)
-            BR k_code_reg :: [])                 (* Branch to code pointer directly *)
-      | Prd _ ->
-          failwith "CAxiom: k must be a consumer type")
+      let k_block_reg = symbol_location1 ctx k in
+      let k_code_reg = symbol_location2 ctx k in
+      (* Method has 1 parameter, so block at X(reserved + 2*1) = X5 *)
+      let this_reg = Register.mk (Register.reserved + 2 * 1) in
+      let arg_reg = Register.mk (Register.reserved + 1) in  (* X4 *)
+      return (
+        MOVR (Register.temp, k_code_reg) ::   (* Save code ptr to X2 first! *)
+        MOVR (this_reg, k_block_reg) ::       (* Block to X5 *)
+        MOVR (arg_reg, v_reg) ::              (* Arg to X4 *)
+        BR Register.temp :: [])               (* Branch via X2 *)
 
   (* Literal: create integer value *)
   | CLit { ctx; n; v; body } ->
       let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      Printf.eprintf "CLit: n=%d v=%s ctx=[%s] target_reg=X%d\n" n (Ident.name v) (pp_ctx ctx) (Register.to_int (symbol_location2 new_ctx v));
       let* rest = code_command lmap body in
       return (
         MOVI (symbol_location2 new_ctx v, n) ::
         rest)
 
-  (* NewInt: create integer consumer (continuation) 
+  (* NewInt: create integer consumer (continuation)
      
-     New model: k is a BLOCK POINTER, not a code pointer.
-     The block contains:
-     - Offset.code_pointer: address of the method code
-     - Captured environment values
+     Following Idris pattern for block pointer and arg registers:
+     - Block at fresh_location1(tail_ctx) where tail_ctx = [param]
+     - Arg incoming at X4 (r1 slot, safe since method saves before loading)
      
-     When axiom invokes k, it will:
-     - Set X3 = k (restore correct closure block)
-     - Load code address from [X3, Offset.code_pointer]
-     - BR to code address *)
+     k uses two registers just like CNew codata:
+     - symbol_location1(k_ctx, k) = block pointer (captured environment)
+     - symbol_location2(k_ctx, k) = code address *)
   | CNewInt { ctx; k; param; branch_body; cont_body } ->
       let k_ctx = (k, Cns (Ext Common.Types.Int)) :: ctx in
-      let k_reg = symbol_location2 k_ctx k in
-      (* The arg register where axiom puts it - matches CAxiom's arg position *)
-      let arg_base = Register.reserved + 1 in  (* X4 - args start after block ptr X3 *)
-      let arg_incoming_reg = Register.mk (arg_base + 2 * 0 + 1) in (* X5 for ext arg 0 *)
-      (* The arg register where method expects it (position len(ctx) from end) *)
-      let param_ctx = (param, Prd (Ext Common.Types.Int)) :: ctx in
+      let k_block_reg = symbol_location1 k_ctx k in  (* r1 = block pointer *)
+      let k_code_reg = symbol_location2 k_ctx k in   (* r2 = code address *)
+      (* Arg incoming at X4, matching CAxiom's convention *)
+      let arg_incoming_reg = Register.mk (Register.reserved + 1) in (* X4 *)
+      (* The arg register where method expects it.
+         Method context after load = ctx @ tail_ctx = captured @ [param].
+         param_ctx must match this order: ctx @ [param]. *)
+      let param_ctx = ctx @ [(param, Prd (Ext Common.Types.Int))] in
       let arg_expected_reg = symbol_location2 param_ctx param in
-      (* Store ctx as captured environment - use ctx as as_ctx to preserve ctx's registers *)
+      (* tail_ctx for block pointer calculation = [param] *)
+      let tail_ctx = [(param, Prd (Ext Common.Types.Int))] in
+      (* Store ctx as captured environment *)
       let* stores = store ctx ctx ctx in
+      Printf.eprintf "CNewInt: k=%s ctx=[%s]\n" (Ident.name k) (pp_ctx ctx);
+      Printf.eprintf "  stores: %d instructions, last few:\n" (List.length stores);
+      let last_5 = List.rev (List.filteri (fun i _ -> i < 5) (List.rev stores)) in
+      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) last_5;
       let* base_lab = fresh_label in
       let* cont = code_command lmap cont_body in
-      (* Method: 
-         1. Move arg from incoming position (X5) to expected position (above load range)
-         2. Load captured vars from block pointer at X3 (set by CAxiom)
-         Arg is safe since expected position is len(ctx) which is above load range *)
-      let* loads = load_newint_method ctx [] in
+      Printf.eprintf "  cont: %d instructions, first few:\n" (List.length cont);
+      let first_5 = List.filteri (fun i _ -> i < 5) cont in
+      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) first_5;
+      (* Method: load captured vars from block.
+         Matches Idris: load ctx tail_ctx where tail_ctx = [param].
+         After load, context is ctx @ tail_ctx. *)
+      let* loads = load ctx tail_ctx in
       let* method_body = code_command lmap branch_body in
-      (* After stores, this_reg = block pointer (fresh_location1 ctx avoids ctx's registers).
-         Store code address in block, then set k_reg = block pointer *)
+      (* After stores, block pointer is at fresh_location1 ctx.
+         Set k's two registers: r1 = block, r2 = code address *)
       let this_reg = fresh_location1 ctx in
       return (
         stores @
-        (* Store code address into the block at code_pointer offset *)
-        ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
-        STR (Register.temp, this_reg, Offset.code_pointer) ::
-        (* k = block pointer *)
-        MOVR (k_reg, this_reg) ::
+        (* k_block_reg = block pointer *)
+        MOVR (k_block_reg, this_reg) ::
+        (* k_code_reg = code address (direct, not stored in block) *)
+        ADR (k_code_reg, "lab" ^ string_of_int base_lab) ::
         cont @
         LAB ("lab" ^ string_of_int base_lab) ::
         (* Move incoming arg directly to expected position (above load range) *)
@@ -1007,7 +866,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
     branch.branch_ctx = branch.args @ tail_ctx *)
 and code_clause (lmap: label_map) (tail_ctx: ctx) (branch: checked_branch)
     : code list state =
-  (* Load args with tail_ctx as the "as" context *)
+  (* Load args into HEAD positions, tail_ctx stays at TAIL *)
+  if !debug_store then
+    Printf.eprintf "code_clause: xtor=%s args=[%s] tail_ctx=[%s]\n" 
+      (Path.name branch.xtor) (pp_ctx branch.args) (pp_ctx tail_ctx);
   let* loads = load branch.args tail_ctx in
   let* body_code = code_command lmap branch.body in
   return (loads @ body_code)
@@ -1046,54 +908,24 @@ and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx)
 (** Compile a method (branch of new/codata).
     captured_ctx: the context captured when creating the codata
     branch.args: arguments passed to this method
-    branch.branch_ctx = branch.args @ captured_ctx 
+    branch.branch_ctx = captured_ctx @ args
     
-    Args arrive in "standard incoming positions" (set by CInvoke):
-    - arg i is at X(reserved + 2*i) and X(reserved + 2*i + 1)
-    We need to move them to their branch_ctx positions.
-    
-    Use the exchange algorithm to avoid clobbering conflicts. *)
+    Matches Idris codeMethod as cs s = load as cs ...
+    Where as=captured_ctx, cs=args. *)
 and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
     : code list state =
   let args = branch.args in
-  let full_ctx = branch.branch_ctx in
   if !debug_subst then begin
     Printf.eprintf "code_method: xtor=%s\n" (Path.name branch.xtor);
     Printf.eprintf "  args: [%s]\n" (pp_ctx args);
     Printf.eprintf "  captured_ctx: [%s]\n" (pp_ctx captured_ctx);
-    Printf.eprintf "  full_ctx: [%s]\n" (pp_ctx full_ctx)
+    Printf.eprintf "  full_ctx: [%s]\n" (pp_ctx branch.branch_ctx)
   end;
-  (* Build move graph for args: src_reg -> [tgt_regs]
-     Args arrive at positions starting at X4 (after block pointer X3) *)
-  let arg_base = Register.reserved + 1 in  (* X4 *)
-  let graph = Array.make 32 [] in
-  List.iteri (fun i (arg, ct) ->
-    let src_r2 = Register.mk (arg_base + 2 * i + 1) in
-    let tgt_r2 = symbol_location2 full_ctx arg in
-    if is_ext_type ct then begin
-      if !debug_subst then Printf.eprintf "  method arg %d: %s (ext) X%d -> X%d\n" i (Ident.name arg) (Register.to_int src_r2) (Register.to_int tgt_r2);
-      if not (Register.equal src_r2 tgt_r2) then
-        graph.(Register.to_int src_r2) <- tgt_r2 :: graph.(Register.to_int src_r2)
-    end else begin
-      let src_r1 = Register.mk (arg_base + 2 * i) in
-      let tgt_r1 = symbol_location1 full_ctx arg in
-      if !debug_subst then Printf.eprintf "  method arg %d: %s (non-ext) X%d,X%d -> X%d,X%d\n" i (Ident.name arg) (Register.to_int src_r1) (Register.to_int src_r2) (Register.to_int tgt_r1) (Register.to_int tgt_r2);
-      if not (Register.equal src_r1 tgt_r1) then
-        graph.(Register.to_int src_r1) <- tgt_r1 :: graph.(Register.to_int src_r1);
-      if not (Register.equal src_r2 tgt_r2) then
-        graph.(Register.to_int src_r2) <- tgt_r2 :: graph.(Register.to_int src_r2)
-    end
-  ) args;
-  let arg_moves = code_exhange (Array.to_list graph) in
-  if !debug_subst then begin
-    Printf.eprintf "  arg_moves: %d instructions\n" (List.length arg_moves);
-    List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) arg_moves
-  end;
-  (* Load captured environment from block. Block pointer is in X3, set by CInvoke.
-     branch_ctx = branch.args @ captured_ctx, so captured_ctx goes at tail. *)
-  let* loads = load_method captured_ctx full_ctx in
+  (* Matches Idris: codeMethod as cs s = do { loads <- load as cs; ... }
+     where as=captured_ctx, cs=args *)
+  let* loads = load captured_ctx args in
   let* body_code = code_command lmap branch.body in
-  return (arg_moves @ loads @ body_code)
+  return (loads @ body_code)
 
 and code_methods (lmap: label_map) (captured_ctx: ctx)
     (branches: checked_branch list) (base_lab: int) (branch_idx: int) 
@@ -1105,6 +937,24 @@ and code_methods (lmap: label_map) (captured_ctx: ctx)
       let* rest_methods = code_methods lmap captured_ctx rest base_lab (branch_idx + 1) in
       let labeled =
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int branch_idx) ::
+        method_code in
+      return (labeled :: rest_methods)
+
+(** Compile methods with sparse indexing based on original_index.
+    Used for CNew when xtors may be filtered due to GADT instantiation.
+    Each method is labeled with its xtor's original_index, not sequential index. *)
+and code_methods_sparse (lmap: label_map) (captured_ctx: ctx) 
+    (branches: checked_branch list) (base_lab: int)
+    (get_original_index: Path.t -> int)
+    : code list list state =
+  match branches with
+  | [] -> return []
+  | branch :: rest ->
+      let* method_code = code_method lmap captured_ctx branch in
+      let original_idx = get_original_index branch.xtor in
+      let* rest_methods = code_methods_sparse lmap captured_ctx rest base_lab get_original_index in
+      let labeled = 
+        LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) :: 
         method_code in
       return (labeled :: rest_methods)
 
@@ -1149,6 +999,16 @@ let compile_checked (defs: checked_definition Path.tbl) : code list * int =
 let compile (main: Axil.Terms.definition) (defs: Axil.Terms.definition Path.tbl) 
     : code list * int =
   let all_defs = Path.add main.path main defs in
+  (* Debug: print Axil IR before checking *)
+  List.iter (fun (path, def) ->
+    let pn = Path.name path in
+    let starts_with prefix s = 
+      String.length s >= String.length prefix && 
+      String.sub s 0 (String.length prefix) = prefix in
+    if starts_with "replicate" pn || starts_with "length" pn then
+      Printf.eprintf "=== Axil IR for %s ===\n%s\n\n" pn 
+        (Axil.Printing.command_to_string_typed def.Axil.Terms.body)
+  ) (Path.to_list all_defs);
   let checked_defs = check_definitions all_defs in
   compile_checked checked_defs
 

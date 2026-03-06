@@ -325,17 +325,18 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
 
   (* new v = { branches }; s
     Doesn't consume from head; v prepended for continuation 
-    Branches get term_vars prepended to context *)
+    Methods run in captured_ctx @ args (Idris pattern: as ++ cs) *)
   | FTm.New (v, dec, branches, body) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let branches' = List.map (linearize_branch st new_ctx) branches in
+      let branches' = List.map (linearize_method st new_ctx) branches in
       let body' = linearize_cmd st (v :: new_ctx) body in
       wrap_with_reordering ctx subst (ATm.New (v, convert_dec dec, branches', body'))
 
   (* invoke v m(args)
-    Consumes: args at prefix, then v at head after args *)
+    Consumes: v at head, then args - matching Idris pattern where
+    args stay at tail positions and captured env is at head *)
   | FTm.Invoke (v, dec, xtor, args) ->
-      let consumed = args @ [v] in
+      let consumed = [v] @ args in
       let (subst, _) = build_reordering st ctx consumed fv in
       wrap_with_reordering ctx subst (ATm.Invoke (v, convert_dec dec, xtor, args))
 
@@ -389,8 +390,18 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
 
 and linearize_branch (st: state) (ctx: Common.Identifiers.Ident.t list) 
     ((xtor, ty_vars, term_vars, body): FTm.branch) : ATm.branch =
-  (* Branch context: term_vars prepended to ctx *)
+  (* Branch context for clauses: term_vars prepended to ctx (args @ tail) *)
   let branch_ctx = term_vars @ ctx in
+  let body' = linearize_cmd st branch_ctx body in
+  (xtor, ty_vars, term_vars, body')
+
+(** Linearize a method branch for New (codata).
+    Following Idris pattern: method body runs in captured @ args.
+    This is ctx @ term_vars where ctx is the captured context. *)
+and linearize_method (st: state) (captured_ctx: Common.Identifiers.Ident.t list) 
+    ((xtor, ty_vars, term_vars, body): FTm.branch) : ATm.branch =
+  (* Method context (Idris pattern): captured_ctx @ term_vars (as ++ cs) *)
+  let branch_ctx = captured_ctx @ term_vars in
   let body' = linearize_cmd st branch_ctx body in
   (xtor, ty_vars, term_vars, body')
 

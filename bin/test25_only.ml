@@ -54,16 +54,27 @@ let () =
     let* (focused_decs, focused_main, focused_defs) = 
       Pipe.CoreStage.focus types_ctx mono_result in
     
-    (* Test with Focused semantics first *)
-    let* (result_cmd, _env, steps) = 
-      Pipe.FocusedStage.eval ~trace:true focused_main focused_defs in
-    Printf.printf "=== FOCUSED RESULT ===\n";
-    Printf.printf "Steps: %d\n" steps;
-    Printf.printf "Result: %s\n\n" (FPrint.command_to_string result_cmd);
-    
     let* (axil_decs, axil_main, axil_defs) = 
       Pipe.AxilStage.linearize focused_decs focused_main focused_defs in
     
+    (* Print Axil definitions *)
+    Printf.printf "=== AXIL CODE ===\n";
+    Path.to_list axil_defs |> List.iter (fun (_, (def: Axil.Terms.definition)) ->
+      Printf.printf "%s:\n%s\n\n" (Path.name def.path) (Axil.Printing.command_to_string def.body)
+    );
+    Printf.printf "=== END AXIL ===\n";
+    
+    (* Execute Axil with trace *)
+    let* (result_cmd, env, steps) = 
+      Pipe.AxilStage.eval ~trace:true axil_main axil_defs in
+    Printf.printf "=== AXIL RESULT ===\n";
+    Printf.printf "Steps: %d\n" steps;
+    (match result_cmd with
+    | Axil.Terms.Ret (_, v) ->
+        let r = Axil.Semantics.lookup_int env.values v in
+        Printf.printf "Result: %d\n\n" r
+    | _ -> Printf.printf "Unexpected result: %s\n\n" (Axil.Printing.command_to_string result_cmd));
+
     (* Compile to ASM with debug *)
     let* (asm, _) = Pipe.EmitStage.compile Pipe.EmitStage.AARCH64 axil_main axil_defs in
     
@@ -72,7 +83,7 @@ let () =
     Printf.printf "%s\n" (Aarch64.Code.Code.list_to_string asm);
     Printf.printf "=== END ASM ===\n\n";
     
-    (* Execute WITH TRACE *)
+    (* Execute ASM with trace *)
     let* result = Pipe.EmitStage.eval ~trace:true ~max_steps:10000 asm in
     Printf.printf "=== ASM RESULT ===\n";
     Printf.printf "Result: %d\n" result;

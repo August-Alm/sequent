@@ -29,6 +29,16 @@
 
 (executable (name test_depth) (libraries sequent))
 
+(executable (name test_to_int) (libraries sequent))
+
 (executable (name test_compare) (libraries sequent))
 
 (executable (name test25_only) (libraries sequent lang) (flags (:standard -w -27)))
+
+(executable (name test25_simple) (libraries sequent lang) (flags (:standard -w -27)))
+
+(executable (name debug_axil) (libraries sequent) (flags (:standard -w -27)))
+
+(executable (name debug_load) (libraries sequent) (flags (:standard -w -27)))
+
+(executable (name debug_load2) (libraries sequent) (flags (:standard -w -27)))
