@@ -92,7 +92,7 @@ dune build
 ```bash
 $ dune exec bin/compile.exe -- --link examples/fibonacci.cd examples/fibonacci/fibonacci
 $ cd examples/fibonacci
-$ sudo chmod 777 fibonacci
+$ sudo chmod 777 fibonacci # Bite me!
 $ ./fibonacci 30
 832040
 ```
