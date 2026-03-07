@@ -1,4 +1,4 @@
-# Sequent Calculus Compiler
+# Compiling with Sequent Calculus
 
 A compiler for a functional ML-like language with generalized algebraic data types (GADTs) and codata types, higher kinded types, parametric higher rank polymorphism and implicit data kinds, compiled through a series of intermediate representations based on sequent calculus.
 
