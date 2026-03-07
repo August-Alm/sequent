@@ -294,8 +294,7 @@ and try_encode_def_call (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term option
 and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   (* First check if this is a saturated definition call *)
   match try_encode_def_call ctx tm with
-  | Some encoded -> encoded
-  | None ->
+    Some encoded -> encoded | None ->
   match tm with
     MTm.TypedInt n -> CTm.Lit n
 
@@ -303,18 +302,18 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
 
   | MTm.TypedSym (path, ty) ->
       (match Path.find_opt path ctx.defs with
-       | Some def when def.MTm.term_params = [] ->
-           (* Nullary definition: call it and get the value *)
-           let ty' = encode_type ctx.data_sorts ty in
-           let k = Ident.fresh () in
-           CTm.MuPrd (ty', k, CTm.Call (path, [], [CTm.Var k]))
-       | Some def ->
-           encode_partial_application ctx path ty def
-       | None ->
-           (* Not a definition - could be a constructor or external symbol *)
-           let ty' = encode_type ctx.data_sorts ty in
-           let k = Ident.fresh () in
-           CTm.MuPrd (ty', k, CTm.Call (path, [], [CTm.Var k])))
+        Some def when def.MTm.term_params = [] ->
+          (* Nullary definition: call it and get the value *)
+          let ty' = encode_type ctx.data_sorts ty in
+          let k = Ident.fresh () in
+          CTm.MuPrd (ty', k, CTm.Call (path, [], [CTm.Var k]))
+      | Some def ->
+          encode_partial_application ctx path ty def
+      | None ->
+          (* Not a definition - could be a constructor or external symbol *)
+          let ty' = encode_type ctx.data_sorts ty in
+          let k = Ident.fresh () in
+          CTm.MuPrd (ty', k, CTm.Call (path, [], [CTm.Var k])))
 
   | MTm.TypedAdd (t1, t2) ->
       (* add(m, n) → μα.add(m', n', α) *)
@@ -335,18 +334,18 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
   | MTm.TypedLam (x, _a, body, fun_ty) ->
       (* λx:a. body → thunk(Comatch(fun_sym, [apply{dom,cod}(k, x) => ⟨body' | k⟩]))
          
-         Since all Melcore types are positive in Core, a function type fun(a,b)
-         is encoded as raise(fun(a',b')). The lambda produces a comatch (negative),
-         which we wrap in thunk to make it positive.
-         
-         The apply destructor has arguments: [Cns cod; Prd dom]
-         So we bind: k: Cns cod, x: Prd dom
-         
-         Note: We do NOT unwrap raise here. The body encoding will handle
-         unwrapping when x is used (e.g., in application). This ensures
-         consistency between the bound variable type and how the body sees it. *)
+        Since all Melcore types are positive in Core, a function type fun(a,b)
+        is encoded as raise(fun(a',b')). The lambda produces a comatch (negative),
+        which we wrap in thunk to make it positive.
+        
+        The apply destructor has arguments: [Cns cod; Prd dom]
+        So we bind: k: Cns cod, x: Prd dom
+        
+        Note: We do NOT unwrap raise here. The body encoding will handle
+        unwrapping when x is used (e.g., in application). This ensures
+        consistency between the bound variable type and how the body sees it. *)
       let (dom, cod) = match fun_ty with
-        | MTy.Sgn (s, [d; c]) when Path.equal s Prim.fun_sym -> 
+          MTy.Sgn (s, [d; c]) when Path.equal s Prim.fun_sym -> 
             (encode_type ctx.data_sorts d, encode_type ctx.data_sorts c)
         | _ -> failwith "TypedLam must have Fun type"
       in
@@ -395,8 +394,8 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
         at the start of encode_term_inner. This case handles regular function application.
         
         Since function types are encoded as raise(fun(...)), we need to:
-        1. Unwrap the raise to get the actual function
-        2. Apply it
+        1. unwrap the raise to get the actual function;
+        2. apply it.
         
         μα.⟨f' | match { thunk(g) => ⟨g | apply(α, arg')⟩ }⟩ *)
       let f' = encode_term ctx f in

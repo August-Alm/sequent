@@ -74,7 +74,7 @@ end
 
 let rec subst_type (ts: TySub.t) (t: CTy.typ) : CTy.typ =
   match t with
-  | CTy.TVar v -> TySub.apply ts v
+    CTy.TVar v -> TySub.apply ts v
   | CTy.TMeta v -> CTy.TMeta v
   | CTy.Base p -> CTy.Base p
   | CTy.Arrow (t1, t2) -> CTy.Arrow (subst_type ts t1, subst_type ts t2)
@@ -104,7 +104,7 @@ let subst_dec (ts: TySub.t) (d: CTy.dec) : CTy.dec =
 
 let rec subst_term (ts: TySub.t) (t: CTm.term) : CTm.term =
   match t with
-  | CTm.Var v -> CTm.Var v
+    CTm.Var v -> CTm.Var v
   | CTm.Ctor (dec, c, args) -> CTm.Ctor (subst_dec ts dec, c, List.map (subst_term ts) args)
   | CTm.Dtor (dec, c, exist_tys, args) -> CTm.Dtor (subst_dec ts dec, c, List.map (subst_type ts) exist_tys, List.map (subst_term ts) args)
   | CTm.Match (dec, bs) -> CTm.Match (subst_dec ts dec, List.map (subst_branch ts) bs)
@@ -121,7 +121,7 @@ and subst_branch (ts: TySub.t) (xtor, ty_vars, tm_vars, cmd) : CTm.branch =
 
 and subst_command (ts: TySub.t) (cmd: CTm.command) : CTm.command =
   match cmd with
-  | CTm.Cut (ty, lhs, rhs) -> CTm.Cut (subst_type ts ty, subst_term ts lhs, subst_term ts rhs)
+    CTm.Cut (ty, lhs, rhs) -> CTm.Cut (subst_type ts ty, subst_term ts lhs, subst_term ts rhs)
   | CTm.Add (m, n, k) -> CTm.Add (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Sub (m, n, k) -> CTm.Sub (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Ifz (cond, s1, s2) -> CTm.Ifz (subst_term ts cond, subst_command ts s1, subst_command ts s2)
@@ -135,7 +135,7 @@ and subst_command (ts: TySub.t) (cmd: CTm.command) : CTm.command =
 
 let polarity_of (ctx: focus_ctx) (t: CTy.typ) : CB.polarity option =
   match t with
-  | CTy.Arrow _ -> Some CB.Neg
+    CTy.Arrow _ -> Some CB.Neg
   | CTy.Sgn (f, _) when Path.equal f Prim.fun_sym -> Some CB.Neg
   | CTy.Sgn (l, _) when Path.equal l Prim.lower_sym -> Some CB.Neg
   | CTy.Sgn (r, _) when Path.equal r Prim.raise_sym -> Some CB.Pos
@@ -167,7 +167,7 @@ let get_dec_from_type (decs: CTy.dec Path.tbl) (ty: CTy.typ) : CTy.dec option =
 
 let rec focus_type (t: CTy.typ) : FTy.typ =
   match t with
-  | CTy.Base _ -> FTy.Base FB.Typ
+    CTy.Base _ -> FTy.Base FB.Typ
   | CTy.Arrow (t1, t2) -> FTy.Arrow (focus_type t1, focus_type t2)
   | CTy.Ext e -> FTy.Ext e
   | CTy.TVar v -> FTy.TVar v
@@ -178,7 +178,7 @@ let rec focus_type (t: CTy.typ) : FTy.typ =
 
 let collapse_chiral (ctx: focus_ctx) (ct: CTy.chiral_typ) : FTy.chiral_typ =
   match ct with
-  | CB.Prd t -> 
+    CB.Prd t -> 
       let neg = is_negative ctx t in
       if neg then FB.Cns (focus_type t) else FB.Prd (focus_type t)
   | CB.Cns t -> 
@@ -212,7 +212,7 @@ let collapse_dec (ctx: focus_ctx) (d: CTy.dec) : FTy.dec =
 
 module Target = struct
   type command =
-    | LetCtor of CTy.dec * Path.t * Ident.t list * Ident.t * command
+      LetCtor of CTy.dec * Path.t * Ident.t list * Ident.t * command
     | LetDtor of CTy.dec * Path.t * Ident.t list * Ident.t * command
     | LetMatch of CTy.dec * branch list * Ident.t * command
     | LetComatch of CTy.dec * branch list * Ident.t * command
@@ -242,7 +242,7 @@ module Target = struct
 
   (* apply renaming to command *)
   let rec rename (h: Sub.t) : command -> command = function
-    | LetCtor (dec, c, args, x, cont) ->
+      LetCtor (dec, c, args, x, cont) ->
         let x' = Ident.fresh () in
         LetCtor (dec, c, List.map (Sub.apply h) args, x', rename (Sub.add x x' h) cont)
     | LetDtor (dec, c, args, a, cont) ->
@@ -299,7 +299,7 @@ module Target = struct
   (* lookup branch body and substitute arguments *)
   let lookup_branch (branches: branch list) (xtor: Path.t) (arg_vars: Ident.t list) : command =
     match List.find_opt (fun (name, _, _, _) -> Path.equal name xtor) branches with
-    | Some (_, _, params, body) ->
+      Some (_, _, params, body) ->
         let sub = List.fold_left2 (fun acc p v -> Sub.add p v acc) Sub.empty params arg_vars in
         rename sub body
     | None -> End
@@ -337,7 +337,7 @@ module Transform = struct
   and bind_term (ctx: focus_ctx) (term: CTm.term) (h: Sub.t)
       (k: Sub.t -> Ident.t -> Target.command) : Target.command =
     match term with
-    | CTm.Var x ->
+      CTm.Var x ->
         (* Variable: no context extension, apply h to x *)
         k Sub.empty (Sub.apply h x)
 
@@ -365,15 +365,15 @@ module Transform = struct
 
     | CTm.MuPrd (ty, x, s) ->
         (* MuLhsPos: producer (data type focus)
-           For data types: LetMatch (eta-branches with k) (transformCommand s)
-           For primitives: inline k at the cut point *)
+          For data types: LetMatch (eta-branches with k) (transformCommand s)
+          For primitives: inline k at the cut point *)
         (match get_dec_from_type ctx.decs ty with
-        | Some dec ->
+          Some dec ->
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
               (* For instantiated decs, xtor.existentials has the type params to bind.
-                 These are fresh metas created by instantiate_dec/instantiate_xtor. *)
+                These are fresh metas created by instantiate_dec/instantiate_xtor. *)
               let ty_vars = List.map fst (xtor.quantified @ xtor.existentials) in
               (xtor.name, ty_vars, ps, Target.LetCtor (dec, xtor.name, ps, z, k Sub.empty z))
             ) dec.xtors in
@@ -381,9 +381,9 @@ module Transform = struct
             Target.LetMatch (dec, branches, x', transform_command ctx s (Sub.add x x' h))
         | None ->
             (match ty with
-            | CTy.Ext _ ->
+              CTy.Ext _ ->
                 (* Primitive type (int): create a continuation to capture the result.
-                   We create LetNewInt to make a new continuation that calls k when a value arrives. *)
+                  We create LetNewInt to make a new continuation that calls k when a value arrives. *)
                 let cont_var = Ident.fresh () in
                 let result_var = Ident.fresh () in
                 Target.LetNewInt (cont_var, result_var,
@@ -391,8 +391,8 @@ module Transform = struct
                   transform_command ctx s (Sub.add x cont_var h))  (* pass cont_var as the continuation *)
             | CTy.TVar tvar ->
                 (* Type variable: can't eta-expand.
-                   Use AdministrativeTyped: ⟨µα.s | µ~z.k(z)⟩_T
-                   s is the body (producer), k(z) is the continuation (consumer) *)
+                  Use AdministrativeTyped: ⟨µα.s | µ~z.k(z)⟩_T
+                  s is the body (producer), k(z) is the continuation (consumer) *)
                 let x' = Ident.fresh () in  (* bound in s *)
                 let z = Ident.fresh () in   (* bound in continuation *)
                 let s' = transform_command ctx s (Sub.add x x' h) in
@@ -406,10 +406,10 @@ module Transform = struct
 
     | CTm.MuCns (ty, a, s) ->
         (* MuRhsNeg (consumer, codata type focus) 
-           For codata: LetComatch (eta-branches with k) (transformCommand s)
-           For primitives: inline k at the cut point *)
+          For codata: LetComatch (eta-branches with k) (transformCommand s)
+          For primitives: inline k at the cut point *)
         (match get_dec_from_type ctx.decs ty with
-        | Some dec ->
+          Some dec ->
             let branches = List.map (fun (xtor: CTy.xtor) ->
               let ps = fresh_params xtor.argument_types in
               let z = Ident.fresh () in
@@ -423,13 +423,13 @@ module Transform = struct
               transform_command ctx s (Sub.add a a' h))
         | None ->
             (match ty with
-            | CTy.Ext _ ->
+              CTy.Ext _ ->
                 (* Primitive type (int): transform s, inlining k at cuts from a *)
                 transform_command_with_prd_cont ctx s h a k
             | CTy.TVar tvar ->
                 (* Type variable: can't eta-expand.
-                   Use AdministrativeTyped: ⟨µα.k(z) | µ~z.s[a:=z]⟩_T
-                   where k is the continuation producing a value z, and s consumes from a *)
+                  Use AdministrativeTyped: ⟨µα.k(z) | µ~z.s[a:=z]⟩_T
+                  where k is the continuation producing a value z, and s consumes from a *)
                 let z = Ident.fresh () in   (* bound in producer from k *)
                 let a' = Ident.fresh () in  (* bound in s *)
                 let k_body = k Sub.empty z in  (* producer side: "what we do with result" *)
@@ -473,7 +473,7 @@ module Transform = struct
       (target_cns: Ident.t) (k: Sub.t -> Ident.t -> Target.command) : Target.command =
     match cmd with
     (* The key case: Cut at Ext type where rhs is our target variable *)
-    | CTm.Cut (CTy.Ext _, lhs, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
+      CTm.Cut (CTy.Ext _, lhs, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
         (* Instead of CutInt(lhs', target), call k with lhs' *)
         bind_term ctx lhs h (fun i v -> k i v)
         
@@ -522,7 +522,7 @@ module Transform = struct
       (target_prd: Ident.t) (k: Sub.t -> Ident.t -> Target.command) : Target.command =
     match cmd with
     (* The key case: Cut at Ext type where lhs is our target variable *)
-    | CTm.Cut (CTy.Ext _, CTm.Var prd_var, rhs) when Ident.equal prd_var target_prd ->
+      CTm.Cut (CTy.Ext _, CTm.Var prd_var, rhs) when Ident.equal prd_var target_prd ->
         bind_term ctx rhs h (fun i v -> k i v)
         
     (* Fall back to regular transformation *)
@@ -530,7 +530,7 @@ module Transform = struct
 
   and transform_command (ctx: focus_ctx) (cmd: CTm.command) (h: Sub.t) : Target.command =
     match cmd with
-    | CTm.End -> Target.End
+      CTm.End -> Target.End
 
     | CTm.Ret (ty, term) ->
         bind_term ctx term h (fun _i v -> Target.Ret (ty, v))
@@ -561,7 +561,7 @@ module Transform = struct
     (* CutPos (Variable x) (Variable y) - eta expand *)
     | CTm.Cut (CTy.Sgn _ as ty, CTm.Var x, CTm.Var y) ->
         (match get_dec_from_type ctx.decs ty with
-        | Some dec when dec.data_sort = Data ->
+          Some dec when dec.data_sort = Data ->
             (* Positive: CutMatch x [branches: CutCtor n freshNames y] *)
             Target.CutMatch (dec, Sub.apply h x,
               List.map (fun (xtor: CTy.xtor) ->
@@ -580,7 +580,7 @@ module Transform = struct
               Sub.apply h y)
         | None ->
             (match ty with
-            | CTy.TVar tvar -> Target.CutTyped (tvar, Sub.apply h x, Sub.apply h y)
+              CTy.TVar tvar -> Target.CutTyped (tvar, Sub.apply h x, Sub.apply h y)
             | CTy.Ext _ -> Target.CutInt (Sub.apply h x, Sub.apply h y)
             | _ -> failwith "Var/Var cut at unexpected non-declared, non-tvar, non-ext type"))
 
@@ -624,7 +624,7 @@ module Transform = struct
       For codata (negative): LetComatch with branches containing s, continuation is r *)
     | CTm.Cut (ty, CTm.MuPrd (_, x, s), CTm.MuCns (_, a, r)) ->
         (match get_dec_from_type ctx.decs ty with
-        | Some dec when dec.data_sort = Data ->
+          Some dec when dec.data_sort = Data ->
             (* Positive: LetMatch (branches: LetCtor ps z (transform r [a->z])) (transform s [x->fresh]) *)
             let x' = Ident.fresh () in
             let branches = List.map (fun (xtor: CTy.xtor) ->
@@ -661,19 +661,19 @@ module Transform = struct
                 Target.AdministrativeTyped (tvar, x', s', a', r')
             | CTy.Ext Int ->
                 (* External Int type - for ⟨μ+x.s | μ-a.r⟩ at Int, we need to 
-                   create an int continuation. Use LetNewInt to handle this.
-                   LetNewInt(k, v, branch, cont) represents:
-                     new k = { v => branch }; cont
-                   where k is an int continuation (Cns Int) and v is the 
-                   value received (Prd Int).
-                   
-                   For ⟨μ+x.s | μ-a.r⟩:
-                   - x is the continuation (Cns Int in Core)
-                   - a is the value (Prd Int in Core)
-                   - s runs with x available
-                   - r runs when x is invoked, with a bound to the received value
-                   
-                   So we create: new x = { a => r }; s  *)
+                  create an int continuation. Use LetNewInt to handle this.
+                  LetNewInt(k, v, branch, cont) represents:
+                    new k = { v => branch }; cont
+                  where k is an int continuation (Cns Int) and v is the 
+                  value received (Prd Int).
+                  
+                  For ⟨μ+x.s | μ-a.r⟩:
+                  - x is the continuation (Cns Int in Core)
+                  - a is the value (Prd Int in Core)
+                  - s runs with x available
+                  - r runs when x is invoked, with a bound to the received value
+                  
+                  So we create: new x = { a => r }; s  *)
                 let x' = Ident.fresh () in
                 let a' = Ident.fresh () in
                 let s' = transform_command ctx s (Sub.add x x' h) in
@@ -722,7 +722,7 @@ module Transform = struct
     (* Generic fallback - must be at a type variable *)
     | CTm.Cut (ty, lhs, rhs) ->
         (match ty with
-        | CTy.TVar tvar ->
+          CTy.TVar tvar ->
             bind_term ctx lhs h (fun i lhs_v ->
               bind_term ctx rhs (Sub.compose h i) (fun _j rhs_v ->
                 Target.CutTyped (tvar, lhs_v, rhs_v)))
@@ -732,7 +732,7 @@ module Transform = struct
   and transform_cut_forall (ctx: focus_ctx) (_a: Ident.t) (k_ty: CTy.typ) (body_ty: CTy.typ)
       (lhs: CTm.term) (rhs: CTm.term) (h: Sub.t) : Target.command =
     match lhs, rhs with
-    | CTm.Var x, CTm.Var y ->
+      CTm.Var x, CTm.Var y ->
         let a' = Ident.fresh () in
         Target.CutNewForall (a', k_ty, body_ty,
           Target.CutInstantiate (a', k_ty, body_ty, Sub.apply h x),
@@ -777,7 +777,7 @@ module Collapse = struct
     (xtor, ty_vars, tm_vars, collapse_command ctx parity body)
 
   and collapse_command (ctx: focus_ctx) (parity: bool) : Target.command -> FTm.command = function
-    | Target.LetCtor (dec, c, args, x, cont) ->
+      Target.LetCtor (dec, c, args, x, cont) ->
         FTm.Let (x, collapse_dec ctx dec, c, args, collapse_command ctx parity cont)
     | Target.LetDtor (dec, c, args, a, cont) ->
         FTm.Let (a, collapse_dec ctx dec, c, args, collapse_command ctx parity cont)

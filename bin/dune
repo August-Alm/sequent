@@ -1,44 +1,4 @@
 (executables
- (names test_parsing test_simple test_pcf test_melcore test_pipeline)
+ (names test_pipeline)
  (libraries sequent lang)
  (flags (:standard -w -27)))
-
-(executable (name debug_checked_simple) (libraries sequent))
-
-(executable (name debug_identity) (libraries sequent))
-
-(executable (name debug_higherorder) (libraries sequent))
-
-(executable (name debug_test19) (libraries sequent))
-
-(executable (name trace_test19) (libraries sequent lang))
-
-(executable (name test_hr) (libraries sequent))
-
-(executable (name test24_trace) (libraries sequent))
-
-(executable (name test22_trace) (libraries sequent))
-
-(executable (name test25_trace) (libraries sequent))
-
-(executable (name test_vec_debug) (libraries sequent))
-
-(executable (name test_cons_tail) (libraries sequent))
-
-(executable (name test_replicate_trace) (libraries sequent))
-
-(executable (name test_depth) (libraries sequent))
-
-(executable (name test_to_int) (libraries sequent))
-
-(executable (name test_compare) (libraries sequent))
-
-(executable (name test25_only) (libraries sequent lang) (flags (:standard -w -27)))
-
-(executable (name test25_simple) (libraries sequent lang) (flags (:standard -w -27)))
-
-(executable (name debug_axil) (libraries sequent) (flags (:standard -w -27)))
-
-(executable (name debug_load) (libraries sequent) (flags (:standard -w -27)))
-
-(executable (name debug_load2) (libraries sequent) (flags (:standard -w -27)))

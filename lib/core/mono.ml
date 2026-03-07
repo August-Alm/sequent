@@ -147,9 +147,9 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
       let forall_param_flows = group_flows_by (String.ends_with ~suffix:".forall_param") flows in
       
       (* For each forall_param flow, check if there's a matching mono_info.
-         If not, generate an inline For-codata for that higher-rank parameter.
-         When checking mono_infos, we EXCLUDE the definition that CONTAINS the 
-         parameter - a definition's For type cannot be used for its own params. *)
+        If not, generate an inline For-codata for that higher-rank parameter.
+        When checking mono_infos, we exclude the definition that contains the 
+        parameter - a definition's For type cannot be used for its own params. *)
       let inline_for_codatas: (dec * instantiation list) Path.tbl =
         Path.to_list forall_param_flows |> List.filter_map (fun (param_path, forall_types) ->
           let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
@@ -173,12 +173,12 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
           else begin
             (* Generate an inline For-codata for this higher-rank parameter.
                
-               For a higher-rank param like f: {c} c -> c, the destructor needs:
-               - arg: Prd inst_typ (the argument being passed)
-               - cont: Cns inst_typ (the continuation for the result)
-               
-               This matches the transform pattern:
-               f{T}(x) → ⟨f | inst_T(x, k)⟩ where k is the result continuation *)
+              For a higher-rank param like f: {c} c -> c, the destructor needs:
+              - arg: Prd inst_typ (the argument being passed)
+              - cont: Cns inst_typ (the continuation for the result)
+              
+              This matches the transform pattern:
+              f{T}(x) → ⟨f | inst_T(x, k)⟩ where k is the result continuation *)
             let codata_name = fresh_inline_for_name () in
             let codata_typ = Sgn (codata_name, []) in
             (* Sort the types to ensure consistent ordering between declaration and usage *)
@@ -206,8 +206,8 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
       in
       
       (* Build forall_to_for mapping: for each higher-rank parameter of a definition,
-         find which mono_info or inline For-codata has matching instantiation types.
-         Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
+        find which mono_info or inline For-codata has matching instantiation types.
+        Returns (dec, insts, is_inline) where is_inline=true means it came from inline_for_codatas. *)
       let build_forall_to_for mono_infos_tbl (def: T.definition): (dec * instantiation list * bool) Ident.tbl =
         List.fold_left (fun acc (param_var, param_ty) ->
           let ty = strip_chirality param_ty in
@@ -216,7 +216,7 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
             match Path.find_opt param_path forall_param_flows with
               Some forall_types ->
                 let forall_insts = List.sort compare (List.map (fun t -> [t]) forall_types) in
-                (* First check mono_infos, EXCLUDING the current definition *)
+                (* First check mono_infos, excluding the current definition *)
                 let matching_info = Path.to_list mono_infos_tbl |> List.find_opt (fun (path, info) ->
                   not (Path.equal path def.path) &&  (* Exclude self *)
                   List.sort compare info.instantiations = forall_insts

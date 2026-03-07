@@ -37,10 +37,10 @@ main_defs:
 (* ===== KINDS ===== *)
 
 (* Kinds support:
-   - type (the base kind)
-   - k1 -> k2 (arrow kinds)
-   - name (promoted data type, e.g., nat)
-   - name(k1)...(kN) (promoted constructor or data type applied to kind args)
+  - type (the base kind)
+  - k1 -> k2 (arrow kinds)
+  - name (promoted data type, e.g., nat)
+  - name(k1)...(kN) (promoted constructor or data type applied to kind args)
 *)
 
 kind:

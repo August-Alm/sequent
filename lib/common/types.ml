@@ -95,11 +95,11 @@ module TypeSystem(Base: BASE) = struct
 
   (* Declaration 
      
-     An instantiated declaration has:
-     - param_kinds = [] (no more parameters to bind)
-     - type_args = the types that were substituted for parameters
-     
-     For example, lower[Int] has name=lower, param_kinds=[], type_args=[Int].
+    An instantiated declaration has:
+    - param_kinds = [] (no more parameters to bind)
+    - type_args = the types that were substituted for parameters
+    
+    For example, lower[Int] has name=lower, param_kinds=[], type_args=[Int].
   *)
   type dec =
     { name: Path.t
@@ -510,30 +510,20 @@ module TypeSystem(Base: BASE) = struct
     ) d.xtors
 
   (** Instantiate a declaration with concrete type arguments.
-      
-      Given a declaration like:
-        data List[a: +] where
-          Nil : List[a]
-          Cons(hd: Prd a, tl: Prd List[a]) : List[a]
-      
-      And type arguments [Int], produces:
-        data List where
-          Nil : List
-          Cons(hd: Prd Int, tl: Prd List) : List
-      
-      Also filters xtors to only those that are reachable at this instantiation.
+      Filters xtors to only those that are reachable at this instantiation.
       For example, if we have a GADT:
-        data Expr[a: +] where
-          IntLit(n: Prd Int) : Expr[Int]
-          BoolLit(b: Prd Bool) : Expr[Bool]
+
+        data Expr: + -> + where
+          IntLit(n: Prd Int) : Expr(Int)
+          BoolLit(b: Prd Bool) : Expr(Bool)
       
-      Then instantiate_dec expr_dec [Int] would only include IntLit.
+      Then instantiate_dec expr_dec (Int)  would only include IntLit.
   *)
   let instantiate_dec (dec: dec) (type_args: typ list) : dec =
     (* Collect all TMeta identifiers in a type *)
     let rec collect_metas acc t =
       match t with
-      | TMeta m -> m :: acc
+        TMeta m -> m :: acc
       | TVar _ | Base _ | Ext _ -> acc
       | Arrow (t1, t2) -> collect_metas (collect_metas acc t1) t2
       | Sgn (_, args) -> List.fold_left collect_metas acc args
@@ -626,8 +616,8 @@ module TypeSystem(Base: BASE) = struct
   (* Primitives *)
 
   (* fun[a, b] is the negative (codata) function type.
-     apply destructor takes: (continuation: Cns b, arg: Prd a)
-     Order: [Cns b; Prd a] = [continuation; argument] *)
+    apply destructor takes: (continuation: Cns b, arg: Prd a)
+    Order: [Cns b; Prd a] = [continuation; argument] *)
   let apply_xtor =
     let a = Ident.mk "a" in
     let b = Ident.mk "b" in

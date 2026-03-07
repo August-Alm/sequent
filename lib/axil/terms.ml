@@ -491,11 +491,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
     : unit check_result =
   match cmd with
   (* let v = m(xi's); s
-     
-     Γ, Γ0 ⊢ let v = m(Γ0); s  where Γ, v : prd T ⊢ s
-     
-     ORDERED: Γ0 is the prefix (head) of context.
-     Consume Γ0 from prefix, check body with v prepended to remaining Γ. *)
+    
+    Γ, Γ0 ⊢ let v = m(Γ0); s  where Γ, v : prd T ⊢ s
+    
+    ORDERED: Γ0 is the prefix (head) of context.
+    Consume Γ0 from prefix, check body with v prepended to remaining Γ. *)
     Let (v, dec, xtor_name, term_vars, body) ->
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
@@ -518,11 +518,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* switch v {...}
      
-     Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ...}
-     where each branch: Γ, Γi ⊢ si
-     
-     ORDERED: v is at head of context.
-     Consume v, each branch gets Γi prepended to Γ. *)
+    Γ, v : prd T ⊢ switch v {m1(Γ1) ⇒ s1, ...}
+    where each branch: Γ, Γi ⊢ si
+    
+    ORDERED: v is at head of context.
+    Consume v, each branch gets Γi prepended to Γ. *)
   | Switch (v, dec, branches) ->
       (* ORDERED: Consume v from head *)
       let* (v_ct, tail_ctx) = consume_head_var ctx v in
@@ -542,11 +542,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* new v = (Γ0){...}; s
      
-     Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ...}; s
-     where each branch: Γ0, Γ1 ⊢ si  (captured @ args, Idris pattern)
-     and continuation: Γ, v : cns T ⊢ s
-     
-     ORDERED (Idris pattern): Methods get Γ0 (captured) at head, Γi (args) at tail. *)
+    Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ...}; s
+    where each branch: Γ0, Γ1 ⊢ si  (captured @ args, Idris pattern)
+    and continuation: Γ, v : cns T ⊢ s
+    
+    ORDERED (Idris pattern): Methods get Γ0 (captured) at head, Γi (args) at tail. *)
   | New (v, dec, branches, body) ->
       (* Check methods with captured context at head, args at tail *)
       let* _ =
@@ -557,11 +557,11 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       check_command (prepend ctx v v_typ) subs body
 
   (* invoke v m(xi's)
-     
-     v : cns T, Γ ⊢ invoke v m(Γ)
-     
-     ORDERED (Idris pattern): v is at head, Γ (method args) follows.
-     Consume v from head, then consume args Γ. *)
+    
+    v : cns T, Γ ⊢ invoke v m(Γ)
+    
+    ORDERED (Idris pattern): v is at head, Γ (method args) follows.
+    Consume v from head, then consume args Γ. *)
   | Invoke (v, dec, xtor_name, term_vars) ->
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
@@ -582,12 +582,12 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               Ok ()))
 
   (* substitute [v'₁ → v₁, ...]; s
-     The only place where weakening, contraction, and exchange can occur.
-     Creates a new ordered context Γ' with the substituted bindings for s. *)
+    The only place where weakening, contraction, and exchange can occur.
+    Creates a new ordered context Γ' with the substituted bindings for s. *)
   | Substitute (mapping, body) ->
       (* Build new ordered context from the substitution mapping.
-         Each (v', v) means: take type of v from current ctx, bind as v' in new ctx.
-         The order of mapping determines the order of the new context. *)
+        Each (v', v) means: take type of v from current ctx, bind as v' in new ctx.
+        The order of mapping determines the order of the new context. *)
       let* new_bindings = List.fold_left (fun acc (v', v) ->
         let* bindings = acc in
         let* ct = lookup_var ctx v in
@@ -598,8 +598,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
     (* jump l(args)
        
-       Θ(l) = Γ means the current context must exactly match the label's expected context.
-       ORDERED: args must match def.term_params in order. *)
+      Θ(l) = Γ means the current context must exactly match the label's expected context.
+      ORDERED: args must match def.term_params in order. *)
   | Jump (label, args) ->
       let* def = lookup_def ctx label in
       if List.length args <> List.length def.term_params then
@@ -715,15 +715,15 @@ and check_bindings_against_types
         | Some subs' ->
             (* Also check chirality matches *)
             (match exp_ct, got_ct with
-              Prd _, Prd _ | Cns _, Cns _ ->
-                check subs' bs es
+              Prd _, Prd _ | Cns _, Cns _ -> check subs' bs es
             | _ ->
                 Error (ChiralityMismatch
                 { expected_chirality =
                     (match exp_ct with Prd _ -> `Prd | Cns _ -> `Cns)
                 ; actual = got_ct
                 })))
-    | _ -> Error (ArityMismatch { expected = List.length expected; got = List.length bindings })
+    | _ ->
+      Error (ArityMismatch { expected = List.length expected; got = List.length bindings })
   in
   check subs bindings expected
 

@@ -37,7 +37,7 @@ let keyword_table =
 (* Main lexer function *)
 let rec token lexbuf =
   match%sedlex lexbuf with
-  | whitespace -> token lexbuf
+    whitespace -> token lexbuf
   | "(*" -> comment lexbuf; token lexbuf
   | "---" -> line_comment lexbuf; token lexbuf
   | "->" -> ARROW
@@ -74,7 +74,7 @@ let rec token lexbuf =
 (* Handle nested comments *)
 and comment lexbuf =
   match%sedlex lexbuf with
-  | "(*" -> comment lexbuf; comment lexbuf
+    "(*" -> comment lexbuf; comment lexbuf
   | "*)" -> ()
   | eof -> failwith "Unterminated comment"
   | any -> comment lexbuf
@@ -83,7 +83,7 @@ and comment lexbuf =
 (* Handle line comments *)
 and line_comment lexbuf =
   match%sedlex lexbuf with
-  | '\n' -> ()
+    '\n' -> ()
   | eof -> ()
   | any -> line_comment lexbuf
   | _ -> ()

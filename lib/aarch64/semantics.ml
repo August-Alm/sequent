@@ -28,7 +28,7 @@ let set (regs: int array) (r: Register.t) (v: int) : unit =
     Labels don't count toward address; each real instruction is 4 bytes. *)
 let rec fetch_at (code: code list) (counter: int) : code =
   match code with
-  | [] -> failwith ("jumped beyond instructions " ^ string_of_int counter)
+    [] -> failwith ("jumped beyond instructions " ^ string_of_int counter)
   | LAB _ :: rest -> fetch_at rest counter
   | instr :: _ when counter = 0 -> instr
   | _ :: rest when counter >= 4 -> fetch_at rest (counter - 4)
@@ -39,7 +39,7 @@ let fetch_at_debug (code: code list) (counter: int) : code =
   let original = counter in
   let rec aux code cnt =
     match code with
-    | [] -> failwith (Printf.sprintf "jumped beyond instructions (original PC=%d, remaining=%d)" original cnt)
+      [] -> failwith (Printf.sprintf "jumped beyond instructions (original PC=%d, remaining=%d)" original cnt)
     | LAB _ :: rest -> aux rest cnt
     | instr :: _ when cnt = 0 -> instr
     | _ :: rest when cnt >= 4 -> aux rest (cnt - 4)
@@ -52,7 +52,7 @@ let get_counter (code: code list) (label: string) : int =
   let label = if label = "cleanup" then "lab0" else label in
   let rec aux code acc =
     match code with
-    | [] -> failwith ("label " ^ label ^ " not found")
+      [] -> failwith ("label " ^ label ^ " not found")
     | LAB l :: rest -> 
         if l = label then acc 
         else aux rest acc
@@ -146,10 +146,11 @@ let step (st: state) (mem_ref: int array ref) : state =
       let sign1 = comparee1 < 0 in
       let sign_result = result < 0 in
       { st with 
-        counter = st.counter + 4;
-        o_flag = sign1 <> sign_result;
-        s_flag = sign_result;
-        z_flag = result = 0 }
+        counter = st.counter + 4
+      ; o_flag = sign1 <> sign_result
+      ; s_flag = sign_result
+      ; z_flag = result = 0
+      }
   
   | CMPI (rs, imm) ->
       let comparee = get st.registers rs in
@@ -157,10 +158,11 @@ let step (st: state) (mem_ref: int array ref) : state =
       let sign_cmp = comparee < 0 in
       let sign_result = result < 0 in
       { st with 
-        counter = st.counter + 4;
-        o_flag = sign_cmp <> sign_result;
-        s_flag = sign_result;
-        z_flag = result = 0 }
+        counter = st.counter + 4
+      ; o_flag = sign_cmp <> sign_result
+      ; s_flag = sign_result
+      ; z_flag = result = 0
+      }
   
   | BEQ label ->
       if st.z_flag 
@@ -178,16 +180,19 @@ let step (st: state) (mem_ref: int array ref) : state =
 let initial (code: code list) : state =
   let regs = Array.make 31 0 in
   (* x0 = heap pointer, x1 = free list pointer 
-     Each block needs 144 bytes (18 words × 8 bytes each):
-     - offset 0: ref_count/next_element
-     - offset 8: code_pointer (for int consumers)
-     - offsets 16-143: 8 fields × 2 words × 8 bytes
-     We need multiple blocks, so space them 144 bytes apart. *)
+    Each block needs 144 bytes (18 words × 8 bytes each):
+    - offset 0: ref_count/next_element
+    - offset 8: code_pointer (for int consumers)
+    - offsets 16-143: 8 fields × 2 words × 8 bytes
+    We need multiple blocks, so space them 144 bytes apart. *)
   let block_size = 144 in
   regs.(0) <- 64;                    (* heap starts at first block *)
   regs.(1) <- 64 + block_size;       (* free list starts at second block *)
-  { code; counter = 0; registers = regs; 
-    memory = Array.make (64 + 10 * block_size) 0; o_flag = false; s_flag = false; z_flag = false }
+  { code; counter = 0
+  ; registers = regs
+  ; memory = Array.make (64 + 10 * block_size) 0
+  ; o_flag = false; s_flag = false; z_flag = false
+  }
 
 (** Run until counter returns to 0 (cleanup jumped to lab0) *)
 let run ?(max_steps=10000) (st: state) : int array =

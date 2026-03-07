@@ -14,7 +14,7 @@ type sym = Path.t
 
 type command =
   (* ⟨producer | consumer⟩ at type *)
-  | Cut of typ * term * term
+    Cut of typ * term * term
   (* Call a defined function with type and term args *)
   | Call of sym * typ list * term list
   | Add of term * term * term
@@ -165,7 +165,7 @@ let bind_xtor_term_args (ctx: context) (arg_types: chiral_typ list) (vars: var l
 
 (** Check that actual arguments match xtor's declared chiralities with unification *)
 let rec simple_typ_str = function
-  | TVar v -> Ident.name v
+    TVar v -> Ident.name v
   | TMeta m -> "?" ^ Ident.name m
   | Sgn (p, args) -> Path.name p ^ "(" ^ String.concat ", " (List.map simple_typ_str args) ^ ")"
   | Forall (v, _, body) -> "∀" ^ Ident.name v ^ ". " ^ simple_typ_str body
@@ -307,7 +307,7 @@ let check_branch
         in
         
         (* Unify xtor's main type with the scrutinee type (using metas).
-           The xtor.main in instantiated decs already has quantified vars resolved. *)
+          The xtor.main in instantiated decs already has quantified vars resolved. *)
         let scrutinee_type = Sgn (dec.name, meta_type_args) in
         let branch_subs = match unify xtor.main scrutinee_type subs with
             Some s -> s
@@ -315,20 +315,20 @@ let check_branch
         in
         
         (* For GADT refinement: convert TVars in the command to their corresponding metas.
-           This is crucial: the command may contain types like vec(a, n) where n is a TVar.
-           After unification, branch_subs has ?m = zero. But apply_subst doesn't substitute
-           TVars, only TMetas. So we use apply_fresh_subst to convert vec(a, TVar n) →
-           vec(a, TMeta ?m), which then unifies correctly via apply_subst. *)
+          This is crucial: the command may contain types like vec(a, n) where n is a TVar.
+          After unification, branch_subs has ?m = zero. But apply_subst doesn't substitute
+          TVars, only TMetas. So we use apply_fresh_subst to convert vec(a, TVar n) →
+          vec(a, TMeta ?m), which then unifies correctly via apply_subst. *)
         let tvar_to_meta = List.fold_left (fun s (orig_var, meta_var) ->
           Ident.add orig_var (TMeta meta_var) s
         ) Ident.emptytbl fresh_metas in
         let refined_cmd = refine_cmd_types tvar_to_meta cmd in
         (* Also refine the context: variables from outer scope have TVars that need to be
-           converted to the same TMetas, so apply_subst can resolve GADT refinements *)
+          converted to the same TMetas, so apply_subst can resolve GADT refinements *)
         let refined_ctx = refine_context tvar_to_meta ctx in
         
         (* Substitute user-provided type variable names for existentials.
-           Don't freshen - the user's type vars are the "fresh" names for this branch. *)
+          Don't freshen - the user's type vars are the "fresh" names for this branch. *)
         let exist_subst =
           List.fold_left2 (fun s (old_v, _) new_v ->
             Ident.add old_v (TVar new_v) s
@@ -462,15 +462,15 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       Ok (Cns ty, subs)
   | NewForall (a, k, body_ty, cont, cmd) ->
       (* NewForall ~ comatch { instantiate[a: k](cont) => cmd }
-         Binds type var a : k and term var cont : Cns body_ty
-         Produces Prd (Forall a k body_ty) *)
+        Binds type var a: k and term var cont: cns body_ty
+        Produces Prd (Forall a k body_ty) *)
       let ctx' = extend_tyvar ctx a k in
       let ctx'' = extend ctx' cont (Cns body_ty) in
       let* _ = check_command ctx'' subs cmd in
       Ok (Prd (Forall (a, k, body_ty)), subs)
   | InstantiateDtor ty_arg ->
       (* instantiate destructor: given a type argument, consumes Forall
-         We need a fresh meta for the quantified kind and body *)
+        We need a fresh meta for the quantified kind and body *)
       let a = Ident.fresh () in
       let k = TMeta (Ident.fresh ()) in
       let body = TMeta (Ident.fresh ()) in

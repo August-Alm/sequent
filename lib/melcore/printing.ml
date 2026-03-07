@@ -200,7 +200,7 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   
   | Lam (x, ty_opt, body) ->
       let ty_str = match ty_opt with
-        | None -> pp_ident x
+          None -> pp_ident x
         | Some ty -> parens (pp_ident x ^ ": " ^ pp_typ ~cfg ty)
       in
       "fun " ^ ty_str ^ " => " ^ pp_term ~cfg ~lvl body
@@ -225,8 +225,7 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   
   | New (ty_opt, branches) ->
       let ty_str = match ty_opt with
-        | None -> ""
-        | Some ty -> " " ^ pp_typ_atom ~cfg ty
+          None -> "" | Some ty -> " " ^ pp_typ_atom ~cfg ty
       in
       let branches_str =
         branches
@@ -412,7 +411,7 @@ let typed_term_def_to_string = pp_typed_term_def ~cfg:default_config
 (** Pretty-print a kind error *)
 let pp_kind_error ?(cfg=default_config) (err: Types.MelcoreTypes.kind_error) : string =
   match err with
-  | Unbound_type_variable v ->
+    Unbound_type_variable v ->
       "unbound type variable: " ^ pp_ident v
   | Unbound_meta_variable v ->
       "unbound meta variable: ?" ^ pp_ident v
@@ -430,8 +429,7 @@ let pp_kind_error ?(cfg=default_config) (err: Types.MelcoreTypes.kind_error) : s
       ", got " ^ pp_kind ~cfg actual
   | Arity_mismatch { kind; num_args } ->
       let kind_str = match kind with
-        | Some k -> pp_kind ~cfg k
-        | None -> "<unknown>"
+          Some k -> pp_kind ~cfg k | None -> "<unknown>"
       in
       "arity mismatch: kind " ^ kind_str ^
       " applied to " ^ string_of_int num_args ^ " arguments"
@@ -449,7 +447,7 @@ let kind_error_to_string = pp_kind_error ~cfg:default_config
 (** Pretty-print a type check error *)
 let pp_check_error ?(cfg=default_config) (err: check_error) : string =
   match err with
-  | UnboundVariable v ->
+    UnboundVariable v ->
       "unbound variable: " ^ pp_ident v
   | UnboundSymbol s ->
       "unbound symbol: " ^ pp_path s

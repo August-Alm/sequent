@@ -184,20 +184,20 @@ let step ((cmd, e): config) : config option =
         failwith (Printf.sprintf "switch: expected %s at head, got %s" 
           (Ident.name v) (Ident.name head_var));
       (match head_val with
-       | DataVal (m, e0) ->
-           let (_, _, params, branch_body) = select_branch m branches in
-           (* Bind branch params to values from captured e0 *)
-           let param_bindings = List.combine params (List.map snd e0) in
-           (* New env: params at head, then pushed e0 bindings, then E *)
-           let new_values = prepend param_bindings e_tail in
-           Some (branch_body, { e with values = new_values })
-       | IntVal n ->
-           (match branches with
-              [] -> failwith "switch on int with no branches"
-            | (_, _, params, branch_body) :: _ ->
-                let new_values = push e_tail (List.hd params) (IntVal n) in
-                Some (branch_body, { e with values = new_values }))
-       | _ -> failwith "switch: expected data value at head")
+        DataVal (m, e0) ->
+          let (_, _, params, branch_body) = select_branch m branches in
+          (* Bind branch params to values from captured e0 *)
+          let param_bindings = List.combine params (List.map snd e0) in
+          (* New env: params at head, then pushed e0 bindings, then E *)
+          let new_values = prepend param_bindings e_tail in
+          Some (branch_body, { e with values = new_values })
+      | IntVal n ->
+          (match branches with
+            [] -> failwith "switch on int with no branches"
+          | (_, _, params, branch_body) :: _ ->
+              let new_values = push e_tail (List.hd params) (IntVal n) in
+              Some (branch_body, { e with values = new_values }))
+      | _ -> failwith "switch: expected data value at head")
 
   (* (invoke) ⟨invoke v m(args) ∥ [v, args..., E]⟩ → ⟨b(m) ∥ E0, params⟩
      Following Idris pattern: v at head, then args. Pop v first, then args. *)

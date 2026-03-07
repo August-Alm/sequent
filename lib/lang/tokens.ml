@@ -2,7 +2,7 @@
 
 type token =
   (* Keywords *)
-  | KW_FUN
+    KW_FUN
   | KW_LET
   | KW_IN
   | KW_MATCH
@@ -43,7 +43,7 @@ type token =
   | EOF
 
 let string_of_token = function
-  | KW_FUN -> "fun"
+    KW_FUN -> "fun"
   | KW_LET -> "let"
   | KW_IN -> "in"
   | KW_MATCH -> "match"

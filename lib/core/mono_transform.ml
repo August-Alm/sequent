@@ -141,8 +141,7 @@ let find_called_function_in_newforall (tvar: Ident.t) (cmd: T.command): Path.t o
       T.Call (path, type_args, _term_args) ->
         (* Check if one of the type args is our bound tvar *)
         let uses_tvar = List.exists (fun ty ->
-          match ty with
-            TVar v -> Ident.name v = Ident.name tvar | _ -> false
+          match ty with TVar v -> Ident.name v = Ident.name tvar | _ -> false
         ) type_args in
         if uses_tvar then Some path else None
     | T.Cut (_, producer, consumer) ->
@@ -256,13 +255,12 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
       Ok (T.Comatch (dec, branches'))
   | T.MuPrd (typ, var, cmd) ->
       (match match_higher_rank_application cmd with
-      | Some (f_var, inst_typ, arg, _result_k) 
+        Some (f_var, inst_typ, arg, _result_k) 
         when Ident.find_opt f_var ctx.forall_to_for <> None ->
           let (for_dec, instantiations, is_inline) = Ident.find f_var ctx.forall_to_for in
           let inst_garg = typ_to_ground_arg inst_typ in
           let idx_opt = List.find_index (fun inst ->
-            match inst with
-              [garg] -> garg = inst_garg | _ -> false
+            match inst with [garg] -> garg = inst_garg | _ -> false
           ) instantiations in
           (match idx_opt with
             Some idx ->
@@ -271,7 +269,8 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
               let* arg' = transform_term ctx arg in
               let dtor = T.Dtor (for_dec, dtor_path, [], [arg'; T.Var var]) in
               if is_inline then begin
-                (* Inline lambda case: f_var has type raise(For), need to unwrap before invoking destructor *)
+                (* Inline lambda case: f_var has type raise(For), need to unwrap
+                  before invoking destructor *)
                 let raise_for_typ = Sgn (Prim.raise_sym, [for_typ]) in
                 let g_var = Ident.mk "g" in
                 let raise_dec =
@@ -309,12 +308,12 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
       Ok (T.MuCns (typ, var, cmd'))
   | T.NewForall (tvar, _kind, body_typ, cont, cmd) ->
       (* A NewForall creates a polymorphic value. After monomorphization, this must
-         become a Comatch over a For-type. We find the monomorphized function that
-         the body calls and use its For-type.
-         
-         NewForall(a, k, body_typ, cont, cmd_with_call_f{a}(...))
-         becomes:
-         Comatch(f.For, [ inst_0(cont) => cmd[a:=T0], inst_1(cont) => cmd[a:=T1], ... ])
+        become a Comatch over a For-type. We find the monomorphized function that
+        the body calls and use its For-type.
+        
+        NewForall(a, k, body_typ, cont, cmd_with_call_f{a}(...))
+        becomes:
+        Comatch(f.For, [ inst_0(cont) => cmd[a:=T0], inst_1(cont) => cmd[a:=T1], ... ])
       *)
       let forall_path = Path.of_ident tvar in
       let inst_types = match Path.find_opt forall_path ctx.forall_flows with
@@ -341,7 +340,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
             ) ctx.inline_for_by_insts in
             
             let (inline_for, branch_inst_types) = match matching_inline with
-              | Some (dec, insts) -> 
+                Some (dec, insts) -> 
                   (* Use the declaration's instantiation order for branches *)
                   (dec, List.map (fun inst -> List.hd inst) insts)
               | None ->
@@ -352,10 +351,10 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
             in
             
             (* Create branches for each instantiation.
-               If using a pre-generated codata (for higher-rank param), it expects 2 args: (arg, cont).
-               - The lambda body produces raise(fun(T, T)), we need to unwrap, apply to arg, send result to cont
-               - Transform: ⟨raised_lambda | cont⟩ → ⟨raised_lambda | match raise { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩
-               If using a freshly generated codata, it expects 1 arg: (cont). *)
+              If using a pre-generated codata (for higher-rank param), it expects 2 args: (arg, cont).
+              - The lambda body produces raise(fun(T, T)), we need to unwrap, apply to arg, send result to cont
+              - Transform: ⟨raised_lambda | cont⟩ → ⟨raised_lambda | match raise { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩
+              If using a freshly generated codata, it expects 1 arg: (cont). *)
             let uses_pregenerated = matching_inline <> None in
             let arg_var = Ident.mk "arg" in
             
@@ -367,13 +366,13 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
               let dtor_name = dtor_name_for_inst inline_for.name idx in
               if uses_pregenerated then begin
                 (* For 2-arg case: wrap the command to apply the lambda to arg_var.
-                   The original cmd' is ⟨raised_lambda | cont⟩ where raised_lambda produces raise(fun(T, T)).
-                   We need to:
-                   1. Unwrap the raise to get the raw function
-                   2. Apply it to arg_var
-                   3. Send result to cont
-                   
-                   Result: ⟨raised_lambda | match raise{fun(T,T)} { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩ *)
+                  The original cmd' is ⟨raised_lambda | cont⟩ where raised_lambda produces raise(fun(T, T)).
+                  We need to:
+                  1. Unwrap the raise to get the raw function
+                  2. Apply it to arg_var
+                  3. Send result to cont
+                  
+                  Result: ⟨raised_lambda | match raise{fun(T,T)} { thunk(g) => ⟨g | apply(cont, arg)⟩ }⟩ *)
                 let fun_typ = Sgn (Prim.fun_sym, [inst_typ; inst_typ]) in
                 let raise_fun_typ = Sgn (Prim.raise_sym, [fun_typ]) in
                 let fun_dec = 

@@ -49,7 +49,7 @@ let pp_polarity (p: polarity) : string =
 
 let rec pp_kind ?(nested=false) (k: typ) : string =
   match k with
-  | Base p -> pp_polarity p
+    Base p -> pp_polarity p
   | Arrow (k1, k2) ->
       let inner = pp_kind ~nested:true k1 ^ " → " ^ pp_kind ~nested:false k2 in
       if nested then parens inner else inner
@@ -61,7 +61,7 @@ let rec pp_kind ?(nested=false) (k: typ) : string =
 
 and pp_typ ?(nested=false) (t: typ) : string =
   match t with
-  | Base p -> pp_polarity p
+    Base p -> pp_polarity p
   | Arrow (t1, t2) ->
       let inner = pp_typ ~nested:true t1 ^ " → " ^ pp_typ ~nested:false t2 in
       if nested then parens inner else inner
@@ -89,7 +89,7 @@ let typ_to_string (t: typ) : string = pp_typ ~nested:false t
 
 let pp_chiral_typ (ct: chiral_typ) : string =
   match ct with
-  | Prd t -> "prd(" ^ pp_typ t ^ ")"
+    Prd t -> "prd(" ^ pp_typ t ^ ")"
   | Cns t -> "cns(" ^ pp_typ t ^ ")"
 
 (* ========================================================================= *)
@@ -98,7 +98,7 @@ let pp_chiral_typ (ct: chiral_typ) : string =
 
 let rec pp_term ?(cfg=default_config) (tm: term) : string =
   match tm with
-  | Var v -> pp_var v
+    Var v -> pp_var v
   | Lit n -> string_of_int n
   
   | Ctor (dec, xtor, []) ->
@@ -144,18 +144,18 @@ let rec pp_term ?(cfg=default_config) (tm: term) : string =
 
 and pp_type_args (args: typ list) : string =
   match args with
-  | [] -> ""
+    [] -> ""
   | _ -> braces (comma_sep (List.map pp_typ args))
 
 and pp_branch ?(cfg=default_config) (n: int) ((xtor, ty_vars, tm_vars, cmd): branch) : string =
   let ty_vars_str = 
     match ty_vars with
-    | [] -> ""
+      [] -> ""
     | _ -> brackets (comma_sep (List.map pp_var ty_vars))
   in
   let tm_vars_str =
     match tm_vars with
-    | [] -> ""
+      [] -> ""
     | _ -> parens (comma_sep (List.map pp_var tm_vars))
   in
   let ind = indent n in
@@ -170,7 +170,7 @@ and pp_branches ?(cfg=default_config) (n: int) (branches: branch list) : string 
 
 and pp_command ?(cfg=default_config) ~(n: int) (cmd: command) : string =
   match cmd with
-  | Cut (t, producer, consumer) ->
+    Cut (t, producer, consumer) ->
       let ty_ann = if cfg.show_types then brackets (pp_typ t) else "" in
       angles (pp_term ~cfg producer ^ " | " ^ pp_term ~cfg consumer) ^ ty_ann
   
@@ -178,7 +178,7 @@ and pp_command ?(cfg=default_config) ~(n: int) (cmd: command) : string =
       let ty_args = pp_type_args type_args in
       let tm_args =
         match term_args with
-        | [] -> ""
+          [] -> ""
         | _ -> parens (comma_sep (List.map (pp_term ~cfg) term_args))
       in
       "call " ^ pp_sym path ^ ty_args ^ tm_args
@@ -209,14 +209,14 @@ and pp_command ?(cfg=default_config) ~(n: int) (cmd: command) : string =
 let pp_definition ?(cfg=default_config) (def: definition) : string =
   let ty_params_str =
     match def.type_params with
-    | [] -> ""
+      [] -> ""
     | ps ->
         let params = List.map (fun (v, k) -> pp_var v ^ ": " ^ pp_kind k) ps in
         braces (comma_sep params)
   in
   let tm_params_str =
     match def.term_params with
-    | [] -> ""
+      [] -> ""
     | ps ->
         let params = List.map (fun (v, ct) -> pp_var v ^ ": " ^ pp_chiral_typ ct) ps in
         parens (comma_sep params)
@@ -236,21 +236,21 @@ let pp_xtor ?(cfg=default_config) (n: int) (x: xtor) : string =
   let ind = indent n in
   let quantified_str =
     match x.quantified with
-    | [] -> ""
+      [] -> ""
     | qs ->
         let qs_str = List.map (fun (v, k) -> pp_var v ^ ": " ^ pp_kind k) qs in
         braces (comma_sep qs_str) ^ " "
   in
   let existentials_str =
     match x.existentials with
-    | [] -> ""
+      [] -> ""
     | es ->
         let es_str = List.map (fun (v, k) -> pp_var v ^ ": " ^ pp_kind k) es in
         "∃" ^ braces (comma_sep es_str) ^ " "
   in
   let args_str =
     match x.argument_types with
-    | [] -> ""
+      [] -> ""
     | args -> " → " ^ String.concat " → " (List.map pp_chiral_typ (List.rev args))
   in
   ind ^ pp_sym x.name ^ ": " ^ quantified_str ^ existentials_str ^ pp_typ x.main ^ args_str
@@ -259,14 +259,14 @@ let pp_dec ?(cfg=default_config) (dec: dec) : string =
   let result_kind = match dec.data_sort with Data -> "+" | Codata -> "-" in
   let kind_str =
     match dec.param_kinds with
-    | [] -> ""
+      [] -> ""
     | ks -> ": " ^ String.concat " → " (List.map pp_kind ks) ^ " → " ^ result_kind
   in
   let ty_args_str = pp_type_args dec.type_args in
   let header = pp_data_sort dec.data_sort ^ " " ^ pp_sym dec.name ^ ty_args_str ^ kind_str ^ " where" in
   let xtors_str =
     match dec.xtors with
-    | [] -> ""
+      [] -> ""
     | xs -> "\n" ^ String.concat "\n" (List.map (pp_xtor ~cfg 2) xs)
   in
   header ^ xtors_str
@@ -277,7 +277,7 @@ let pp_dec ?(cfg=default_config) (dec: dec) : string =
 
 let pp_check_error (err: Terms.check_error) : string =
   match err with
-  | Terms.UnboundVariable v ->
+    Terms.UnboundVariable v ->
       "unbound variable: " ^ pp_var v
   | Terms.UnboundDefinition p ->
       "unbound definition: " ^ Path.name p
@@ -348,7 +348,7 @@ let dec_to_string (dec: dec) : string =
 (** Pretty-print a ground argument *)
 let rec pp_ground_arg (arg: Mono_spec.ground_arg) : string =
   match arg with
-  | Mono_spec.GroundExt Int -> "int"
+    Mono_spec.GroundExt Int -> "int"
   | Mono_spec.GroundSgn (name, []) -> Path.name name
   | Mono_spec.GroundSgn (name, args) ->
       Path.name name ^ parens (comma_sep (List.map pp_ground_arg args))
@@ -359,7 +359,7 @@ let ground_arg_to_string (arg: Mono_spec.ground_arg) : string =
 (** Pretty-print a ground flow *)
 let pp_ground_flow (flow: Mono_spec.ground_flow) : string =
   let args_str = match flow.src with
-    | [] -> "()"
+      [] -> "()"
     | args -> parens (comma_sep (List.map pp_ground_arg args))
   in
   Path.name flow.dst ^ args_str
@@ -370,7 +370,7 @@ let ground_flow_to_string (flow: Mono_spec.ground_flow) : string =
 (** Pretty-print analysis result *)
 let pp_analysis_result (result: Mono_spec.analysis_result) : string =
   match result with
-  | Mono_spec.HasGrowingCycle cycle ->
+    Mono_spec.HasGrowingCycle cycle ->
       "growing cycle detected: " ^ 
       String.concat " → " (List.map (fun (p, i) -> 
         Path.name p ^ "[" ^ string_of_int i ^ "]"
@@ -389,7 +389,7 @@ let analysis_result_to_string (result: Mono_spec.analysis_result) : string =
 (** Pretty-print a monomorphization error *)
 let pp_mono_error (err: Mono.mono_error) : string =
   match err with
-  | Mono.GrowingCycle cycle ->
+    Mono.GrowingCycle cycle ->
       "growing cycle detected: " ^
       String.concat " → " (List.map (fun (p, i) ->
         Path.name p ^ "[" ^ string_of_int i ^ "]"

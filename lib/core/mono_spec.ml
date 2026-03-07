@@ -104,7 +104,7 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
         Ext ext -> MonoExt ext
       | TVar v ->
           (match Ident.find_opt v ctx.tparam_map with
-          | Some (def_path, idx) -> MonoVar (def_path, idx)
+            Some (def_path, idx) -> MonoVar (def_path, idx)
           | None -> 
               (* Free type variable - convert to a MonoSgn representing the variable *)
               MonoSgn (Path.of_ident v, []))
@@ -122,13 +122,13 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
       | Base pol ->
           (* Base polarities - convert to a MonoSgn for type identity *)
           let name = match pol with
-            | Types.CoreBase.Pos -> "+"
+              Types.CoreBase.Pos -> "+"
             | Types.CoreBase.Neg -> "-"
           in
           MonoSgn (Path.of_string name, [])
       | PromotedCtor (data_name, ctor_name, args) ->
           (* Promoted constructors - preserve for type-checking.
-             Convert to MonoSgn with a path like "'nat.zero" *)
+            Convert to MonoSgn with a path like "'nat.zero" *)
           let promoted_path = Path.of_string ("'" ^ Path.name data_name ^ "." ^ Path.name ctor_name) in
           MonoSgn (promoted_path, List.map convert args)
     in
@@ -154,7 +154,7 @@ let typ_has_free_tvar (t: typ): bool gen =
     Data kinds like `nat` (Sgn where name is in data_kinds) are NOT inhabitable. *)
 let rec is_inhabitable_kind (types_ctx: Types.CoreTypes.context) (k: typ): bool =
   match k with
-  | Base _ -> true                        (* type is inhabitable *)
+    Base _ -> true                        (* type is inhabitable *)
   | Arrow (_, result) -> is_inhabitable_kind types_ctx result  (* T -> type is inhabitable *)
   | Sgn (name, _) ->                      (* Check if this is a data kind *)
       (* If name is in data_kinds table, it's a promoted data type = uninhabitable *)
@@ -169,7 +169,7 @@ let rec is_inhabitable_kind (types_ctx: Types.CoreTypes.context) (k: typ): bool 
 (** Check if a type is a forall type (wrapped in raise) *)
 let rec is_forall_type (t: typ): bool =
   match t with
-  | Forall _ -> true
+    Forall _ -> true
   | Sgn (_, [arg]) -> is_forall_type arg  (* Check through raise wrapper *)
   | _ -> false
 
@@ -213,8 +213,8 @@ let rec generate_for_term (tm: Terms.term): unit gen =
   | Comatch (dec, branches) ->
       let+ () = iter dec.type_args generate_for_typ in
       (* For each branch, emit a Forward from destructor path to current def,
-         and bind branch type vars to the destructor's path so destructor
-         existential instantiations flow to the branch. *)
+        and bind branch type vars to the destructor's path so destructor
+        existential instantiations flow to the branch. *)
       iter branches (generate_for_comatch_branch dec)
   
   | MuPrd (_typ, _var, cmd) ->
@@ -350,7 +350,7 @@ and generate_for_command (cmd: Terms.command): unit gen =
         | None -> return ())
       in
       (* Check for NewForall being instantiated:
-         ⟨ Ctor(raise.thunk, [NewForall(a, ...)]) | ... InstantiateDtor(T) ... ⟩ *)
+         ⟨Ctor(raise.thunk, [NewForall(a, ...)]) | ... InstantiateDtor(T) ...⟩ *)
       let+ () =
         (match find_newforall_path producer with
           Some forall_path ->
@@ -384,8 +384,8 @@ and generate_for_command (cmd: Terms.command): unit gen =
   | Call (def_path, type_args, term_args) ->
       (* This is the key constraint generation site! *)
       (* Emit a flow: the type_args flow to the called definition,
-         but ONLY for type params with inhabitable kinds (e.g., `type`).
-         Data-kind params (like `k: nat`) don't need monomorphization. *)
+        but ONLY for type params with inhabitable kinds (e.g., `type`).
+        Data-kind params (like `k: nat`) don't need monomorphization. *)
       let+ ctx = get_context in
       (* Get the called definition to check parameter kinds *)
       let inhabitable_type_args = 
@@ -523,7 +523,7 @@ let bfs (start: node) (target: node) (graph: node -> node list option): node lis
         Some (List.rev (target :: visited))
     | (path, idx) :: rest ->
         match graph (path, idx) with
-        | None -> go visited rest
+          None -> go visited rest
         | Some neighbors ->
             let unvisited = List.filter (fun (p, i) ->
               not (List.exists (fun (v, j) -> Path.equal v p && i = j) visited)

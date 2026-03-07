@@ -1,39 +1,8 @@
+⟨x | α⟩_T ~ ⟨x | case {C1(Γ1) ⇒ ⟨C1(Γ1)| α⟩, ... }⟩ where data T {C1(Γ1), ... }
+⟨x | α⟩_T ~ ⟨cocase {D1(Γ1) ⇒ ⟨x | D1(Γ1)⟩, ... }| α⟩ where codata T {D1(Γ1), ...}
+
 ⟨C(Γ) | µ˜x.s ⟩                & ⟨µα.s |D(Γ)⟩                      → let v = m(Γ); s
 ⟨x | case {C(Γ) ⇒ s, ... }⟩    & ⟨cocase {D(Γ) ⇒ s, ... } | α⟩     → switch v {m(Γ) ⇒ s, ...}
 ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩ → new v = {m(Γ) ⇒ s, ...}; s
 ⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩                        → invoke v m(Γ)
 
-
-⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.⟨x | α⟩⟩
-
-new x = {m(Γ) ⇒ s, ...}; ⟨x | α⟩
-
-⟨x | α⟩_T ~ ⟨x | case {C1(Γ1) ⇒ ⟨C1(Γ1)| α⟩, ... }⟩ where data T {C1(Γ1), ... }
-⟨x | α⟩_T ~ ⟨cocase {D1(Γ1) ⇒ ⟨x | D1(Γ1)⟩, ... }| α⟩ where codata T {D1(Γ1), ...}
-
-I am a bit suspicious of the `close_ret` function logic (in file focused/return.ml).
-My thinking:
-
-Our monomorphization relies on tracing type instantiations from a "main" function.
-This function is required to return an integer, when viewed in the surface Melcore
-language; say we have
-
-let main(x1: t1)...(xN: tN) : int = body
-
-Once it is translated to Core, it takes the schematic form
-
-def main(x1: prd t1, ..., xN: prd tN, k: cns int) = ⟨body | k⟩
-
-The same basic schematic for is preserved by focusing. To execute this function
-we need to supply arguments, including a consumer `k`. However, we expect the
-fully compiled procedure to have just args = x1, ..., xN and to return an integer,
-following the C calling convention for main. Thus, instead of the present rather
-intricate `close_ret` handling, I think we should just do what amounts to:
-  
-(* `cmd` is the focusing of `⟨body | k⟩`
-  `new` is `NewInt` and `ret` is `Ret` at integer *)
-def main_c(x1: prd t1, ..., xN: prd tN) =
-  newInt k { (v) => ret v }; cmd
-
-Is this what `close_ret` is already doing (and I just don't understand it) or is
-it attempting to do something more intricate?

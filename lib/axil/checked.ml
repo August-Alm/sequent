@@ -22,11 +22,8 @@ type ctx = (var * chiral_typ) list
 type checked_branch =
   { xtor: Path.t
   ; type_vars: var list
-    (** Arguments with their types, derived from xtor *)
   ; args: (var * chiral_typ) list
-    (** Context for the branch body: args @ tail_ctx *)
   ; branch_ctx: ctx
-    (** Branch body *)
   ; body: checked_command
   }
 
@@ -271,16 +268,6 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
           Some x -> x
         | None -> failwith ("xtor not found in Invoke: " ^ Path.name xtor_name)
       in
-      (* Debug: print xtor info *)
-      let _pp_ct ct = match ct with 
-        | Prd (Ext _) -> "PrdExt" 
-        | Cns (Ext _) -> "CnsExt"
-        | Prd _ -> "Prd"
-        | Cns _ -> "Cns"
-      in
-      (* Printf.eprintf "Invoke check: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor_name) (Path.name dec.name);
-      Printf.eprintf "  xtor.argument_types: [%s]\n" (String.concat ", " (List.map pp_ct xtor.argument_types));
-      Printf.eprintf "  args: [%s]\n" (String.concat ", " (List.map Ident.name args)); *)
       (* Use xtor.argument_types for consistency with method loading *)
       let args_bindings = List.map2 (fun v ct -> (v, ct)) args xtor.argument_types in
       let v_typ = lookup_ctx_exn ctx v in
@@ -322,9 +309,7 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
 
   | NewInt (k, param, branch_body, cont_body) ->
       let k_ctx = (k, Cns (Ext Common.Types.Int)) :: ctx in
-      (* Method body context: ctx @ [param] matching Idris as ++ cs convention
-         where as = captured (ctx), cs = args ([param]).
-         Captured at HEAD (high registers), args at TAIL (low registers). *)
+      (* Captured at HEAD (high registers), args at TAIL (low registers). *)
       let param_ctx = ctx @ [(param, Prd (Ext Common.Types.Int))] in
       CNewInt
         { ctx
@@ -356,9 +341,7 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
   | End ->
       CEnd { ctx }
 
-(** Check branch for Switch (clause): body runs in args @ tail_ctx
-    This is the simpler layout - args at HEAD, tail at TAIL.
-    Existing tail_ctx variables don't need to move registers. *)
+(** Check branch for Switch (clause): body runs in args @ tail_ctx *)
 and check_clause (defs: definition Path.tbl) (dec: dec) (tail_ctx: ctx)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) 
     (body: command) : checked_branch =
@@ -370,9 +353,7 @@ and check_clause (defs: definition Path.tbl) (dec: dec) (tail_ctx: ctx)
     | None -> failwith ("xtor not found: " ^ Path.name xtor_name)
   in
   let args = List.map2 (fun v ct -> (v, ct)) term_vars xtor.argument_types in
-  (* For clauses: args @ tail_ctx
-     Load puts args at HEAD of context (higher registers).
-     tail_ctx remains at TAIL (lower registers, same positions). *)
+  (* For clauses: args @ tail_ctx *)
   let branch_ctx = args @ tail_ctx in
   { xtor = xtor_name
   ; type_vars
@@ -381,8 +362,7 @@ and check_clause (defs: definition Path.tbl) (dec: dec) (tail_ctx: ctx)
   ; body = check_cmd defs branch_ctx body
   }
 
-(** Check branch for New (method): body runs in args @ captured_ctx
-    Same layout as clauses: args at HEAD, captured at TAIL *)
+(** Check branch for New (method): body runs in args @ captured_ctx *)
 and check_method (defs: definition Path.tbl) (dec: dec) (captured_ctx: ctx)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) 
     (body: command) : checked_branch =
@@ -394,7 +374,7 @@ and check_method (defs: definition Path.tbl) (dec: dec) (captured_ctx: ctx)
     | None -> failwith ("xtor not found: " ^ Path.name xtor_name)
   in
   let args = List.map2 (fun v ct -> (v, ct)) term_vars xtor.argument_types in
-  (* Register layout: captured_ctx @ args (Idris pattern)
+  (* Register layout: captured_ctx @ args
      Args are at tail (lower pos_from_end, earlier registers).
      Captured env is at head (higher pos_from_end, later registers).
      This matches: codeMethod as cs -> load as cs where as=captured, cs=args *)

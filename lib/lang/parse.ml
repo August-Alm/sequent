@@ -7,7 +7,7 @@ let parse_expr_string s =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_expr provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum
@@ -20,7 +20,7 @@ let parse_typ_string s =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_typ provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum
@@ -33,7 +33,7 @@ let parse_expr_channel ch =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_expr provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum
@@ -46,7 +46,7 @@ let parse_typ_channel ch =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_typ provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum
@@ -59,7 +59,7 @@ let parse_defs_string s =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_defs provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum
@@ -72,7 +72,7 @@ let parse_defs_channel ch =
   try
     MenhirLib.Convert.Simplified.traditional2revised Parser.main_defs provider
   with
-  | Parser.Error ->
+    Parser.Error ->
       let (pos, _) = Sedlexing.lexing_positions lexbuf in
       failwith (Printf.sprintf "Parse error at line %d, column %d"
                   pos.Lexing.pos_lnum

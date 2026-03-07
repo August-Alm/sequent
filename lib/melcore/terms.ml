@@ -170,10 +170,10 @@ let rec normalize (tm: typed_term) : typed_term =
   (* First, normalize the head to expose any redexes *)
   match tm with
   (* Type instantiation: always reduce strongly *)
-  | TypedIns (f, ty_arg, k, result_ty) ->
+    TypedIns (f, ty_arg, k, result_ty) ->
       let f' = normalize f in
       (match f' with
-      | TypedAll ((tv, _k'), body, _forall_ty) ->
+        TypedAll ((tv, _k'), body, _forall_ty) ->
           (* (Λa. body){ty_arg} → body[ty_arg/a], then continue normalizing *)
           let sbs = Ident.add tv ty_arg Ident.emptytbl in
           let reduced = subst_type_in_typed_term sbs body in
@@ -190,7 +190,7 @@ let rec normalize (tm: typed_term) : typed_term =
   | TypedApp (f, arg, result_ty) ->
       let f' = normalize f in
       (match f' with
-      | TypedLam (x, _a, body, _fun_ty) ->
+        TypedLam (x, _a, body, _fun_ty) ->
           (* (λx. body) arg → body[arg/x], then continue normalizing *)
           let reduced = subst_term_in_typed_term x arg body in
           normalize reduced
@@ -207,7 +207,7 @@ let rec normalize (tm: typed_term) : typed_term =
   | TypedLet (x, t1, t2, ty) ->
       let t1' = normalize t1 in
       (match t1' with
-      | TypedLam _ | TypedAll _ | TypedInt _ ->
+        TypedLam _ | TypedAll _ | TypedInt _ ->
           (* Inline value and continue normalizing *)
           let inlined = subst_term_in_typed_term x t1' t2 in
           normalize inlined
@@ -248,10 +248,10 @@ and normalize_clause (xtor_name, ty_vars, tm_vars, body) =
     Used under lambdas where we want strong type reduction but WHNF for terms. *)
 and normalize_types_only (tm: typed_term) : typed_term =
   match tm with
-  | TypedIns (f, ty_arg, k, result_ty) ->
+    TypedIns (f, ty_arg, k, result_ty) ->
       let f' = normalize_types_only f in
       (match f' with
-      | TypedAll ((tv, _k'), body, _forall_ty) ->
+        TypedAll ((tv, _k'), body, _forall_ty) ->
           let sbs = Ident.add tv ty_arg Ident.emptytbl in
           let reduced = subst_type_in_typed_term sbs body in
           normalize_types_only reduced
@@ -318,7 +318,7 @@ let make_tc_context (type_defs: dec list) (term_defs: definitions) : tc_context 
      Fall back to add_dec if kind checking fails. *)
   let tyctx = List.fold_left (fun ctx dec ->
     match add_declaration ctx dec with
-    | Some ctx' -> ctx'
+      Some ctx' -> ctx'
     | None -> add_dec ctx dec  (* Fall back without kind checking *)
   ) empty_context type_defs in
   { tyctx; term_vars = Ident.emptytbl; defs = term_defs }
@@ -397,7 +397,7 @@ let unify_or_error
 let expect_fun (sbs: subst) (t: typ) : (typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
+    Sgn (s, [dom; cod]) when Path.equal s Common.Types.Prim.fun_sym ->
       Ok (dom, cod) 
   | TMeta _ ->
       (* Unify with fresh function type *)
@@ -412,7 +412,7 @@ let expect_forall (sbs: subst) (t: typ)
     : (Ident.t * typ * typ, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Forall (x, k, body) -> Ok (x, k, body)
+    Forall (x, k, body) -> Ok (x, k, body)
   | _ -> Error (ExpectedForall t')
 
 (** Check that a type is a data type (positive polarity) *)
@@ -420,7 +420,7 @@ let expect_data (ctx: tc_context) (sbs: subst) (t: typ)
     : (dec * typ list, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Sgn (name, args) ->
+    Sgn (name, args) ->
       let* dec = lookup_dec ctx name in
       if dec.data_sort = Data then Ok (dec, args)
       else Error (ExpectedData t')
@@ -431,7 +431,7 @@ let expect_codata (ctx: tc_context) (sbs: subst) (t: typ)
     : (dec * typ list, check_error) result =
   let t' = apply_subst sbs t in
   match t' with
-  | Sgn (name, args) ->
+    Sgn (name, args) ->
       let* dec = lookup_dec ctx name in
       if dec.data_sort = Codata then Ok (dec, args)
       else Error (ExpectedCodata t')
@@ -525,7 +525,7 @@ let instantiate_ctor (xtor: xtor) (type_args: typ list)
 let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
     : (typed_term * typ * subst, check_error) result =
   match tm with
-  | Int n -> Ok (TypedInt n, Ext Int, sbs)
+    Int n -> Ok (TypedInt n, Ext Int, sbs)
 
   | Add (t, u) ->
       let* (t', _, sbs) = check ctx sbs t (Ext Int) in
@@ -638,7 +638,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
   | Ctor (dec_name, xtor_name, type_args, term_args) ->
       let* dec = lookup_dec ctx dec_name in
       (match find_xtor dec xtor_name with
-      | None -> Error (UnboundXtor (dec_name, xtor_name))
+        None -> Error (UnboundXtor (dec_name, xtor_name))
       | Some xtor ->
           (* For constructor calls, type_args includes both quantified AND existential args *)
           let expected_ty_args = List.length xtor.quantified + List.length xtor.existentials in
@@ -660,7 +660,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
   | Dtor (dec_name, xtor_name, type_args, term_args) ->
       let* dec = lookup_dec ctx dec_name in
       (match find_xtor dec xtor_name with
-      | None -> Error (UnboundXtor (dec_name, xtor_name))
+        None -> Error (UnboundXtor (dec_name, xtor_name))
       | Some xtor ->
           (* For destructor calls, type_args includes both quantified AND existential args *)
           let expected_ty_args = List.length xtor.quantified + List.length xtor.existentials in
@@ -680,7 +680,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
                Result type = arg0 = head of argument_types *)
             let inst_args, inst_main = instantiate_dtor xtor type_args in
             let (result_ty, regular_args) = match inst_args with
-              | [] -> (inst_main, [])  (* No arguments - result is main *)
+                [] -> (inst_main, [])  (* No arguments - result is main *)
               | arg0 :: rest -> (arg0, List.rev rest)
             in
             let expected_term_types = inst_main :: regular_args in
@@ -697,7 +697,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
 and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
     : (typed_term * typ * subst, check_error) result =
   match tm with
-  | Lam (x, None, body) ->
+    Lam (x, None, body) ->
       (* Check lambda against function type *)
       let* (dom, cod) = expect_fun sbs expected in
       let ctx' = extend_var ctx x dom in
@@ -747,7 +747,7 @@ and check_args (ctx: tc_context) (sbs: subst) (expected: typ list) (args: term l
     : (typed_term list * subst, check_error) result =
   let rec go sbs acc expected args =
     match expected, args with
-    | [], [] -> Ok (List.rev acc, sbs)
+      [], [] -> Ok (List.rev acc, sbs)
     | exp :: exps, arg :: args ->
         let* (arg', _, sbs) = check ctx sbs arg exp in
         go sbs (arg' :: acc) exps args
@@ -760,10 +760,10 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
     (type_args: typ list) (branches: branch list) (result_ty: typ)
     : (typed_clause list * subst, check_error) result =
   let rec go sbs acc = function
-    | [] -> Ok (List.rev acc, sbs)
+      [] -> Ok (List.rev acc, sbs)
     | (xtor_name, ty_vars, tm_vars, body) :: rest ->
         (match find_xtor dec xtor_name with
-        | None -> Error (UnboundXtor (dec.name, xtor_name))
+          None -> Error (UnboundXtor (dec.name, xtor_name))
         | Some xtor ->
             (* Check arity: ty_vars bind ALL type params (quantified + existential) *)
             let expected_ty_vars = List.length xtor.quantified + List.length xtor.existentials in
@@ -779,13 +779,13 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 ; got = List.length tm_vars })
             else
               (* For GADT refinement: convert rigid type variables in scrutinee type to
-                 fresh metas, so they can be unified with constructor result types.
-                 This enables patterns like nil: vec(a)(zero) to refine k to zero when
-                 matching against vec(a)(k). Fresh metas are created per-branch. *)
+                fresh metas, so they can be unified with constructor result types.
+                This enables patterns like nil: vec(a)(zero) to refine k to zero when
+                matching against vec(a)(k). Fresh metas are created per-branch. *)
               let (fresh_metas, meta_type_args) =
                 List.fold_right (fun ty (metas, args) ->
                   match apply_subst sbs ty with
-                  | TVar v ->
+                    TVar v ->
                       let m = Ident.mk (Ident.name v) in
                       ((v, m) :: metas, TMeta m :: args)
                   | other -> (metas, other :: args)
@@ -793,21 +793,21 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
               in
               
               (* For pattern matching, we freshen all type params rather than
-                 substituting with known types. Pass [] to trigger freshening. *)
+                substituting with known types. Pass [] to trigger freshening. *)
               let fresh_exist, inst_args, inst_main = instantiate_xtor xtor [] in
 
               (* Unify the xtor's main type with the scrutinee type (using metas).
-                 This determines what the quantified vars should be.
-                 For GADT: nil's main is vec(?a)(zero), unified with vec(?a')(?k')
-                 produces ?k' = zero, enabling type refinement. *)
+                This determines what the quantified vars should be.
+                For GADT: nil's main is vec(?a)(zero), unified with vec(?a')(?k')
+                produces ?k' = zero, enabling type refinement. *)
               let* branch_sbs = unify_or_error inst_main (Sgn (dec.name, meta_type_args)) sbs in
               (* Apply substitution to get instantiated argument types *)
               let inst_args' = List.map (apply_subst branch_sbs) inst_args in
               
               (* Build type bindings for pattern type vars:
-                 - Quantified vars: bind to the original declaration params 
-                   (which get unified with scrutinee type args)
-                 - Existential vars: bind to fresh metas *)
+                - Quantified vars: bind to the original declaration params 
+                  (which get unified with scrutinee type args)
+                - Existential vars: bind to fresh metas *)
               let n_quant = List.length xtor.quantified in
               let quant_tyvars = List.filteri (fun i _ -> i < n_quant) ty_vars in
               let exist_tyvars = List.filteri (fun i _ -> i >= n_quant) ty_vars in
@@ -827,17 +827,17 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
               ) branch_sbs exist_tyvars fresh_exist in
               
               (* For GADT refinement: add mappings from original rigid type vars
-                 to their refined metas, so the branch body sees the refinement.
-                 This is local to this branch and doesn't escape. *)
+                to their refined metas, so the branch body sees the refinement.
+                This is local to this branch and doesn't escape. *)
               let branch_sbs = List.fold_left (fun s (orig_var, meta_var) ->
                 Ident.add orig_var (TMeta meta_var) s
               ) branch_sbs fresh_metas in
               
               (* Convert refinable TVars in result_ty to their corresponding metas.
-                 This is crucial for GADT refinement: result_ty may contain TVar n,
-                 and branch_sbs has n → TMeta ?m with ?m = zero. But apply_subst
-                 doesn't substitute TVars, only TMetas. So we use apply_fresh_subst
-                 to convert vec(a)(TVar n) → vec(a)(TMeta ?m). *)
+                This is crucial for GADT refinement: result_ty may contain TVar n,
+                and branch_sbs has n → TMeta ?m with ?m = zero. But apply_subst
+                doesn't substitute TVars, only TMetas. So we use apply_fresh_subst
+                to convert vec(a)(TVar n) → vec(a)(TMeta ?m). *)
               let tvar_to_meta = List.fold_left (fun s (orig_var, meta_var) ->
                 Ident.add orig_var (TMeta meta_var) s
               ) Ident.emptytbl fresh_metas in
@@ -858,46 +858,48 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
     (type_args: typ list) (branches: branch list)
     : (typed_clause list * subst, check_error) result =
   let rec go sbs acc = function
-    | [] -> Ok (List.rev acc, sbs)
+      [] -> Ok (List.rev acc, sbs)
     | (xtor_name, ty_vars, tm_vars, body) :: rest ->
         (match find_xtor dec xtor_name with
-        | None -> Error (UnboundXtor (dec.name, xtor_name))
+          None -> Error (UnboundXtor (dec.name, xtor_name))
         | Some xtor ->
             (* For codata introduction (new/comatch):
-               ty_vars bind BOTH quantified AND existential type params.
-               
-               For example, with foldable(d) and fold: {d}{r} foldable(d) -> algebra(d)(r) -> r,
-               a new branch like { fold{e}{t}(alg) => ... } binds e to d (quantified)
-               and t to r (existential). *)
+              ty_vars bind both quantified and existential type params.
+              
+              For example, with foldable(d) and fold: {d}{r} foldable(d) -> algebra(d)(r) -> r,
+              a new branch like { fold{e}{t}(alg) => ... } binds e to d (quantified)
+              and t to r (existential). *)
             let total_arity = List.length xtor.quantified + List.length xtor.existentials in
             if ty_vars <> [] && List.length ty_vars <> total_arity then
               Error (TypeArgArityMismatch
                 { xtor = xtor_name
                 ; expected = total_arity
-                ; got = List.length ty_vars })
+                ; got = List.length ty_vars
+                })
             else
               (* Instantiate xtor with fresh metas for quantified vars *)
               let fresh_exist, inst_args, inst_main = instantiate_xtor xtor [] in
               (* Unify main type with the codata type being constructed.
-                 This determines what the quantified vars should be.
-                 For foldable: fold's main is foldable(?d), unified with foldable(e) → ?d=e *)
+                This determines what the quantified vars should be.
+                For foldable: fold's main is foldable(?d), unified with foldable(e) → ?d=e *)
               let* sbs = unify_or_error inst_main (Sgn (dec.name, type_args)) sbs in
               let inst_args' = List.map (apply_subst sbs) inst_args in
               
               (* For codata destructors:
-                 Surface: dtor: {qi's} main -> argN -> ... -> arg0
-                 argument_types = [arg0; arg1; ...; argN]
-                 - arg0 is the codomain (result type)
-                 - [arg1; ...; argN] are extra parameters the branch binds *)
+                Surface: dtor: {qi's} main -> argN -> ... -> arg0
+                argument_types = [arg0; arg1; ...; argN]
+                - arg0 is the codomain (result type)
+                - [arg1; ...; argN] are extra parameters the branch binds *)
               let (result_ty, param_types) = match inst_args' with
-                | [] -> (apply_subst sbs inst_main, [])  (* No arguments *)
+                  [] -> (apply_subst sbs inst_main, [])  (* No arguments *)
                 | arg0 :: rest -> (arg0, rest)
               in
               if List.length tm_vars <> List.length param_types then
                 Error (XtorArityMismatch
                   { xtor = xtor_name
                   ; expected = List.length param_types
-                  ; got = List.length tm_vars })
+                  ; got = List.length tm_vars
+                  })
               else
                 (* If ty_vars are provided, bind them to quantified + existential params *)
                 let all_type_params = xtor.quantified @ xtor.existentials in

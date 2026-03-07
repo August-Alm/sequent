@@ -11,7 +11,7 @@
     - AST_KApp: promoted data type applied to kind arguments, e.g. nat, vec(type)(nat)
 *)
 type ast_kind = 
-  | AST_KStar 
+    AST_KStar 
   | AST_KArrow of ast_kind * ast_kind
   | AST_KApp of string * ast_kind list
 
@@ -23,7 +23,7 @@ type ast_typ =
 
 type ast =
   (* n *)
-  | AST_Int of int
+    AST_Int of int
   (* t + u *)
   | AST_Add of ast * ast
   (* t - u *)
@@ -86,9 +86,9 @@ type ast_type_def =
   | AST_TyCode of ast_type_dec
 
 (*
-top-level term:
-  let f {a0: k0} ... {aM: kM} (x0: t0) ... (xN: tN) : ty = t
-argument types and return type are mandatory
+  top-level term:
+    let f {a0: k0} ... {aM: kM} (x0: t0) ... (xN: tN) : ty = t
+  argument types and return type are mandatory
 *)
 type ast_term_def =
   { name: string
@@ -120,7 +120,7 @@ let ident n = "\n" ^ String.make (2 * n) ' '
 
 (* Convert kind to string *)
 let rec kind_to_string = function
-  | AST_KStar -> "type"
+    AST_KStar -> "type"
   | AST_KArrow (k1, k2) ->
     let k1_str =
       match k1 with
@@ -134,36 +134,36 @@ let rec kind_to_string = function
 
 (* Convert type to string *)
 let rec typ_to_string = function
-  | AST_TyVar x -> x
+    AST_TyVar x -> x
   | AST_TyApp (t, args) ->
     let t_str = typ_app_base_to_string t in
     let args_str = List.map (fun arg -> "(" ^ typ_to_string arg ^ ")") args in
     t_str ^ String.concat "" args_str
   | AST_TyFun (t1, t2) ->
     let t1_str = match t1 with
-      | AST_TyFun _ -> "(" ^ typ_to_string t1 ^ ")"
+        AST_TyFun _ -> "(" ^ typ_to_string t1 ^ ")"
       | _ -> typ_to_string t1
     in
     t1_str ^ " -> " ^ typ_to_string t2
   | AST_TyAll ((x, k_opt), t) ->
     let k_str = match k_opt with
-      | None -> ""
+        None -> ""
       | Some k -> ": " ^ kind_to_string k
     in
     "{" ^ x ^ k_str ^ "} " ^ typ_to_string t
 
 and typ_app_base_to_string = function
-  | AST_TyVar x -> x
+    AST_TyVar x -> x
   | AST_TyApp _ as t -> typ_to_string t
   | t -> "(" ^ typ_to_string t ^ ")"
 
 and typ_atom_to_string = function
-  | AST_TyVar x -> x
+    AST_TyVar x -> x
   | t -> "(" ^ typ_to_string t ^ ")"
 
 (* Convert term to string *)
 let rec ast_to_string (lvl: int) = function
-  | AST_Int n -> string_of_int n
+    AST_Int n -> string_of_int n
   | AST_Add (t1, t2) ->
     "(" ^ ast_to_string lvl t1 ^ " + " ^ ast_to_string lvl t2 ^ ")"
   | AST_Sub (t1, t2) ->
@@ -194,9 +194,7 @@ let rec ast_to_string (lvl: int) = function
     ident lvl ^ "}"
   | AST_New (ty_opt, clauses) ->
     let ty_str =
-      match ty_opt with
-      | None -> ""
-      | Some ty -> " " ^ typ_atom_to_string ty
+      match ty_opt with None -> "" | Some ty -> " " ^ typ_atom_to_string ty
     in
     let clauses_str = String.concat "; " (List.map (clause_to_string lvl) clauses) in
     "new" ^ ty_str ^ " { " ^ clauses_str ^ " }"
@@ -210,17 +208,18 @@ let rec ast_to_string (lvl: int) = function
     name ^ ty_args_str ^ tm_args_str
 
 and ast_app_to_string (lvl: int) = function
-  | AST_Int _ | AST_Var _ | AST_Add _ | AST_Sub _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t -> ast_to_string lvl t
+    AST_Int _ | AST_Var _ | AST_Add _ | AST_Sub _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t ->
+      ast_to_string lvl t
   | t -> "(" ^ ast_to_string lvl t ^ ")"
 
 and type_arg_to_string (x, k_opt) =
   match k_opt with
-  | None -> "{" ^ x ^ "}"
+    None -> "{" ^ x ^ "}"
   | Some k -> "{" ^ x ^ ": " ^ kind_to_string k ^ "}"
 
 and term_arg_to_string (x, ty_opt) =
   match ty_opt with
-  | None -> x
+    None -> x
   | Some ty -> "(" ^ x ^ ": " ^ typ_to_string ty ^ ")"
 
 and clause_to_string (lvl: int) (xtor, ty_binders, tm_binders, body) =
@@ -232,12 +231,12 @@ and clause_to_string (lvl: int) (xtor, ty_binders, tm_binders, body) =
 let xtor_to_string (xtor : ast_xtor) =
   let ty_args_str = String.concat " " (List.map (fun (x, k_opt) ->
     match k_opt with
-    | None -> "{" ^ x ^ "}"
+      None -> "{" ^ x ^ "}"
     | Some k -> "{" ^ x ^ ": " ^ kind_to_string k ^ "}"
   ) xtor.type_args) in
   let tm_args_str = 
     match xtor.term_args with
-    | [] -> ""
+      [] -> ""
     | tm_types -> String.concat " -> " (List.map typ_to_string tm_types)
   in
   let args_sep = if ty_args_str = "" || tm_args_str = "" then "" else " " in
@@ -245,7 +244,7 @@ let xtor_to_string (xtor : ast_xtor) =
 
 (* Convert type definition to string *)
 let type_def_to_string = function
-  | AST_TyAlias (name, ty) ->
+    AST_TyAlias (name, ty) ->
     "type " ^ name ^ " = " ^ typ_to_string ty
   | AST_TyData dec ->
     let xtors_str =

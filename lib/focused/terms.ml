@@ -17,14 +17,14 @@ type sym = Path.t
 (* ========================================================================= *)
    
 (*
-   Typing judgment: Γ ⊢ cmd  where Γ : var → chiral_typ
-   
-   Types are ambidextrous: the same signature can be read as data or codata.
-   - Data reading: Let (constructor), Switch (pattern match)
-   - Codata reading: New (copattern), Invoke (destructor)
-   
-   Context is non-linear: variables are never consumed, freely duplicated.
-   Type instantiation is already reflected in sgn_typ/xtor.
+  Typing judgment: Γ ⊢ cmd  where Γ : var → chiral_typ
+  
+  Types are ambidextrous: the same signature can be read as data or codata.
+  - Data reading: Let (constructor), Switch (pattern match)
+  - Codata reading: New (copattern), Invoke (destructor)
+  
+  Context is non-linear: variables are never consumed, freely duplicated.
+  Type instantiation is already reflected in sgn_typ/xtor.
 *)
 
 type command =
@@ -159,8 +159,7 @@ let find_xtor (dec: dec) (xtor_name: Path.t) : xtor option =
 (** Lookup a variable in context *)
 let lookup_var (ctx: context) (v: var) : chiral_typ check_result =
   match Ident.find_opt v ctx.term_vars with
-    Some ct -> Ok ct
-  | None -> Error (UnboundVariable v)
+    Some ct -> Ok ct | None -> Error (UnboundVariable v)
 
 (** Extend context with a term variable binding *)
 let extend (ctx: context) (v: var) (ct: chiral_typ) : context =
@@ -240,8 +239,8 @@ let check_branch
     None -> Error (UnboundXtor (dec.name, xtor_name))
   | Some xtor ->
       (* For both data and codata, pattern matching binds both quantified and existentials.
-         For data ctors: quantified are the universals, but matching introduces them existentially.
-         For codata dtors: quantified AND existentials are introduced by matching. *)
+        For data ctors: quantified are the universals, but matching introduces them existentially.
+        For codata dtors: quantified AND existentials are introduced by matching. *)
       let all_type_params = xtor.quantified @ xtor.existentials in
       let num_type_vars = List.length all_type_params in
       if List.length type_vars <> num_type_vars then
@@ -255,12 +254,12 @@ let check_branch
         ; got = List.length term_vars })
       else
         (* GADT Refinement: For types in dec.type_args that are TMetas or TVars,
-           we'll include them in scrutinee_ty for unification with xtor.main.
-           TMetas can be directly refined; TVars need fresh metas. *)
+          we'll include them in scrutinee_ty for unification with xtor.main.
+          TMetas can be directly refined; TVars need fresh metas. *)
         let (tvar_to_meta, scrutinee_meta_args) =
           List.fold_right (fun ty (mapping, args) ->
             (* Don't apply subs here - we want the actual types from unified_dec,
-               not the resolved values. The unified_dec already has TMetas. *)
+              not the resolved values. The unified_dec already has TMetas. *)
             match ty with
               TMeta _ -> mapping, ty :: args
             | TVar v ->
@@ -273,9 +272,9 @@ let check_branch
         let scrutinee_ty = Sgn (dec.name, scrutinee_meta_args) in
         
         (* Unify xtor's result type with scrutinee type to learn GADT constraints.
-           IMPORTANT: Use empty substitution, not incoming subs. The incoming subs
-           may have TMeta -> TVar mappings that would prevent GADT refinement.
-           We merge the GADT refinements with subs afterward. *)
+          IMPORTANT: Use empty substitution, not incoming subs. The incoming subs
+          may have TMeta -> TVar mappings that would prevent GADT refinement.
+          We merge the GADT refinements with subs afterward. *)
         let branch_subs = match unify xtor.main scrutinee_ty Ident.emptytbl with
             Some gadt_subs ->
               (* Merge: GADT refinements override incoming subs for TMetas we care about *)
@@ -287,8 +286,8 @@ let check_branch
         in
         
         (* Convert TVars in context to TMetas so apply_subst can resolve them.
-           Only needed if we created new TMetas for TVars in dec.type_args.
-           If dec.type_args already had TMetas, the context should too - no refinement needed. *)
+          Only needed if we created new TMetas for TVars in dec.type_args.
+          If dec.type_args already had TMetas, the context should too - no refinement needed. *)
         let refined_ctx = if tvar_to_meta = [] then ctx else begin
           let tvar_subst = List.fold_left (fun s (orig_var, meta_var) ->
             Ident.add orig_var (TMeta meta_var) s
@@ -297,9 +296,9 @@ let check_branch
         end in
         
         (* For pattern matching:
-           - quantified: need to freshen (not yet freshened by instantiate_dec)
-           - existentials: already fresh from instantiate_dec (for GADT xtors)
-           We must use the SAME metas that GADT unification used for existentials. *)
+          - quantified: need to freshen (not yet freshened by instantiate_dec)
+          - existentials: already fresh from instantiate_dec (for GADT xtors)
+          We must use the SAME metas that GADT unification used for existentials. *)
         let fresh_quant_metas, quant_subst = freshen_meta xtor.quantified in
         let fresh_quant_ids = List.map fst fresh_quant_metas in
         let existing_exist_ids = List.map fst xtor.existentials in
@@ -309,9 +308,9 @@ let check_branch
         let inst_args = List.map (chiral_map (apply_fresh_subst quant_subst)) xtor.argument_types in
         
         (* Instead of substituting user names into inst_args, we keep the fresh metas
-           and add user_var -> fresh_meta mappings to the substitution.
-           This way, when the body uses TVar m, it resolves to TMeta n#1127.
-           Skip adding mapping if user_var IS the meta (from eta-expansion). *)
+          and add user_var -> fresh_meta mappings to the substitution.
+          This way, when the body uses TVar m, it resolves to TMeta n#1127.
+          Skip adding mapping if user_var IS the meta (from eta-expansion). *)
         let branch_subs_with_tyvars =
           List.fold_left2 (fun s meta user_var ->
             if Ident.equal meta user_var then s  (* Already a meta, no mapping needed *)
@@ -501,8 +500,8 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
      Like simple.ml, Ret just checks that v is in scope with the right type. *)
   | Ret (ty, v) ->
       (* Following simple.ml's Collapsed checker: just check variable exists 
-         and has the right type, don't check chirality.
-         For negative types, x will be Cns; for positive, x will be Prd. *)
+        and has the right type, don't check chirality.
+        For negative types, x will be Cns; for positive, x will be Prd. *)
       let* v_ct = lookup_var ctx v in
       let v_ty = strip_chirality v_ct in
       (match unify v_ty ty subs with
@@ -522,13 +521,13 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
         (* Check each argument has the expected type *)
         let rec check_args subs params args =
           match params, args with
-          | [], [] -> Ok ()
+            [], [] -> Ok ()
           | (_, exp_ct) :: params', arg :: args' ->
               let* arg_ct = lookup_var ctx arg in
               let exp_ty = strip_chirality exp_ct in
               let arg_ty = strip_chirality arg_ct in
               (match unify exp_ty arg_ty subs with
-              | None -> Error (UnificationFailed (exp_ty, arg_ty))
+                None -> Error (UnificationFailed (exp_ty, arg_ty))
               | Some subs' ->
                   (* Check chirality matches *)
                   (match exp_ct, arg_ct with

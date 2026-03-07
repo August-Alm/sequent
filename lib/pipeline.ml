@@ -47,7 +47,7 @@ module MelcoreStage = struct
         Error _ -> acc  (* Short-circuit on first error *)
       | Ok acc_defs ->
         (match MTerms.check_definition ctx def with
-            Ok tdef -> Ok ((path, tdef) :: acc_defs)
+          Ok tdef -> Ok ((path, tdef) :: acc_defs)
         | Error e ->
             let msg = "Type error in " ^ Path.name path ^ ":\n" ^
             (Melcore.Printing.check_error_to_string e) in
@@ -55,7 +55,7 @@ module MelcoreStage = struct
     ) (Ok [])
     (* Reverse to maintain original order *)
     |> function
-      | Ok lst -> Ok (decs, Path.of_list (List.rev lst))
+        Ok lst -> Ok (decs, Path.of_list (List.rev lst))
       | Error msg -> Error msg
     
   let normalize (defs: MTerms.typed_definitions)
@@ -96,7 +96,7 @@ module CoreStage = struct
         Error _ -> acc  (* Short-circuit on first error *)
       | Ok acc_defs ->
         (match CTerms.check_def ctx def with
-            Ok tdef -> Ok ((path, tdef) :: acc_defs)
+          Ok tdef -> Ok ((path, tdef) :: acc_defs)
         | Error e ->
             let msg = "Type error in " ^ Path.name path ^ ":\n" ^
             (Core.Printing.check_error_to_string e) in
@@ -166,7 +166,7 @@ module FocusedStage = struct
     ) (Ok [])
     (* Reverse to maintain original order *)
     |> function
-      | Ok lst -> Ok (Path.of_list (List.rev lst))
+        Ok lst -> Ok (Path.of_list (List.rev lst))
       | Error msg -> Error msg
 
   (** Returns the final command, environment, and step count *)
@@ -211,14 +211,14 @@ module AxilStage = struct
         Error _ -> acc
       | Ok acc_defs ->
         (match ATerms.check_def ctx def with
-            Ok tdef -> Ok ((path, tdef) :: acc_defs)
+          Ok tdef -> Ok ((path, tdef) :: acc_defs)
         | Error e ->
             let msg = "Type error in " ^ Path.name path ^ ":\n" ^
             (Axil.Printing.check_error_to_string e) in
             Error msg)
     ) (Ok [])
     |> function
-      | Ok lst -> Ok (Path.of_list (List.rev lst))
+        Ok lst -> Ok (Path.of_list (List.rev lst))
       | Error msg -> Error msg
 
   (** Returns the final command, environment, and step count *)
@@ -247,7 +247,7 @@ module EmitStage = struct
       : (ACode.code list * int, string) result =
     match target with
       AARCH64 ->
-        try Ok (Compile_checked.compile main defs)
+        try Ok (Compile_aarch64.compile main defs)
         with e ->
           Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
 
@@ -258,7 +258,7 @@ module EmitStage = struct
       : (string, string) result =
     match target with
       AARCH64 ->
-        try Ok (Compile_checked.compile_to_string name main defs)
+        try Ok (Compile_aarch64.compile_to_string name main defs)
         with e ->
           Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
 

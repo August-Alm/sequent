@@ -30,7 +30,7 @@ let close_ret_var (ret_ty: Types.FocusedTypes.typ) (ret_k: Ident.t) (cmd: comman
 *)
 let close_main (main: definition) : definition = 
   match List.rev main.term_params with
-  | (ret_k, Types.FocusedBase.Cns ret_ty) :: rest_params_rev ->
+    (ret_k, Types.FocusedBase.Cns ret_ty) :: rest_params_rev ->
       (* Close by: 1) removing ret_k from params, 2) wrapping body with NewInt *)
       let new_params = List.rev rest_params_rev in
       let closed_body = close_ret_var ret_ty ret_k main.body in

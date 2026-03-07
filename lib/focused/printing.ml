@@ -48,10 +48,10 @@ let pp_sym (x: sym) : string = Path.name x
 
 let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
   match t with
-  | Base _ -> "type"
+    Base _ -> "type"
   | Arrow (k1, k2) ->
       let s1 = match k1 with
-        | Arrow _ -> parens (pp_typ ~cfg ~nested:true k1)
+          Arrow _ -> parens (pp_typ ~cfg ~nested:true k1)
         | _ -> pp_typ ~cfg ~nested:true k1
       in
       let arrow = if cfg.unicode then " → " else " -> " in
@@ -115,7 +115,7 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   match cmd with
   
   (* let v = m(args); body *)
-  | Let (v, dec, x, args, body) ->
+    Let (v, dec, x, args, body) ->
       let dec_str = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
       let args_str = if args = [] then "()" else "(" ^ pp_vars args ^ ")" in
       ind ^ "let " ^ pp_var v ^ " = " ^ pp_sym x ^ args_str ^ dec_str ^ ";\n" ^
@@ -214,7 +214,7 @@ let command_to_string (cmd: command) : string =
 
 let pp_check_error ?(cfg=default_config) (err: check_error) : string =
   match err with
-  | UnboundVariable v ->
+    UnboundVariable v ->
       "unbound variable: " ^ pp_var v
   | UnboundDeclaration p ->
       "unbound declaration: " ^ pp_sym p

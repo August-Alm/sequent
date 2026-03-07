@@ -49,8 +49,7 @@ let rec convert_typ (t: FTy.typ) : ATy.typ =
 
 let convert_chiral (ct: FTy.chiral_typ) : ATy.chiral_typ =
   match ct with
-  | FB.Prd t -> AB.Prd (convert_typ t)
-  | FB.Cns t -> AB.Cns (convert_typ t)
+    FB.Prd t -> AB.Prd (convert_typ t) | FB.Cns t -> AB.Cns (convert_typ t)
 
 let convert_xtor (x: FTy.xtor) : ATy.xtor =
   { ATy.name = x.FTy.name
@@ -183,24 +182,24 @@ let fresh_var (st: state) (base: Common.Identifiers.Ident.t) : Common.Identifier
 (* Substitution Generation                                                   *)
 (* ========================================================================= *)
 (* 
-   Build a substitution that reorders the current context to put consumed
-   variables at the head in the required order, followed by remaining vars.
-   
-   The substitution expresses: for each position in new context, which 
-   variable from old context goes there.
-   
-   For ordered linear logic, even if names stay the same, order matters!
-   We also handle contraction: if a variable is consumed but also needed
-   in the continuation, we make a copy.
+  Build a substitution that reorders the current context to put consumed
+  variables at the head in the required order, followed by remaining vars.
+  
+  The substitution expresses: for each position in new context, which 
+  variable from old context goes there.
+  
+  For ordered linear logic, even if names stay the same, order matters!
+  We also handle contraction: if a variable is consumed but also needed
+  in the continuation, we make a copy.
 *)
-
-(* Build reordering substitution with contraction support.
-   current_ctx: the actual ordered context (list of vars in current order)
-   consumed: variables that need to be at head (in required order) - will be removed after
-   fv: free variables with multiplicities (for the whole command including continuations)
-   continuation_fv: free variables needed AFTER the consumed vars are used
-   
-   Returns: (substitution, new_ctx after substitution but before consumption)
+(*
+  Build reordering substitution with contraction support.
+  current_ctx: the actual ordered context (list of vars in current order)
+  consumed: variables that need to be at head (in required order) - will be removed after
+  fv: free variables with multiplicities (for the whole command including continuations)
+  continuation_fv: free variables needed AFTER the consumed vars are used
+  
+  Returns: (substitution, new_ctx after substitution but before consumption)
 *)
 let build_reordering_with_contraction
     (st: state)
@@ -227,8 +226,8 @@ let build_reordering_with_contraction
   let consumed_pairs = List.map (fun v -> (v, v)) consumed in
   
   (* Build tail part:
-     1. First, copies of consumed vars that are also needed in continuation
-     2. Then, remaining vars from context that weren't consumed *)
+    1. First, copies of consumed vars that are also needed in continuation
+    2. Then, remaining vars from context that weren't consumed *)
   let copy_pairs = VarSet.fold (fun v acc ->
     (get_copy_name v, v) :: acc
   ) needs_copy [] in
@@ -244,7 +243,7 @@ let build_reordering_with_contraction
   (subst, new_ctx)
 
 (* Simple build_reordering without contraction - for commands where consumed vars
-   don't need to survive (like Let args, Invoke args, etc.) *)
+  don't need to survive (like Let args, Invoke args, etc.) *)
 let build_reordering 
     (_st: state)
     (current_ctx: Common.Identifiers.Ident.t list)

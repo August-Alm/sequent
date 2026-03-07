@@ -68,16 +68,16 @@ let lookup_term_symbol ctx name = StringMap.find_opt name ctx.term_symbols
 (* ===== KIND CONVERSION ===== *)
 
 (* In the new type system, kinds are represented as types:
-   Base Typ = kind of inhabitable types
-   Arrow = higher kinds
-   Sgn = promoted data types (e.g., nat)
-   PromotedCtor = promoted constructors (e.g., zero, succ(n)) *)
+  Base Typ = kind of inhabitable types
+  Arrow = higher kinds
+  Sgn = promoted data types (e.g., nat)
+  PromotedCtor = promoted constructors (e.g., zero, succ(n)) *)
 let default_kind = MT.Base Typ 
 
 (* Convert an AST kind to a Melcore type (used as a kind).
-   - type -> Base Typ  
-   - k1 -> k2 -> Arrow
-   - name(args) -> either Sgn (for data types) or PromotedCtor (for constructors) *)
+  - type -> Base Typ  
+  - k1 -> k2 -> Arrow
+  - name(args) -> either Sgn (for data types) or PromotedCtor (for constructors) *)
 let rec kind_of_ast_ctx (ctx: conv_ctx) : ast_kind -> MT.typ = function
     AST_KStar -> default_kind
   | AST_KArrow (k1, k2) -> MT.Arrow (kind_of_ast_ctx ctx k1, kind_of_ast_ctx ctx k2)
@@ -144,9 +144,9 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
 
   | AST_TyApp (t, args) ->
       (* Type application: could be List(int), algebra(b)(c), succ(n) etc.
-         Handle curried applications by collecting all args.
-         If the head is a type symbol name, we create Sgn(name, all_args).
-         If the head is a promoted constructor, we create PromotedCtor. *)
+        Handle curried applications by collecting all args.
+        If the head is a type symbol name, we create Sgn(name, all_args).
+        If the head is a promoted constructor, we create PromotedCtor. *)
       let rec collect_ty_app head acc =
         match head with
           AST_TyApp (h, more_args) -> collect_ty_app h (more_args @ acc)
@@ -259,9 +259,9 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (idx: int) (xtor: a
       | main :: rev_args -> (List.rev rev_args, main))
     | Common.Types.Codata ->
       (* Codata: first is "this" (main), rest are arguments including result.
-         argument_types is stored reversed (arg0 first where arg0 is the result).
-         Surface: main -> argN -> ... -> arg0
-         Storage: [arg0; ...; argN] = reverse of (rest) *)
+        argument_types is stored reversed (arg0 first where arg0 is the result).
+        Surface: main -> argN -> ... -> arg0
+        Storage: [arg0; ...; argN] = reverse of (rest) *)
       (match arg_types with
         [] -> failwith ("Destructor " ^ xtor.name ^ " must have a receiver type")
       | main :: args -> (List.rev args, main))
@@ -271,12 +271,12 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (idx: int) (xtor: a
   let chiral_args = List.map mk_producer arguments in
   
   (* Split params into quantified vs existentials:
-     - quantified: params that appear free in the main type (determine the declaration's type args)
-     - existentials: params that don't appear in main type (independently chosen by the xtor)
-     
-     For example, in: fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
-     - main = foldable(d), so d is quantified
-     - r doesn't appear in main, so r is existential *)
+    - quantified: params that appear free in the main type (determine the declaration's type args)
+    - existentials: params that don't appear in main type (independently chosen by the xtor)
+    
+    For example, in: fold: {d}{r} foldable(d) -> algebra(d)(r) -> r
+    - main = foldable(d), so d is quantified
+    - r doesn't appear in main, so r is existential *)
   let main_free_vars = free_type_vars_in_typ main_from_ast in
   let is_quantified (v, _k) = List.exists (Ident.equal v) main_free_vars in
   let quantified = List.filter is_quantified params in
@@ -307,12 +307,12 @@ let build_recursive_signature
   lazy_sgn
 
 (* Second pass: build signatures with proper recursive references.
-   We need to process types in order so that promoted constructors are
-   available when referenced in later type definitions (e.g., nat's zero/succ
-   must be available when processing vec). *)
+  We need to process types in order so that promoted constructors are
+  available when referenced in later type definitions (e.g., nat's zero/succ
+  must be available when processing vec). *)
 let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
   (* Process each type definition, building its signature AND registering its xtors
-     before moving to the next type. This ensures promoted constructors are available. *)
+    before moving to the next type. This ensures promoted constructors are available. *)
   List.fold_left (fun ctx tdef ->
     match tdef with
       AST_TyAlias _ -> ctx
@@ -347,7 +347,7 @@ let build_signatures (ctx: conv_ctx) (defs: ast_defs) : conv_ctx =
 (* ===== TERM CONVERSION ===== *)
 
 (* Helper to collect applications and instantiations from an AST term.
-   Returns (head, ty_args, tm_args) where head is the base term being applied. *)
+  Returns (head, ty_args, tm_args) where head is the base term being applied. *)
 let rec collect_apps (trm: ast) : ast * ast_typ list * ast list =
   match trm with
     AST_App (t, u) ->

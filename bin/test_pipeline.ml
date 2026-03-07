@@ -62,9 +62,9 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     print_endline "3. Normalize: OK";
     (* Debug: print normalized Melcore for main *)
     (match Path.find_opt (Path.of_string "main") norm_defs with
-     | Some main_def -> 
-         Printf.printf "   Normalized main body: %s\n" (MPrint.typed_term_to_string main_def.Melcore.Terms.body)
-     | None -> ());
+      Some main_def -> 
+        Printf.printf "   Normalized main body: %s\n" (MPrint.typed_term_to_string main_def.Melcore.Terms.body)
+    | None -> ());
     
     (* Stage 4: Encode to Core *)
     let* (types_ctx, core_defs) = Pipe.MelcoreStage.encode decs norm_defs in
@@ -166,8 +166,7 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
       end else
         Printf.printf "FAIL ✗ (expected %d, got %d)\n" expected actual;
       
-  | Error msg ->
-      Printf.printf "FAIL ✗: %s\n" msg);
+  | Error msg -> Printf.printf "FAIL ✗: %s\n" msg);
   print_newline ()
 
 (* ========================================================================= *)
