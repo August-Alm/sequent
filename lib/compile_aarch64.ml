@@ -721,21 +721,16 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Axiom: cut between producer and consumer
      
     Exactly like CInvoke but for Cns (Ext Int) - a single-method codata.
-    Block pointer goes to fresh_location1(args) where args has length 1.
-    Arg goes to standard incoming position X(reserved + 1) = X4.
     
-    IMPORTANT: Save code pointer to X2 first, as arg_reg=X4 might clobber it. *)
-  | CAxiom { ctx; v; k; _ } ->
-      let v_reg = symbol_location2 ctx v in
-      let k_block_reg = symbol_location1 ctx k in
+    After CSubstitute with [k; v] ordering:
+    - k at position 1 → r1 = X5 (this), r2 = X6 (code)  
+    - v at position 0 → r2 = X4 (arg)
+    
+    Everything is already in place! Just save code pointer and branch. *)
+  | CAxiom { ctx; k; _ } ->
       let k_code_reg = symbol_location2 ctx k in
-      (* Method has 1 parameter, so block at X(reserved + 2*1) = X5 *)
-      let this_reg = Register.mk (Register.reserved + 2 * 1) in
-      let arg_reg = Register.mk (Register.reserved + 1) in  (* X4 *)
       return (
-        MOVR (Register.temp, k_code_reg) ::   (* Save code ptr to X2 first! *)
-        MOVR (this_reg, k_block_reg) ::       (* Block to X5 *)
-        MOVR (arg_reg, v_reg) ::              (* Arg to X4 *)
+        MOVR (Register.temp, k_code_reg) ::   (* Save code ptr to X2 *)
         BR Register.temp :: [])               (* Branch via X2 *)
 
   (* Literal: create integer value *)

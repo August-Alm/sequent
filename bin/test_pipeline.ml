@@ -104,24 +104,42 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     print_endline "7. Focus: OK";
     
     (* Print focused main *)
-    print_endline "\nFocused main:";
+    print_endline "\nFocused main (before reduce):";
     Printf.printf "%s\n\n" (FPrint.command_to_string focused_main.body);
 
     (* Print focused defs for debugging *)
     let def_list = Path.to_list focused_defs in
     if List.length def_list > 0 then begin
-      print_endline "Focused definitions:";
+      print_endline "Focused definitions (before reduce):";
       List.iter (fun (_, (def: FTerms.definition)) ->
         Printf.printf "  %s:\n%s\n\n" (Path.name def.path) (FPrint.command_to_string def.body)
       ) def_list
     end;
+
+    (* Stage 7b: Reduce - inline single-use continuations *)
+    let (reduced_main, reduced_defs) = 
+      Pipe.FocusedStage.reduce focused_main focused_defs in
+    print_endline "7b. Reduce: OK";
+
+    (* Print reduced main *)
+    print_endline "\nFocused main (after reduce):";
+    Printf.printf "%s\n\n" (FPrint.command_to_string reduced_main.body);
+
+    (* Print reduced defs for debugging *)
+    let reduced_def_list = Path.to_list reduced_defs in
+    if List.length reduced_def_list > 0 then begin
+      print_endline "Focused definitions (after reduce):";
+      List.iter (fun (_, (def: FTerms.definition)) ->
+        Printf.printf "  %s:\n%s\n\n" (Path.name def.path) (FPrint.command_to_string def.body)
+      ) reduced_def_list
+    end;
     
-    let* _ = Pipe.FocusedStage.type_check focused_decs focused_defs in
+    let* _ = Pipe.FocusedStage.type_check focused_decs reduced_defs in
     print_endline "8. Focused type-check: OK";
     
     (* Stage 9: Linearize to Axil *)
     let* (axil_decs, axil_main, axil_defs) = 
-      Pipe.AxilStage.linearize focused_decs focused_main focused_defs in
+      Pipe.AxilStage.linearize focused_decs reduced_main reduced_defs in
     print_endline "9. Linearize to Axil: OK";
     
     (* Print axil main *)

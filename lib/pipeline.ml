@@ -148,6 +148,11 @@ module FocusedStage = struct
   module FTypes = Focused.Types.FocusedTypes
   module FTerms = Focused.Terms
   module FMachine = Focused.Semantics
+  module FReduce = Focused.Reduce
+
+  let reduce (main: FTerms.definition) (defs: FTerms.definition Path.tbl)
+      : (FTerms.definition * FTerms.definition Path.tbl) =
+    (FReduce.reduce_def main, FReduce.reduce_defs defs)
 
   let type_check (decs: FTypes.dec Path.tbl) (defs: FTerms.definition Path.tbl)
       : (FTerms.definition Path.tbl, string) result =

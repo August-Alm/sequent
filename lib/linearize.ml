@@ -345,7 +345,12 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       wrap_with_reordering ctx subst (ATm.Jump (label, args))
 
   | FTm.Axiom (ty, v, k) ->
-      let (subst, _) = build_reordering st ctx [v; k] fv in
+      (* Order [k; v] so that after substitute:
+        - k at position 1 → r1 = X5 (this), r2 = X6 (code)  
+        - v at position 0 → r2 = X4 (arg)
+        This matches the calling convention for methods with 1 arg,
+        so CAxiom only needs to save code ptr and branch. *)
+      let (subst, _) = build_reordering st ctx [k; v] fv in
       wrap_with_reordering ctx subst (ATm.Axiom (ty, v, k))
 
   | FTm.Lit (n, v, body) ->
