@@ -344,7 +344,7 @@ let rec load_rest (xs: ctx) (as_ctx: ctx) : code list state =
     Used by both codeClause and codeMethod - they differ only in what xs and as_ctx are. *)
 let load (xs: ctx) (as_ctx: ctx) : code list state =
   match xs with
-  | [] -> return []
+    [] -> return []
   | _ ->
       let vars = take Offset.fields_per_block xs in
       let rest = drop Offset.fields_per_block xs in
@@ -389,7 +389,7 @@ let update_reference_count (r: Register.t) (n: int) : code list state =
 let rec code_weakening_contraction (ctx: ctx) (usage: (var * var list) list)
     : code list state =
   match ctx, usage with
-  | [], [] -> return []
+    [], [] -> return []
   | (v, ct) :: rest_ctx, (_, targets) :: rest_usage ->
       if is_ext_type ct then
         code_weakening_contraction rest_ctx rest_usage
@@ -857,5 +857,5 @@ let compile (main: Axil.Terms.definition) (defs: Axil.Terms.definition Path.tbl)
 let compile_to_string (name: string) (main: Axil.Terms.definition) 
     (defs: Axil.Terms.definition Path.tbl) : string =
   let (code, arg_num) = compile main defs in
-  let prog = Code.list_to_string code in
+  let prog = Code.emit_all code in
   Code.into_aarch64_routine name prog arg_num

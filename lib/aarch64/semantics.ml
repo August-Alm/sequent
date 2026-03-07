@@ -230,7 +230,7 @@ let trace ?(max_steps=1000) (st: state) : unit =
       end else begin
         Printf.printf "%d: " st'.counter;
         print_regs st'.registers;
-        Printf.printf "  %s\n" (Code.to_string (fetch_at st'.code st'.counter));
+        Printf.printf "  %s\n" (Code.emit (fetch_at st'.code st'.counter));
         loop st' (steps + 1)
       end
     end

@@ -87,11 +87,21 @@ let length{a}{n: nat}(v: vec(a)(n)): single_nat(n) =
 dune build
 ```
 
+### Run Compiler
+
+```bash
+$ dune exec bin/compile.exe -- --link examples/fibonacci.cd examples/fibonacci/fibonacci
+$ cd examples/fibonacci
+$ sudo chmod 777 fibonacci
+$ ./fibonacci 6
+8
+```
+
 ### Run Tests
 
 ```bash
 # Test whole pipeline
-dune exec test_pipeline
+$ dune exec test_pipeline
 ```
 
 ## Theoretical Background

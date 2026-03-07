@@ -81,7 +81,24 @@ type code = int assembly
 
 module Code = struct
 
-  let to_string =
+  (** Emit a move-immediate for 32-bit values.
+      - Small non-negative (0-65535): single MOV
+      - Larger values: MOVZ + MOVK sequence
+      Treats the value as unsigned 32-bit for encoding. *)
+  let emit_movi rd imm =
+    let x = Register.to_string in
+    (* Convert to unsigned 32-bit representation *)
+    let u32 = imm land 0xFFFFFFFF in
+    let lo = u32 land 0xFFFF in
+    let hi = (u32 lsr 16) land 0xFFFF in
+    if hi = 0 then
+      (* Fits in 16 bits *)
+      Printf.sprintf "MOV %s, %d" (x rd) lo
+    else
+      (* Need two instructions *)
+      Printf.sprintf "MOVZ %s, %d\nMOVK %s, %d, LSL #16" (x rd) lo (x rd) hi
+
+  let emit =
     let x rd = Register.to_string rd in
     function
       ADD (rd, rn, rm) -> Printf.sprintf "ADD %s, %s, %s" (x rd) (x rn) (x rm)
@@ -94,7 +111,7 @@ module Code = struct
     | BR reg -> Printf.sprintf "BR %s" (x reg)
     | ADR (reg, label) -> Printf.sprintf "ADR %s, %s" (x reg) label
     | MOVR (rd, rs) -> Printf.sprintf "MOV %s, %s" (x rd) (x rs)
-    | MOVI (rd, imm) -> Printf.sprintf "MOV %s, %d" (x rd) imm
+    | MOVI (rd, imm) -> emit_movi rd imm
     | LDR (rt, rn, offset) -> Printf.sprintf "LDR %s, [%s, %d]" (x rt) (x rn) offset
     | STR (rt, rn, offset) -> Printf.sprintf "STR %s, [%s, %d]" (x rt) (x rn) offset
     | CMPR (rn, rm) -> Printf.sprintf "CMP %s, %s" (x rn) (x rm)
@@ -103,7 +120,7 @@ module Code = struct
     | BLT label -> Printf.sprintf "BLT %s" label
     | LAB label -> Printf.sprintf "\n%s:" label
 
-  let list_to_string code_list = String.concat "\n" (List.map to_string code_list)
+  let emit_all code_list = String.concat "\n" (List.map emit code_list)
 
   let header name =
     "// To create an executable:\n" ^

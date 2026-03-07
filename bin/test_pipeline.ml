@@ -165,7 +165,7 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     
     (* Print generated Aarch64 code *)
     print_endline "\nAarch64 code:";
-    Printf.printf "%s\n\n" (ACode.Code.list_to_string asm_code);
+    Printf.printf "%s\n\n" (ACode.Code.emit_all asm_code);
     
     (* Stage 12: Evaluate using Aarch64 semantics *)
     let* result = Pipe.EmitStage.eval ~trace ~max_steps:50000 asm_code in

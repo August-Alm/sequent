@@ -39,3 +39,10 @@ by 8 or 16) don't use store-pair/load-pair instructions.
 7. No CSEL usage
 Simple if-then-else patterns always use branches even when
 CSEL (conditional select) could avoid a branch
+
+
+Instruction	            Max Immediate
+MOV Xd, #imm	          16-bit (65,535)
+ADD/SUB Xd, Xn, #imm	  12-bit (4,095)
+CMP Xn, #imm	          12-bit (4,095)
+LDR/STR Xd, [Xn, #off]	12-bit scaled (32,760)

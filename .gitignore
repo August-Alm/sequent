@@ -41,3 +41,6 @@ AzuriteConfig
 # Test output
 output.txt
 outputs/
+
+# Compiler-generated files (examples/foo.cd is source, examples/foo/ is output)
+examples/*/

@@ -1,0 +1,6 @@
+let fib(n: int): int =
+  ifz(n) then 0 else ifz(n - 1) then 1
+  else fib(n - 1) + fib(n - 2)
+
+let main(x: int): int =
+  fib(x)
