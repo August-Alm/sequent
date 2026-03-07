@@ -38,9 +38,10 @@ Thumbs.db
 __azurite_db_table__.json
 AzuriteConfig
 
-# Test output
+# Test output and junk
 output.txt
 outputs/
+notes.txt
 
 # Compiler-generated files (examples/foo.cd is source, examples/foo/ is output)
 examples/*/

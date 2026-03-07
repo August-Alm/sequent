@@ -93,8 +93,8 @@ dune build
 $ dune exec bin/compile.exe -- --link examples/fibonacci.cd examples/fibonacci/fibonacci
 $ cd examples/fibonacci
 $ sudo chmod 777 fibonacci
-$ ./fibonacci 6
-8
+$ ./fibonacci 30
+832040
 ```
 
 ### Run Tests
