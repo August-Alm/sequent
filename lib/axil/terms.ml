@@ -414,7 +414,7 @@ let check_branch_common
 
 (** Check a clause branch (for Switch).
     ORDERED: xtor args Γi prepended to tail context Γ.
-    Result context: Γi, Γ (args @ tail) - matches Idris `cs ++ as` *)
+    Result context: Γi, Γ (args @ tail) *)
 let check_clause
     (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
@@ -426,7 +426,7 @@ let check_clause
 
 (** Check a method branch (for New).
     ORDERED: captured context Γ at head, xtor args Γi appended at tail.
-    Result context: Γ, Γi (captured @ args) - matches Idris `as ++ cs` *)
+    Result context: Γ, Γi (captured @ args) *)
 let check_method
     (ctx: context) (dec: dec)
     (xtor_name: Path.t) (type_vars: var list) (term_vars: var list) (cmd: command)
@@ -543,10 +543,10 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
   (* new v = (Γ0){...}; s
      
     Γ, Γ0 ⊢ new v = (Γ0){m1(Γ1) ⇒ s1, ...}; s
-    where each branch: Γ0, Γ1 ⊢ si  (captured @ args, Idris pattern)
+    where each branch: Γ0, Γ1 ⊢ si  (captured @ args)
     and continuation: Γ, v : cns T ⊢ s
     
-    ORDERED (Idris pattern): Methods get Γ0 (captured) at head, Γi (args) at tail. *)
+    ORDERED: Methods get Γ0 (captured) at head, Γi (args) at tail. *)
   | New (v, dec, branches, body) ->
       (* Check methods with captured context at head, args at tail *)
       let* _ =
@@ -560,14 +560,14 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
     
     v : cns T, Γ ⊢ invoke v m(Γ)
     
-    ORDERED (Idris pattern): v is at head, Γ (method args) follows.
+    ORDERED: v is at head, Γ (method args) follows.
     Consume v from head, then consume args Γ. *)
   | Invoke (v, dec, xtor_name, term_vars) ->
       (match find_xtor dec xtor_name with
         None -> Error (UnboundXtor (dec.name, xtor_name))
       | Some xtor ->
           let _, inst_args, _ = freshen_xtor_type_params xtor in
-          (* ORDERED (Idris): Consume v from head first *)
+          (* ORDERED: Consume v from head first *)
           let* (v_ct, tail_ctx) = consume_head_var ctx v in
           (match expect_cns v_ct with
             Error e -> Error e
@@ -576,7 +576,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
               let* subs' = (match unify v_ty expected_ty subs with
                 None -> Error (UnificationFailed (v_ty, expected_ty))
               | Some s -> Ok s) in
-              (* ORDERED (Idris): Then consume method args Γ *)
+              (* ORDERED: Then consume method args Γ *)
               let* (arg_bindings, _final_ctx) = consume_prefix_vars tail_ctx term_vars in
               let* _ = check_bindings_against_types arg_bindings inst_args subs' in
               Ok ()))

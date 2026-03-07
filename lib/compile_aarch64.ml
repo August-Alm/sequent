@@ -5,8 +5,6 @@
   This compiler operates on checked_command, where each AST node carries
   its typing context. This eliminates manual context threading and the
   bugs that come with it.
-  
-  Translated from Idris2 implementation (Coder.idr).
 *)
 
 open Common.Identifiers
@@ -44,8 +42,7 @@ let fresh_label : int state =
 (* Context and Register Mapping                                              *)
 (* ========================================================================= *)
 
-(** Position of a variable from the END of the context (0 = last element).
-    This matches Idris's positionFromEnd. *)
+(** Position of a variable from the END of the context (0 = last element). *)
 let position_from_end (ctx: ctx) (x: var) : int =
   let rec find_pos lst i =
     match lst with
@@ -58,20 +55,17 @@ let position_from_end (ctx: ctx) (x: var) : int =
   let len = List.length ctx in
   len - 1 - pos_from_start
 
-(** Maps variable to its first register (block pointer).
-    Corresponds to Idris's symbolLocation1. *)
+(** Maps variable to its first register (block pointer).  *)
 let symbol_location1 (ctx: ctx) (x: var) : Register.t =
   let pos = position_from_end ctx x in
   Register.mk (Register.reserved + 2 * pos)
 
-(** Maps variable to its second register (value/tag).
-    Corresponds to Idris's symbolLocation2. *)
+(** Maps variable to its second register (value/tag). *)
 let symbol_location2 (ctx: ctx) (x: var) : Register.t =
   let pos = position_from_end ctx x in
   Register.mk (Register.reserved + 2 * pos + 1)
 
-(** Register for a fresh binding (after all existing vars).
-    Corresponds to Idris's freshLocation1/2. *)
+(** Register for a fresh binding (after all existing vars). *)
 let fresh_location1 (ctx: ctx) : Register.t =
   Register.mk (Register.reserved + 2 * List.length ctx)
 
@@ -201,8 +195,7 @@ let release_block (accu: Register.t) (this: Register.t) : code list state =
 (** Store a single value into a block.
     src_ctx is the context where v's registers can be looked up.
     For non-ext types, we must call share_block on the block pointer before storing,
-    because storing creates an additional reference to that block.
-    Corresponds to Idris's storeValue v as. *)
+    because storing creates an additional reference to that block. *)
 let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: int) 
     : code list state =
   if !debug_store then 
@@ -226,8 +219,7 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
       STR (loc1, into, Offset.field1 k) :: [])
 
 (** Load a binder from a block.
-    x_ctx is the context where x is at the head (x :: as).
-    Corresponds to Idris's loadBinder x as. *)
+    x_ctx is the context where x is at the head (x :: as). *)
 let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
   let is_ext = is_ext_type ct in
@@ -369,7 +361,6 @@ let rec load_rest (xs: ctx) (as_ctx: ctx) : code list state =
 (** Load environment: loads all values from linked blocks.
     xs: binders to load (become new prefix of context)
     as_ctx: tail context
-    Corresponds to Idris's load xs as.
     After load, context is xs @ as_ctx (xs at HEAD, as_ctx at TAIL).
     Used by both codeClause and codeMethod - they differ only in what xs and as_ctx are. *)
 let load (xs: ctx) (as_ctx: ctx) : code list state =
@@ -478,9 +469,10 @@ let label_index (lmap: label_map) (p: Path.t) : int =
 (* Main Code Generation                                                      *)
 (* ========================================================================= *)
 
-(** Compile a checked command to AARCH64 assembly.
-    The context is embedded in each AST node, so no manual threading needed.
-    Corresponds to Idris's codeStatement. *)
+(*
+  Compile a checked command to AARCH64 assembly.
+  The context is embedded in each AST node, so no manual threading needed.
+*)
 
 let debug_subst = ref false  (* Set to true to enable debug output *)
 
@@ -703,7 +695,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
         Printf.eprintf "  tab_reg=X%d block_reg=X%d this_reg=X%d\n" 
           (Register.to_int tab_reg) (Register.to_int block_reg) (Register.to_int this_reg)
       end;
-      (* Following Idris pattern: args are already in place at positions 0..n-1.
+      (* Args are already in place at positions 0..n-1.
         We just need to move block pointer and branch.
         Use exchange graph to safely handle overlapping moves. *)
       let graph = Array.make 32 [] in

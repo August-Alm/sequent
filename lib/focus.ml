@@ -3,7 +3,6 @@
   Description: Translates Core to Focused.
   
   This transformation canonicalizes Core sequent calculus terms into Focused form.
-  It follows the Idris AxCutNormalForm.idr algorithm closely.
   
   Key insight: chirality flips for negative types during collapse.
   - Positive type T: Prd T → Prd, Cns T → Cns (preserved)

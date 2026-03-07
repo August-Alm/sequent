@@ -200,7 +200,7 @@ let step ((cmd, e): config) : config option =
       | _ -> failwith "switch: expected data value at head")
 
   (* (invoke) ⟨invoke v m(args) ∥ [v, args..., E]⟩ → ⟨b(m) ∥ E0, params⟩
-     Following Idris pattern: v at head, then args. Pop v first, then args. *)
+    Pattern: v at head, then args. Pop v first, then args. *)
   | Invoke (v, _, m, args) ->
       (* First, pop v from the head *)
       let ((head_var, head_val), e_after_v) = pop_head e.values in
@@ -216,7 +216,7 @@ let step ((cmd, e): config) : config option =
           let (_, _, params, branch_body) = select_branch m branches in
           (* Bind params to arg values *)
           let param_bindings = List.combine params arg_vals in
-          (* New env: captured e0 at head, params at tail (Idris pattern) *)
+          (* New env: captured e0 at head, params at tail *)
           let new_values = e0 @ param_bindings in
           Some (branch_body, { e with values = new_values })
       | _ -> failwith "invoke: expected codata value at head")

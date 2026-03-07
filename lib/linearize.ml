@@ -324,7 +324,7 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
 
   (* new v = { branches }; s
     Doesn't consume from head; v prepended for continuation 
-    Methods run in captured_ctx @ args (Idris pattern: as ++ cs) *)
+    Methods run in captured_ctx @ args *)
   | FTm.New (v, dec, branches, body) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
       let branches' = List.map (linearize_method st new_ctx) branches in
@@ -332,7 +332,7 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       wrap_with_reordering ctx subst (ATm.New (v, convert_dec dec, branches', body'))
 
   (* invoke v m(args)
-    Consumes: v at head, then args - matching Idris pattern where
+    Consumes: v at head, then args
     args stay at tail positions and captured env is at head *)
   | FTm.Invoke (v, dec, xtor, args) ->
       let consumed = [v] @ args in
@@ -395,11 +395,11 @@ and linearize_branch (st: state) (ctx: Common.Identifiers.Ident.t list)
   (xtor, ty_vars, term_vars, body')
 
 (** Linearize a method branch for New (codata).
-    Following Idris pattern: method body runs in captured @ args.
+    Method body runs in captured @ args.
     This is ctx @ term_vars where ctx is the captured context. *)
 and linearize_method (st: state) (captured_ctx: Common.Identifiers.Ident.t list) 
     ((xtor, ty_vars, term_vars, body): FTm.branch) : ATm.branch =
-  (* Method context (Idris pattern): captured_ctx @ term_vars (as ++ cs) *)
+  (* Method context: captured_ctx @ term_vars (as ++ cs) *)
   let branch_ctx = captured_ctx @ term_vars in
   let body' = linearize_cmd st branch_ctx body in
   (xtor, ty_vars, term_vars, body')
