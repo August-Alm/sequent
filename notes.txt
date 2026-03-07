@@ -6,3 +6,36 @@
 ⟨µα.s | case {C(Γ) ⇒ s, ... }⟩ & ⟨cocase {D(Γ) ⇒ s, ... } | µ˜x.s⟩ → new v = {m(Γ) ⇒ s, ...}; s
 ⟨C(Γ) | α⟩                     & ⟨x | D(Γ)⟩                        → invoke v m(Γ)
 
+
+Summary of Patterns Found
+
+1. CMP + BEQ/BNE → CBZ/CBNZ (2,528 instances)
+CMP X4, 0    ; These two instructions
+BEQ lab1     ; could be: CBZ X4, lab1
+Single-instruction branch-on-zero saves 2528 instructions.
+
+2. MOV Xn, 0 + STR → STR XZR (680 instances)
+MOV X2, 0          ; wasteful
+STR X2, [X0, 128]  ; could be: STR XZR, [X0, 128]
+XZR (zero register) is not used anywhere currently.
+
+3. No-op MOVs (27+ instances)
+MOV X4, X4  ; pointless, can be deleted entirely
+
+4. MOV chains (common)
+MOV X4, X8   ; could be just: MOV X1, X8
+MOV X1, X4   ; if X4 is not used elsewhere
+
+5. MSUB with constant 1 → SUB (8 instances)
+MOV X6, 5
+MOV X2, 1
+MSUB X8, X2, X6, X4  ; X8 = X4 - 1*5 = X4 - 5
+; Could be: SUB X8, X4, 5  (one instruction vs three)
+
+6. No STP/LDP usage
+Consecutive stores/loads to adjacent memory (offset differs
+by 8 or 16) don't use store-pair/load-pair instructions.
+
+7. No CSEL usage
+Simple if-then-else patterns always use branches even when
+CSEL (conditional select) could avoid a branch

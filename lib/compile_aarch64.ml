@@ -19,9 +19,6 @@ open Aarch64.Substitution
 (* State Monad for Fresh Label Generation                                    *)
 (* ========================================================================= *)
 
-(* Debug flags - defined early so store/load can use them *)
-let debug_store = ref false
-
 type 'a state = int -> 'a * int
 
 let return (x: 'a) : 'a state = fun s -> (x, s)
@@ -100,7 +97,6 @@ let if_zero_then_else (this: Register.t) (thn: code list) (els: code list)
   let* lab_else = fresh_label in
   let label_then = "lab" ^ string_of_int lab_then in
   let label_else = "lab" ^ string_of_int lab_else in
-  Printf.eprintf "if_zero_then_else: reg=X%d then_lab=%s else_lab=%s\n" (Register.to_int this) label_then label_else;
   return (
     CMPI (this, 0) ::
     BEQ label_then ::
@@ -198,12 +194,6 @@ let release_block (accu: Register.t) (this: Register.t) : code list state =
     because storing creates an additional reference to that block. *)
 let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: int) 
     : code list state =
-  if !debug_store then 
-    Printf.eprintf "  store_value: %s at k=%d, src r1=X%d r2=X%d, offset1=%d offset2=%d\n" 
-      (Ident.name v) k 
-      (Register.to_int (symbol_location1 src_ctx v))
-      (Register.to_int (symbol_location2 src_ctx v))
-      (Offset.field1 k) (Offset.field2 k);
   if is_ext_type ct then
     return (
       STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
@@ -223,13 +213,6 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
 let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
   let is_ext = is_ext_type ct in
-  if !debug_store then 
-    Printf.eprintf "  load_binder: %s at k=%d, from=X%d, tgt r1=X%d r2=X%d, offset1=%d offset2=%d, is_ext=%b\n" 
-      (Ident.name x) k 
-      (Register.to_int from)
-      (Register.to_int (symbol_location1 x_ctx x))
-      (Register.to_int (symbol_location2 x_ctx x))
-      (Offset.field1 k) (Offset.field2 k) is_ext;
   if is_ext then
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) :: []
   else
@@ -268,10 +251,6 @@ let rec store_values (vs: ctx) (src_ctx: ctx) (into: Register.t) (k: int)
     After load, the full context is: xs @ as_ctx *)
 let rec load_binders (xs: ctx) (as_ctx: ctx) (from: Register.t) (k: int) 
     : code list =
-  Printf.eprintf "load_binders: xs=[%s] as_ctx=[%s] k=%d\n"
-    (String.concat ", " (List.map (fun (v, ct) -> Printf.sprintf "%s:%s" (Ident.name v) (match ct with Prd (Ext _) -> "PrdExt" | Prd _ -> "Prd" | Cns _ -> "Cns")) xs))
-    (String.concat ", " (List.map (fun (v, ct) -> Printf.sprintf "%s:%s" (Ident.name v) (match ct with Prd (Ext _) -> "PrdExt" | Prd _ -> "Prd" | Cns _ -> "Cns")) as_ctx))
-    k;
   match xs with
     [] -> []
   | _ when k = 0 -> []
@@ -422,8 +401,6 @@ let rec code_weakening_contraction (ctx: ctx) (usage: (var * var list) list)
         return (update @ rest)
   | _ -> failwith "context and usage list length mismatch"
 
-let debug_conn = ref false  (* Set to true for connections debug *)
-
 let connections (src_ctx: ctx) (tgt_ctx: ctx) (usage: (var * var list) list)
     : Register.t list list =
   let graph = Array.make 32 [] in
@@ -432,14 +409,6 @@ let connections (src_ctx: ctx) (tgt_ctx: ctx) (usage: (var * var list) list)
     let src_r2 = symbol_location2 src_ctx v in
     let tgt_regs1 = List.map (symbol_location1 tgt_ctx) targets in
     let tgt_regs2 = List.map (symbol_location2 tgt_ctx) targets in
-    if !debug_conn then begin
-      Printf.eprintf "  conn: %s (%s) src=X%d,X%d tgt1=[%s] tgt2=[%s]\n"
-        (Ident.name v)
-        (if is_ext_type ct then "ext" else "non-ext")
-        (Register.to_int src_r1) (Register.to_int src_r2)
-        (String.concat "," (List.map (fun r -> Printf.sprintf "X%d" (Register.to_int r)) tgt_regs1))
-        (String.concat "," (List.map (fun r -> Printf.sprintf "X%d" (Register.to_int r)) tgt_regs2))
-    end;
     if is_ext_type ct then
       graph.(Register.to_int src_r2) <- tgt_regs2
     else begin
@@ -474,52 +443,15 @@ let label_index (lmap: label_map) (p: Path.t) : int =
   The context is embedded in each AST node, so no manual threading needed.
 *)
 
-let debug_subst = ref false  (* Set to true to enable debug output *)
-
-let pp_ctx ctx =
-  String.concat ", " (List.map (fun (v, ct) ->
-    let ct_str = match ct with
-        Prd (Ext _) -> "PrdExt"
-      | Cns (Ext _) -> "CnsExt" 
-      | Prd _ -> "Prd"
-      | Cns _ -> "Cns"
-    in
-    Printf.sprintf "%s:%s" (Ident.name v) ct_str
-  ) ctx)
-
 let rec code_command (lmap: label_map) (cmd: checked_command) 
     : code list state =
   match cmd with
   (* Substitute: explicit structural rules *)
     CSubstitute { src_ctx; mapping; tgt_ctx; body } ->
-      if !debug_subst then begin
-        Printf.eprintf "CSubstitute:\n";
-        Printf.eprintf "  src_ctx (len=%d): [%s]\n" (List.length src_ctx) (pp_ctx src_ctx);
-        Printf.eprintf "  tgt_ctx (len=%d): [%s]\n" (List.length tgt_ctx) (pp_ctx tgt_ctx);
-        Printf.eprintf "  mapping: [%s]\n" (String.concat ", " (List.map (fun (t, s) ->
-          Printf.sprintf "%s<-%s" (Ident.name t) (Ident.name s)) mapping))
-      end;
       let usage = transpose src_ctx mapping in
-      if !debug_subst then begin
-        Printf.eprintf "  usage: [%s]\n" (String.concat ", " (List.map (fun (v, targets) ->
-          Printf.sprintf "%s->[%s]" (Ident.name v) 
-            (String.concat "," (List.map Ident.name targets))) usage))
-      end;
       let* weaken_contract = code_weakening_contraction src_ctx usage in
       let graph = connections src_ctx tgt_ctx usage in
-      if !debug_subst then begin
-        Printf.eprintf "  graph edges (len=%d):\n" (List.length graph);
-        List.iteri (fun i targets ->
-          if targets <> [] then
-            Printf.eprintf "    X%d -> [%s]\n" i 
-              (String.concat ", " (List.map (fun r -> Printf.sprintf "X%d" (Register.to_int r)) targets))
-        ) graph
-      end;
       let exchange = code_exhange graph in
-      if !debug_subst then begin
-        Printf.eprintf "  exchange code: %d instructions\n" (List.length exchange);
-        List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) exchange
-      end;
       let* rest = code_command lmap body in
       return (weaken_contract @ exchange @ rest)
 
@@ -527,59 +459,42 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   | CJump { ctx; label; args } ->
       let idx = label_index lmap label in
       let num_args = List.length args in
-      Printf.eprintf "CJump: label=%s idx=%d num_args=%d\n" (Path.name label) idx num_args;
-      Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
-      Printf.eprintf "  args: [%s]\n" (pp_ctx args);
       (* Move args from current positions to target positions.
-         args[i] should go to position (num_args - 1 - i) from end.
-         We build a graph of register moves and use exchange algorithm. *)
+        args[i] should go to position (num_args - 1 - i) from end.
+        We build a graph of register moves and use exchange algorithm. *)
       let graph = Array.make 32 [] in
       List.iteri (fun i (arg, ct) ->
         let src_r2 = symbol_location2 ctx arg in
         let tgt_pos = num_args - 1 - i in
         let tgt_r2 = Register.mk (Register.reserved + 2 * tgt_pos + 1) in
-        Printf.eprintf "  arg %d: %s src_r2=X%d tgt_r2=X%d is_ext=%b\n" i (Ident.name arg) (Register.to_int src_r2) (Register.to_int tgt_r2) (is_ext_type ct);
         if is_ext_type ct then
           graph.(Register.to_int src_r2) <- [tgt_r2]
         else begin
           let src_r1 = symbol_location1 ctx arg in
           let tgt_r1 = Register.mk (Register.reserved + 2 * tgt_pos) in
-          Printf.eprintf "    non-ext: src_r1=X%d tgt_r1=X%d\n" (Register.to_int src_r1) (Register.to_int tgt_r1);
           graph.(Register.to_int src_r1) <- [tgt_r1];
           graph.(Register.to_int src_r2) <- [tgt_r2]
         end
       ) args;
       let exchange = code_exhange (Array.to_list graph) in
-      Printf.eprintf "  exchange: %d instructions\n" (List.length exchange);
-      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) exchange;
       return (exchange @ [B ("lab" ^ string_of_int idx)])
 
   (* Let: construct data value *)
   | CLet { ctx; v; v_typ; dec; xtor; args; tail_ctx; body } ->
-      Printf.eprintf "CLet: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
-      Printf.eprintf "  ctx: [%s]\n" (pp_ctx ctx);
-      Printf.eprintf "  args: [%s]\n" (pp_ctx args);
-      Printf.eprintf "  tail_ctx: [%s]\n" (pp_ctx tail_ctx);
       let new_ctx = (v, v_typ) :: tail_ctx in
-      Printf.eprintf "  new_ctx: [%s]\n" (pp_ctx new_ctx);
       let tag_reg = symbol_location2 new_ctx v in
-      Printf.eprintf "  tag_reg: X%d\n" (Register.to_int tag_reg);
       (* Use original_index to get consistent tag across filtered/unfiltered xtor lists *)
       let xtor_idx = 
         let rec find_xtor = function
-            [] -> 
-              Printf.eprintf "WARNING: xtor '%s' not found in dec.xtors! Defaulting to 0.\n" (Path.name xtor);
-              0
+            [] -> failwith
+              (Printf.sprintf "Compilation error: xtor '%s' not found!\n" (Path.name xtor))
           | (y: xtor) :: _ when Path.equal y.name xtor -> y.original_index
           | _ :: rest -> find_xtor rest
         in find_xtor dec.xtors
       in
-      Printf.eprintf "  xtor_idx=%d tag=%d\n" xtor_idx (Offset.jump_length xtor_idx);
       (* Store args with ctx as source context, tail_ctx as the "as" context *)
       let* stores = store args ctx tail_ctx in
-      Printf.eprintf "  stores: %d instructions\n" (List.length stores);
       let* rest = code_command lmap body in
-      Printf.eprintf "  rest (body): %d instructions, first: %s\n" (List.length rest) (if rest = [] then "empty" else Code.to_string (List.hd rest));
       return (
         stores @
         MOVI (tag_reg, Offset.jump_length xtor_idx) ::
@@ -603,16 +518,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let max_idx = List.fold_left (fun acc branch ->
         max acc (get_original_index branch.xtor)
       ) 0 branches in
-      if !debug_subst then begin
-        Printf.eprintf "CSwitch: v=%s dec=%s\n" (Ident.name v) (Path.name dec.name);
-        Printf.eprintf "  ctx (len=%d): [%s]\n" (List.length ctx) (pp_ctx ctx);
-        Printf.eprintf "  v pos_from_end=%d\n" (position_from_end ctx v);
-        Printf.eprintf "  dec.xtors: [%s]\n" (String.concat ", " (List.map (fun (x: xtor) -> Printf.sprintf "%s(orig_idx=%d)" (Path.name x.name) x.original_index) dec.xtors));
-        Printf.eprintf "  branches: [%s]\n" (String.concat ", " (List.map (fun b -> Printf.sprintf "%s->%d" (Path.name b.xtor) (get_original_index b.xtor)) branches));
-        Printf.eprintf "  max_idx=%d base_lab=%d tag_reg=X%d\n" max_idx base_lab (Register.to_int tag_reg)
-      end;
       (* Create sparse jump table: entries at original_index positions *)
-      let* branch_codes = code_clauses_sparse lmap tail_ctx branches base_lab get_original_index in
+      let* branch_codes =
+        code_clauses_sparse lmap tail_ctx branches base_lab get_original_index
+      in
       return (
         ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
         (if max_idx = 0 then []
@@ -642,19 +551,16 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let max_idx = List.fold_left (fun acc branch ->
         max acc (get_original_index branch.xtor)
       ) 0 branches in
-      Printf.eprintf "CNew: k=%s k_typ=%s\n" (Ident.name k) (match k_typ with Prd _ -> "Prd" | Cns _ -> "Cns");
-      Printf.eprintf "  ctx (captured): [%s]\n" (pp_ctx ctx);
-      Printf.eprintf "  dec.xtors: [%s]\n" (String.concat ", " (List.map (fun (x: xtor) -> Printf.sprintf "%s(orig_idx=%d)" (Path.name x.name) x.original_index) dec.xtors));
-      Printf.eprintf "  branches: [%s]\n" (String.concat ", " (List.map (fun b -> Printf.sprintf "%s->%d" (Path.name b.xtor) (get_original_index b.xtor)) branches));
-      Printf.eprintf "  max_idx=%d base_lab=TBD tag_reg=X%d\n" max_idx (Register.to_int tab_reg);
       (* Store ctx (the captured environment).
-         src_ctx = ctx (where values are now)
-         as_ctx = ctx (so block ends up at fresh_location1(ctx) = k's position) *)
+        src_ctx = ctx (where values are now)
+        as_ctx = ctx (so block ends up at fresh_location1(ctx) = k's position) *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
       let* rest = code_command lmap body in
       (* Create sparse jump table: entries at original_index positions *)
-      let* branch_codes = code_methods_sparse lmap ctx branches base_lab get_original_index in
+      let* branch_codes =
+        code_methods_sparse lmap ctx branches base_lab get_original_index
+      in
       return (
         stores @
         ADR (tab_reg, "lab" ^ string_of_int base_lab) ::
@@ -685,16 +591,9 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
         | None -> 0
       in
       (* Find max original_index to determine if jump table is needed *)
-      let max_idx = List.fold_left (fun acc (y: xtor) -> max acc y.original_index) 0 dec.xtors in
-      if !debug_subst then begin
-        Printf.eprintf "CInvoke: v=%s xtor=%s dec=%s\n" (Ident.name v) (Path.name xtor) (Path.name dec.name);
-        Printf.eprintf "  ctx (len=%d): [%s]\n" (List.length ctx) (pp_ctx ctx);
-        Printf.eprintf "  args: [%s]\n" (pp_ctx args);
-        Printf.eprintf "  v pos_from_end=%d\n" (position_from_end ctx v);
-        Printf.eprintf "  xtor_idx=%d max_idx=%d\n" xtor_idx max_idx;
-        Printf.eprintf "  tab_reg=X%d block_reg=X%d this_reg=X%d\n" 
-          (Register.to_int tab_reg) (Register.to_int block_reg) (Register.to_int this_reg)
-      end;
+      let max_idx = List.fold_left (fun acc (y: xtor) ->
+        max acc y.original_index
+      ) 0 dec.xtors in
       (* Args are already in place at positions 0..n-1.
         We just need to move block pointer and branch.
         Use exchange graph to safely handle overlapping moves. *)
@@ -706,10 +605,6 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       if not (Register.equal block_reg this_reg) then
         graph.(Register.to_int block_reg) <- this_reg :: graph.(Register.to_int block_reg);
       let substitute = code_exhange (Array.to_list graph) in
-      if !debug_subst then begin
-        Printf.eprintf "  substitute: %d instructions\n" (List.length substitute);
-        List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) substitute
-      end;
       return (
         substitute @
         (if max_idx < 1 then
@@ -736,7 +631,6 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Literal: create integer value *)
   | CLit { ctx; n; v; body } ->
       let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
-      Printf.eprintf "CLit: n=%d v=%s ctx=[%s] target_reg=X%d\n" n (Ident.name v) (pp_ctx ctx) (Register.to_int (symbol_location2 new_ctx v));
       let* rest = code_command lmap body in
       return (
         MOVI (symbol_location2 new_ctx v, n) ::
@@ -765,15 +659,8 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let tail_ctx = [(param, Prd (Ext Common.Types.Int))] in
       (* Store ctx as captured environment *)
       let* stores = store ctx ctx ctx in
-      Printf.eprintf "CNewInt: k=%s ctx=[%s]\n" (Ident.name k) (pp_ctx ctx);
-      Printf.eprintf "  stores: %d instructions, last few:\n" (List.length stores);
-      let last_5 = List.rev (List.filteri (fun i _ -> i < 5) (List.rev stores)) in
-      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) last_5;
       let* base_lab = fresh_label in
       let* cont = code_command lmap cont_body in
-      Printf.eprintf "  cont: %d instructions, first few:\n" (List.length cont);
-      let first_5 = List.filteri (fun i _ -> i < 5) cont in
-      List.iter (fun c -> Printf.eprintf "    %s\n" (Code.to_string c)) first_5;
       (* Method: load captured vars from block. After load, context is ctx @ tail_ctx. *)
       let* loads = load ctx tail_ctx in
       let* method_body = code_command lmap branch_body in
@@ -845,9 +732,6 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
 and code_clause (lmap: label_map) (tail_ctx: ctx) (branch: checked_branch)
     : code list state =
   (* Load args into HEAD positions, tail_ctx stays at TAIL *)
-  if !debug_store then
-    Printf.eprintf "code_clause: xtor=%s args=[%s] tail_ctx=[%s]\n" 
-      (Path.name branch.xtor) (pp_ctx branch.args) (pp_ctx tail_ctx);
   let* loads = load branch.args tail_ctx in
   let* body_code = code_command lmap branch.body in
   return (loads @ body_code)
@@ -890,12 +774,6 @@ and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx)
 and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
     : code list state =
   let args = branch.args in
-  if !debug_subst then begin
-    Printf.eprintf "code_method: xtor=%s\n" (Path.name branch.xtor);
-    Printf.eprintf "  args: [%s]\n" (pp_ctx args);
-    Printf.eprintf "  captured_ctx: [%s]\n" (pp_ctx captured_ctx);
-    Printf.eprintf "  full_ctx: [%s]\n" (pp_ctx branch.branch_ctx)
-  end;
   let* loads = load captured_ctx args in
   let* body_code = code_command lmap branch.body in
   return (loads @ body_code)
@@ -939,7 +817,7 @@ let translate (lmap: label_map) (defs: checked_definition Path.tbl)
     : code list list state =
   let def_list = Path.to_list defs in
   let rec compile_all = function
-    | [] -> return []
+      [] -> return []
     | (path, def) :: rest ->
         let _ = path in
         let* code = code_command lmap def.body in
@@ -972,16 +850,6 @@ let compile_checked (defs: checked_definition Path.tbl) : code list * int =
 let compile (main: Axil.Terms.definition) (defs: Axil.Terms.definition Path.tbl) 
     : code list * int =
   let all_defs = Path.add main.path main defs in
-  (* Debug: print Axil IR before checking *)
-  List.iter (fun (path, def) ->
-    let pn = Path.name path in
-    let starts_with prefix s = 
-      String.length s >= String.length prefix && 
-      String.sub s 0 (String.length prefix) = prefix in
-    if starts_with "replicate" pn || starts_with "length" pn then
-      Printf.eprintf "=== Axil IR for %s ===\n%s\n\n" pn 
-        (Axil.Printing.command_to_string_typed def.Axil.Terms.body)
-  ) (Path.to_list all_defs);
   let checked_defs = check_definitions all_defs in
   compile_checked checked_defs
 
