@@ -37,7 +37,7 @@ type token =
   
   (* Identifiers *)
   | IDENT of string
-  | INT of int
+  | INT of Int32.t
   
   (* Special *)
   | EOF
@@ -73,5 +73,5 @@ let string_of_token = function
   | PIPE -> "|"
   | SEMICOLON -> ";"
   | IDENT s -> "ident(" ^ s ^ ")"
-  | INT n -> "int(" ^ string_of_int n ^ ")"
+  | INT n -> "int(" ^ Int32.to_string n ^ ")"
   | EOF -> "EOF"

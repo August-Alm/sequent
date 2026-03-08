@@ -11,6 +11,8 @@
   - Algebraic data types automatically promoted to the kind level
 *)
 
+open External
+
 module Prim = struct
   open Identifiers
   let fun_sym = Path.of_primitive 1 "fun"
@@ -36,9 +38,6 @@ module type BASE = sig
   val is_producer: 'a chiral -> bool
   val is_consumer: 'a chiral -> bool
 end
-
-(* External types are always positive *)
-type ext_type = Int
 
 type data_sort = Data | Codata
 

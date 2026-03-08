@@ -2,6 +2,7 @@
 
 (using menhir 3.0)
 
+
 (name sequent)
 
 (generate_opam_files true)
@@ -21,7 +22,7 @@
  (name sequent)
  (synopsis "A short synopsis")
  (description "A longer description")
- (depends ocaml)
+ (depends ocaml (stdint (= 0.7.2)))
  (tags
   ("add topics" "to describe" your project)))
 

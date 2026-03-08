@@ -11,11 +11,17 @@ type sym = Path.t
 
 type term =
   (* n *)
-    Int of int
+    Int of int64
   (* t + u *)
   | Add of term * term
   (* t - u *)
   | Sub of term * term
+  (* t * u *)
+  | Mul of term * term
+  (* t / u *)
+  | Div of term * term
+  (* t % u *)
+  | Rem of term * term
   (* x *)
   | Var of var
   (* name; reference to top-level definition *)
@@ -49,9 +55,12 @@ and branch =
 
 (* Typed terms: AST with type annotations *)
 type typed_term =
-    TypedInt of int
+    TypedInt of int64
   | TypedAdd of typed_term * typed_term
   | TypedSub of typed_term * typed_term
+  | TypedMul of typed_term * typed_term
+  | TypedDiv of typed_term * typed_term
+  | TypedRem of typed_term * typed_term
   | TypedVar of var * typ
   | TypedSym of sym * typ
   | TypedApp of typed_term * typed_term * typ
@@ -75,6 +84,9 @@ let get_type (tm: typed_term) : typ =
     TypedInt _ -> Ext Int
   | TypedAdd (_, _) -> Ext Int
   | TypedSub (_, _) -> Ext Int
+  | TypedMul (_, _) -> Ext Int
+  | TypedDiv (_, _) -> Ext Int
+  | TypedRem (_, _) -> Ext Int
   | TypedVar (_, ty) -> ty
   | TypedSym (_, ty) -> ty
   | TypedApp (_, _, ty) -> ty
@@ -100,6 +112,9 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
     TypedInt n -> TypedInt n
   | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
   | TypedSub (t1, t2) -> TypedSub (go t1, go t2)
+  | TypedMul (t1, t2) -> TypedMul (go t1, go t2)
+  | TypedDiv (t1, t2) -> TypedDiv (go t1, go t2)
+  | TypedRem (t1, t2) -> TypedRem (go t1, go t2)
   | TypedVar (x, ty) -> TypedVar (x, go_typ ty)
   | TypedSym (path, ty) -> TypedSym (path, go_typ ty)
   | TypedApp (f, arg, ty) -> TypedApp (go f, go arg, go_typ ty)
@@ -133,6 +148,9 @@ let rec subst_term_in_typed_term (x: Ident.t) (replacement: typed_term) (tm: typ
     TypedInt n -> TypedInt n
   | TypedAdd (t1, t2) -> TypedAdd (go t1, go t2)
   | TypedSub (t1, t2) -> TypedSub (go t1, go t2)
+  | TypedMul (t1, t2) -> TypedMul (go t1, go t2)
+  | TypedDiv (t1, t2) -> TypedDiv (go t1, go t2)
+  | TypedRem (t1, t2) -> TypedRem (go t1, go t2)
   | TypedVar (y, ty) -> 
       if Ident.equal x y then replacement else TypedVar (y, ty)
   | TypedSym (path, ty) -> TypedSym (path, ty)
@@ -230,6 +248,9 @@ let rec normalize (tm: typed_term) : typed_term =
   | TypedSym _ -> tm
   | TypedAdd (t1, t2) -> TypedAdd (normalize t1, normalize t2)
   | TypedSub (t1, t2) -> TypedSub (normalize t1, normalize t2)
+  | TypedMul (t1, t2) -> TypedMul (normalize t1, normalize t2)
+  | TypedDiv (t1, t2) -> TypedDiv (normalize t1, normalize t2)
+  | TypedRem (t1, t2) -> TypedRem (normalize t1, normalize t2)
   | TypedMatch (scrut, branches, ty) ->
       TypedMatch (normalize scrut, List.map normalize_clause branches, ty)
   | TypedNew (branches, ty) ->
@@ -268,6 +289,12 @@ and normalize_types_only (tm: typed_term) : typed_term =
       TypedAdd (normalize_types_only t1, normalize_types_only t2)
   | TypedSub (t1, t2) ->
       TypedSub (normalize_types_only t1, normalize_types_only t2)
+  | TypedMul (t1, t2) ->
+      TypedMul (normalize_types_only t1, normalize_types_only t2)
+  | TypedDiv (t1, t2) ->
+      TypedDiv (normalize_types_only t1, normalize_types_only t2)
+  | TypedRem (t1, t2) ->
+      TypedRem (normalize_types_only t1, normalize_types_only t2)
   | TypedMatch (scrut, branches, ty) ->
       TypedMatch (normalize_types_only scrut, 
         List.map (fun (x, tv, tm, b) -> (x, tv, tm, normalize_types_only b)) branches, ty)
@@ -536,6 +563,21 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       let* (t', _, sbs) = check ctx sbs t (Ext Int) in
       let* (u', _, sbs) = check ctx sbs u (Ext Int) in
       Ok (TypedSub (t', u'), Ext Int, sbs)
+
+  | Mul (t, u) ->
+      let* (t', _, sbs) = check ctx sbs t (Ext Int) in
+      let* (u', _, sbs) = check ctx sbs u (Ext Int) in
+      Ok (TypedMul (t', u'), Ext Int, sbs)
+
+  | Div (t, u) ->
+      let* (t', _, sbs) = check ctx sbs t (Ext Int) in
+      let* (u', _, sbs) = check ctx sbs u (Ext Int) in
+      Ok (TypedDiv (t', u'), Ext Int, sbs)
+
+  | Rem (t, u) ->
+      let* (t', _, sbs) = check ctx sbs t (Ext Int) in
+      let* (u', _, sbs) = check ctx sbs u (Ext Int) in
+      Ok (TypedRem (t', u'), Ext Int, sbs)
 
   | Ifz (cond, then_branch, else_branch) ->
       let* (cond', _, sbs) = check ctx sbs cond (Ext Int) in

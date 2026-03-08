@@ -4,10 +4,11 @@
 *)
 
 open Code
+open Stdint
 
 (** Machine state *)
 type state =
-  { code: code list          (* The program *)
+  { code: code               (* The program *)
   ; counter: int             (* Program counter *)
   ; registers: int array     (* 31 registers holding integer values *)
   ; memory: int array        (* Memory as growable array *)
@@ -26,7 +27,7 @@ let set (regs: int array) (r: Register.t) (v: int) : unit =
 
 (** Fetch instruction at counter position.
     Labels don't count toward address; each real instruction is 4 bytes. *)
-let rec fetch_at (code: code list) (counter: int) : code =
+let rec fetch_at (code: code) (counter: int) : instruction =
   match code with
     [] -> failwith ("jumped beyond instructions " ^ string_of_int counter)
   | LAB _ :: rest -> fetch_at rest counter
@@ -35,7 +36,7 @@ let rec fetch_at (code: code list) (counter: int) : code =
   | _ -> failwith ("jumped between instructions " ^ string_of_int counter)
 
 (* Debug version that tracks original counter *)
-let fetch_at_debug (code: code list) (counter: int) : code =
+let fetch_at_debug (code: code) (counter: int) : instruction =
   let original = counter in
   let rec aux code cnt =
     match code with
@@ -48,7 +49,7 @@ let fetch_at_debug (code: code list) (counter: int) : code =
   aux code counter
 
 (** Get counter value for a label *)
-let get_counter (code: code list) (label: string) : int =
+let get_counter (code: code) (label: string) : int =
   let label = if label = "cleanup" then "lab0" else label in
   let rec aux code acc =
     match code with
@@ -102,7 +103,7 @@ let step (st: state) (mem_ref: int array ref) : state =
   
   | MSUB (rd, rs1, rs2, rs3) ->
       (* rd = rs3 - rs1 * rs2 *)
-      set st.registers rd (get st.registers rs3 - get st.registers rs1 * get st.registers rs2);
+      set st.registers rd (get st.registers rs3 - (get st.registers rs1 * get st.registers rs2));
       { st with counter = st.counter + 4 }
   
   | B label ->
@@ -124,7 +125,7 @@ let step (st: state) (mem_ref: int array ref) : state =
       { st with counter = st.counter + 4 }
   
   | MOVI (rd, imm) ->
-      set st.registers rd imm;
+      set st.registers rd (Int64.to_int imm);
       { st with counter = st.counter + 4 }
   
   | LDR (rt, rn, offset) ->
@@ -177,7 +178,7 @@ let step (st: state) (mem_ref: int array ref) : state =
   | LAB _ -> failwith "jumped between instructions (label)"
 
 (** Create initial state from code *)
-let initial (code: code list) : state =
+let initial (code: code) : state =
   let regs = Array.make 31 0 in
   (* x0 = heap pointer, x1 = free list pointer 
     Each block needs 144 bytes (18 words × 8 bytes each):
@@ -238,7 +239,7 @@ let trace ?(max_steps=1000) (st: state) : unit =
   loop st 0
 
 (** Run and return the value in register X1 (return2) *)
-let run_and_get_result ?(max_steps=10000) (code: code list) : int =
+let run_and_get_result ?(max_steps=10000) (code: code) : int =
   let st = initial code in
   let final_regs = run ~max_steps st in
   final_regs.(Register.to_int Register.return2)

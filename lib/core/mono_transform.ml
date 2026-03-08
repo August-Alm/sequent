@@ -68,7 +68,7 @@ let rec find_mono_calls_in_cmd
         (def_path, type_args) :: from_args
       else
         from_args
-  | T.Add (t1, t2, t3) | T.Sub (t1, t2, t3) ->
+  | T.Add (t1, t2, t3) | T.Sub (t1, t2, t3) | T.Mul (t1, t2, t3) | T.Div (t1, t2, t3) | T.Rem (t1, t2, t3) ->
       find_mono_calls_in_term mono_infos t1 @ 
       find_mono_calls_in_term mono_infos t2 @ 
       find_mono_calls_in_term mono_infos t3
@@ -148,7 +148,7 @@ let find_called_function_in_newforall (tvar: Ident.t) (cmd: T.command): Path.t o
         (* Look in both sides *)
         (match find_call_term producer with
           Some p -> Some p | None -> find_call_consumer consumer)
-    | T.Add _ | T.Sub _ | T.Ifz _ | T.Ret _ | T.End -> None
+    | T.Add _ | T.Sub _ | T.Mul _ | T.Div _ | T.Rem _ | T.Ifz _ | T.Ret _ | T.End -> None
   and find_call_term tm =
     match tm with
       T.Comatch (_, branches) | T.Match (_, branches) ->
@@ -605,6 +605,24 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
       let* t2' = transform_term ctx t2 in
       let* t3' = transform_term ctx t3 in
       Ok (T.Sub (t1', t2', t3'))
+  
+  | T.Mul (t1, t2, t3) ->
+      let* t1' = transform_term ctx t1 in
+      let* t2' = transform_term ctx t2 in
+      let* t3' = transform_term ctx t3 in
+      Ok (T.Mul (t1', t2', t3'))
+  
+  | T.Div (t1, t2, t3) ->
+      let* t1' = transform_term ctx t1 in
+      let* t2' = transform_term ctx t2 in
+      let* t3' = transform_term ctx t3 in
+      Ok (T.Div (t1', t2', t3'))
+  
+  | T.Rem (t1, t2, t3) ->
+      let* t1' = transform_term ctx t1 in
+      let* t2' = transform_term ctx t2 in
+      let* t3' = transform_term ctx t3 in
+      Ok (T.Rem (t1', t2', t3'))
   
   | T.Ifz (cond, then_cmd, else_cmd) ->
       let* cond' = transform_term ctx cond in

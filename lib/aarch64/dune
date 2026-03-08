@@ -1,4 +1,4 @@
 (library
  (name aarch64)
  (public_name sequent.aarch64)
- (libraries utility))
+ (libraries common utility stdint))

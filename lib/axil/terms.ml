@@ -4,6 +4,7 @@
 *)
 
 open Common.Identifiers
+open Common.External
 open Types.AxilBase
 open Types.AxilTypes
 
@@ -110,12 +111,15 @@ type command =
       Γ ⊢ ⟨v | k⟩
       
       Cut: pass producer v to consumer k at primitive type τ. *)
-  | Axiom of Common.Types.ext_type * var * var
+  | Axiom of ext_type * var * var
 
-  | Lit of int * var * command       (* lit n { v ⇒ s } *)
+  | Lit of int64 * var * command       (* lit n { v ⇒ s } *)
   | NewInt of var * var * command * command  (* new k = { v ⇒ s1 }; s2 - Int consumer binding, k : Cns Int *)
   | Add of var * var * var * command (* add(x, y) { v ⇒ s } *)
   | Sub of var * var * var * command (* sub(x, y) { v ⇒ s } *)
+  | Mul of var * var * var * command (* mul(x, y) { v ⇒ s } *)
+  | Div of var * var * var * command (* div(x, y) { v ⇒ s } *)
+  | Rem of var * var * var * command (* rem(x, y) { v ⇒ s } *)
   | Ifz of var * command * command   (* ifz(v) { sThen; sElse } *)
 
     (* Terminals *)
@@ -655,6 +659,54 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* sub(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
   | Sub (x, y, v, body) ->
+      let* x_ct = lookup_var ctx x in
+      let* y_ct = lookup_var ctx y in
+      let* x_ty = expect_prd x_ct in
+      let* y_ty = expect_prd y_ct in
+      let int_ty = Ext Int in
+      (match unify x_ty int_ty subs with
+        None -> Error (UnificationFailed (x_ty, int_ty))
+      | Some subs' ->
+          (match unify y_ty int_ty subs' with
+            None -> Error (UnificationFailed (y_ty, int_ty))
+          | Some subs'' ->
+              let v_typ = Prd int_ty in
+              check_command (prepend ctx v v_typ) subs'' body))
+
+  (* mul(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
+  | Mul (x, y, v, body) ->
+      let* x_ct = lookup_var ctx x in
+      let* y_ct = lookup_var ctx y in
+      let* x_ty = expect_prd x_ct in
+      let* y_ty = expect_prd y_ct in
+      let int_ty = Ext Int in
+      (match unify x_ty int_ty subs with
+        None -> Error (UnificationFailed (x_ty, int_ty))
+      | Some subs' ->
+          (match unify y_ty int_ty subs' with
+            None -> Error (UnificationFailed (y_ty, int_ty))
+          | Some subs'' ->
+              let v_typ = Prd int_ty in
+              check_command (prepend ctx v v_typ) subs'' body))
+
+  (* div(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
+  | Div (x, y, v, body) ->
+      let* x_ct = lookup_var ctx x in
+      let* y_ct = lookup_var ctx y in
+      let* x_ty = expect_prd x_ct in
+      let* y_ty = expect_prd y_ct in
+      let int_ty = Ext Int in
+      (match unify x_ty int_ty subs with
+        None -> Error (UnificationFailed (x_ty, int_ty))
+      | Some subs' ->
+          (match unify y_ty int_ty subs' with
+            None -> Error (UnificationFailed (y_ty, int_ty))
+          | Some subs'' ->
+              let v_typ = Prd int_ty in
+              check_command (prepend ctx v v_typ) subs'' body))
+
+  (* rem(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
+  | Rem (x, y, v, body) ->
       let* x_ct = lookup_var ctx x in
       let* y_ct = lookup_var ctx y in
       let* x_ty = expect_prd x_ct in

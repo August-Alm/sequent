@@ -123,6 +123,9 @@ and subst_command (ts: TySub.t) (cmd: CTm.command) : CTm.command =
     CTm.Cut (ty, lhs, rhs) -> CTm.Cut (subst_type ts ty, subst_term ts lhs, subst_term ts rhs)
   | CTm.Add (m, n, k) -> CTm.Add (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Sub (m, n, k) -> CTm.Sub (subst_term ts m, subst_term ts n, subst_term ts k)
+  | CTm.Mul (m, n, k) -> CTm.Mul (subst_term ts m, subst_term ts n, subst_term ts k)
+  | CTm.Div (m, n, k) -> CTm.Div (subst_term ts m, subst_term ts n, subst_term ts k)
+  | CTm.Rem (m, n, k) -> CTm.Rem (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Ifz (cond, s1, s2) -> CTm.Ifz (subst_term ts cond, subst_command ts s1, subst_command ts s2)
   | CTm.Ret (ty, t) -> CTm.Ret (subst_type ts ty, subst_term ts t)
   | CTm.Call (p, tys, args) -> CTm.Call (p, List.map (subst_type ts) tys, List.map (subst_term ts) args)
@@ -225,7 +228,7 @@ module Target = struct
     | CutInstantiate of Ident.t * CTy.typ * CTy.typ * Ident.t
     | CutNewForall of Ident.t * CTy.typ * CTy.typ * command * Ident.t
     (* Primitives *)
-    | LetInt of int * Ident.t * command
+    | LetInt of int64 * Ident.t * command
     | LetNewInt of Ident.t * Ident.t * command * command  (* new k = { v => branch }; cont - int continuation *)
     | CutInt of Ident.t * Ident.t
     (* Administrative cuts at type variables (should be eliminated by monomorphization) *)
@@ -233,6 +236,9 @@ module Target = struct
     | AdministrativeTyped of Ident.t * Ident.t * command * Ident.t * command  (* tvar, x, s1, a, s2 for ⟨µα.s1 | µ~x.s2⟩_T *)
     | Add of Ident.t * Ident.t * Ident.t * command
     | Sub of Ident.t * Ident.t * Ident.t * command
+    | Mul of Ident.t * Ident.t * Ident.t * command
+    | Div of Ident.t * Ident.t * Ident.t * command
+    | Rem of Ident.t * Ident.t * Ident.t * command
     | Ifz of Ident.t * command * command
     | Call of Path.t * CTy.typ list * Ident.t list
     | Ret of CTy.typ * Ident.t
@@ -285,6 +291,12 @@ module Target = struct
         let k' = Ident.fresh () in Add (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
     | Sub (x, y, k, cont) ->
         let k' = Ident.fresh () in Sub (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
+    | Mul (x, y, k, cont) ->
+        let k' = Ident.fresh () in Mul (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
+    | Div (x, y, k, cont) ->
+        let k' = Ident.fresh () in Div (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
+    | Rem (x, y, k, cont) ->
+        let k' = Ident.fresh () in Rem (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
     | Ifz (v, s1, s2) -> Ifz (Sub.apply h v, rename h s1, rename h s2)
     | Call (p, tys, args) -> Call (p, tys, List.map (Sub.apply h) args)
     | Ret (ty, x) -> Ret (ty, Sub.apply h x)
@@ -489,6 +501,24 @@ module Transform = struct
           bind_term ctx n (Sub.compose h i) (fun j n' ->
             let r = Ident.fresh () in
             Target.Sub (m', Sub.apply j n', r, k (Sub.compose i j) r)))
+    
+    | CTm.Mul (m, n, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            let r = Ident.fresh () in
+            Target.Mul (m', Sub.apply j n', r, k (Sub.compose i j) r)))
+    
+    | CTm.Div (m, n, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            let r = Ident.fresh () in
+            Target.Div (m', Sub.apply j n', r, k (Sub.compose i j) r)))
+    
+    | CTm.Rem (m, n, CTm.Var cns_var) when Ident.equal cns_var target_cns ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            let r = Ident.fresh () in
+            Target.Rem (m', Sub.apply j n', r, k (Sub.compose i j) r)))
               
     (* General Add/Sub - the continuation is NOT our target, recurse normally *)
     | CTm.Add (m, n, cns) ->
@@ -504,6 +534,27 @@ module Transform = struct
             bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
               let r = Ident.fresh () in
               Target.Sub (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Mul (m, n, cns) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Mul (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Div (m, n, cns) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Div (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Rem (m, n, cns) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx cns (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Rem (m', Sub.apply j n', r, Target.CutInt (r, k')))))
 
     | CTm.Ifz (cond, s1, s2) ->
         bind_term ctx cond h (fun _i v ->
@@ -550,6 +601,27 @@ module Transform = struct
             bind_term ctx k (Sub.compose (Sub.compose h i) j) (fun _l k' ->
               let r = Ident.fresh () in
               Target.Sub (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Mul (m, n, k) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx k (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Mul (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Div (m, n, k) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx k (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Div (m', Sub.apply j n', r, Target.CutInt (r, k')))))
+
+    | CTm.Rem (m, n, k) ->
+        bind_term ctx m h (fun i m' ->
+          bind_term ctx n (Sub.compose h i) (fun j n' ->
+            bind_term ctx k (Sub.compose (Sub.compose h i) j) (fun _l k' ->
+              let r = Ident.fresh () in
+              Target.Rem (m', Sub.apply j n', r, Target.CutInt (r, k')))))
 
     | CTm.Ifz (cond, s1, s2) ->
         bind_term ctx cond h (fun _i v ->
@@ -806,6 +878,9 @@ module Collapse = struct
     | Target.AdministrativeTyped _ -> failwith "Unexpected AdministrativeTyped -- type variable not eliminated by monomorphization"
     | Target.Add (x, y, k, cont) -> FTm.Add (x, y, k, collapse_command ctx parity cont)
     | Target.Sub (x, y, k, cont) -> FTm.Sub (x, y, k, collapse_command ctx parity cont)
+    | Target.Mul (x, y, k, cont) -> FTm.Mul (x, y, k, collapse_command ctx parity cont)
+    | Target.Div (x, y, k, cont) -> FTm.Div (x, y, k, collapse_command ctx parity cont)
+    | Target.Rem (x, y, k, cont) -> FTm.Rem (x, y, k, collapse_command ctx parity cont)
     | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command ctx parity s1, collapse_command ctx parity s2)
     | Target.Call (path, [], args) -> FTm.Jump (path, args)
     | Target.Call _ -> failwith " -- not monomorphic"

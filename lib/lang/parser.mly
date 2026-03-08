@@ -6,9 +6,9 @@
 %token KW_FUN KW_LET KW_IN KW_MATCH KW_WITH KW_NEW KW_DATA KW_CODE KW_WHERE KW_END KW_TYPE
 %token KW_IFZ KW_THEN KW_ELSE
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
-%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR PIPE PLUS MINUS
+%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR SLASH PERCENT PIPE PLUS MINUS
 %token <string> IDENT
-%token <int> INT
+%token <int64> INT
 %token EOF
 
 (* Precedence and associativity - lowest to highest *)
@@ -17,6 +17,7 @@
 %nonassoc KW_THEN KW_ELSE (* ifz ... then ... else ... *)
 %nonassoc KW_WITH KW_END (* match ... with ... *)
 %left PLUS MINUS         (* addition, subtraction *)
+%left STAR SLASH PERCENT (* multiplication, division, remainder *)
 %right ARROW             (* type arrows *)
 (* Start symbol *)
 %start <Syntax.ast> main_expr
@@ -88,6 +89,12 @@ expr:
     { AST_Add (t1, t2) }
   | t1 = expr MINUS t2 = expr
     { AST_Sub (t1, t2) }
+  | t1 = expr STAR t2 = expr
+    { AST_Mul (t1, t2) }
+  | t1 = expr SLASH t2 = expr
+    { AST_Div (t1, t2) }
+  | t1 = expr PERCENT t2 = expr
+    { AST_Rem (t1, t2) }
   | KW_MATCH t = expr KW_WITH LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE
     { AST_Match (t, clauses) }
   | KW_NEW LBRACE clauses = separated_list(SEMICOLON, clause) RBRACE

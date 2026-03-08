@@ -23,11 +23,17 @@ type ast_typ =
 
 type ast =
   (* n *)
-    AST_Int of int
+    AST_Int of int64
   (* t + u *)
   | AST_Add of ast * ast
   (* t - u *)
   | AST_Sub of ast * ast
+  (* t * u *)
+  | AST_Mul of ast * ast
+  (* t / u *)
+  | AST_Div of ast * ast
+  (* t % u (remainder) *)
+  | AST_Rem of ast * ast
   (* ifz(n) then t else u *)
   | AST_Ifz of ast * ast * ast
   (* x *)
@@ -81,7 +87,7 @@ type ast_type_dec =
     code t: k where { xtor1; ...; xtorN }
 *)
 type ast_type_def =
-  | AST_TyAlias of string * ast_typ
+    AST_TyAlias of string * ast_typ
   | AST_TyData of ast_type_dec
   | AST_TyCode of ast_type_dec
 
@@ -124,7 +130,7 @@ let rec kind_to_string = function
   | AST_KArrow (k1, k2) ->
     let k1_str =
       match k1 with
-      | AST_KStar | AST_KApp (_, []) -> kind_to_string k1
+        AST_KStar | AST_KApp (_, []) -> kind_to_string k1
       | AST_KArrow _ | AST_KApp _ -> "(" ^ kind_to_string k1 ^ ")"
     in
     k1_str ^ " -> " ^ kind_to_string k2
@@ -147,8 +153,7 @@ let rec typ_to_string = function
     t1_str ^ " -> " ^ typ_to_string t2
   | AST_TyAll ((x, k_opt), t) ->
     let k_str = match k_opt with
-        None -> ""
-      | Some k -> ": " ^ kind_to_string k
+        None -> "" | Some k -> ": " ^ kind_to_string k
     in
     "{" ^ x ^ k_str ^ "} " ^ typ_to_string t
 
@@ -163,11 +168,17 @@ and typ_atom_to_string = function
 
 (* Convert term to string *)
 let rec ast_to_string (lvl: int) = function
-    AST_Int n -> string_of_int n
+    AST_Int n -> Int64.to_string n
   | AST_Add (t1, t2) ->
     "(" ^ ast_to_string lvl t1 ^ " + " ^ ast_to_string lvl t2 ^ ")"
   | AST_Sub (t1, t2) ->
     "(" ^ ast_to_string lvl t1 ^ " - " ^ ast_to_string lvl t2 ^ ")"
+  | AST_Mul (t1, t2) ->
+    "(" ^ ast_to_string lvl t1 ^ " * " ^ ast_to_string lvl t2 ^ ")"
+  | AST_Div (t1, t2) ->
+    "(" ^ ast_to_string lvl t1 ^ " / " ^ ast_to_string lvl t2 ^ ")"
+  | AST_Rem (t1, t2) ->
+    "(" ^ ast_to_string lvl t1 ^ " % " ^ ast_to_string lvl t2 ^ ")"
   | AST_Ifz (n, t, u) ->
     "ifz(" ^ ast_to_string lvl n ^ ") then " ^ ast_to_string lvl t ^
     " else " ^ ast_to_string lvl u

@@ -19,6 +19,9 @@ type command =
   | Call of sym * typ list * term list
   | Add of term * term * term
   | Sub of term * term * term
+  | Mul of term * term * term
+  | Div of term * term * term
+  | Rem of term * term * term
   | Ifz of term * command * command
   (* Explicit return - terminal command that returns a value *)
   | Ret of typ * term
@@ -26,7 +29,7 @@ type command =
 
 and term =
     Var of var
-  | Lit of int
+  | Lit of int64
   (* Constructors build data (are producers) *)
   (* Parameters are instantiated declaration, ctor symbol, and terms *)
   | Ctor of dec * sym * (term list)
@@ -229,6 +232,9 @@ let rec refine_cmd_types (subst: typ Ident.tbl) (cmd: command) : command =
       Call (path, List.map refine_typ type_args, List.map refine_term term_args)
   | Add (t1, t2, t3) -> Add (refine_term t1, refine_term t2, refine_term t3)
   | Sub (t1, t2, t3) -> Sub (refine_term t1, refine_term t2, refine_term t3)
+  | Mul (t1, t2, t3) -> Mul (refine_term t1, refine_term t2, refine_term t3)
+  | Div (t1, t2, t3) -> Div (refine_term t1, refine_term t2, refine_term t3)
+  | Rem (t1, t2, t3) -> Rem (refine_term t1, refine_term t2, refine_term t3)
   | Ifz (t, c1, c2) ->
       Ifz (refine_term t, refine_cmd_types subst c1, refine_cmd_types subst c2)
   | Ret (ty, t) -> Ret (refine_typ ty, refine_term t)
@@ -536,6 +542,48 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
               (* t1, t2 should be Prd Int, t3 should be Cns Int *)
+              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
+  | Mul (t1, t2, t3) ->
+      let* (t1_ct, subs') = infer_typ ctx subs t1 in
+      let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
+      let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
+      let int_prd = Prd (Ext Int) in
+      let int_cns = Cns (Ext Int) in
+      (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
+        None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+      | Some subs4 ->
+          (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
+            None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+          | Some _ ->
+              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
+  | Div (t1, t2, t3) ->
+      let* (t1_ct, subs') = infer_typ ctx subs t1 in
+      let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
+      let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
+      let int_prd = Prd (Ext Int) in
+      let int_cns = Cns (Ext Int) in
+      (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
+        None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+      | Some subs4 ->
+          (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
+            None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+          | Some _ ->
+              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
+  | Rem (t1, t2, t3) ->
+      let* (t1_ct, subs') = infer_typ ctx subs t1 in
+      let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
+      let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
+      let int_prd = Prd (Ext Int) in
+      let int_cns = Cns (Ext Int) in
+      (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
+        None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+      | Some subs4 ->
+          (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
+            None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
+          | Some _ ->
               if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Ifz (t, cmd1, cmd2) ->

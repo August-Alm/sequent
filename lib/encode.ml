@@ -331,6 +331,30 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
       CTm.MuPrd (CTy.Ext Int, alpha,
         CTm.Sub (t1', t2', CTm.Var alpha))
 
+  | MTm.TypedMul (t1, t2) ->
+      (* mul(m, n) → μα.mul(m', n', α) *)
+      let t1' = encode_term ctx t1 in
+      let t2' = encode_term ctx t2 in
+      let alpha = Ident.fresh () in
+      CTm.MuPrd (CTy.Ext Int, alpha,
+        CTm.Mul (t1', t2', CTm.Var alpha))
+
+  | MTm.TypedDiv (t1, t2) ->
+      (* div(m, n) → μα.div(m', n', α) *)
+      let t1' = encode_term ctx t1 in
+      let t2' = encode_term ctx t2 in
+      let alpha = Ident.fresh () in
+      CTm.MuPrd (CTy.Ext Int, alpha,
+        CTm.Div (t1', t2', CTm.Var alpha))
+
+  | MTm.TypedRem (t1, t2) ->
+      (* rem(m, n) → μα.rem(m', n', α) *)
+      let t1' = encode_term ctx t1 in
+      let t2' = encode_term ctx t2 in
+      let alpha = Ident.fresh () in
+      CTm.MuPrd (CTy.Ext Int, alpha,
+        CTm.Rem (t1', t2', CTm.Var alpha))
+
   | MTm.TypedLam (x, _a, body, fun_ty) ->
       (* λx:a. body → thunk(Comatch(fun_sym, [apply{dom,cod}(k, x) => ⟨body' | k⟩]))
          

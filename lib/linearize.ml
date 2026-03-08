@@ -144,6 +144,18 @@ let rec free_vars_cmd (cmd: FTm.command) : int VarMap.t =
       let body_fv = free_vars_cmd body in
       let body_fv' = VarMap.remove r body_fv in
       add_vars [x; y] body_fv'
+  | FTm.Mul (x, y, r, body) ->
+      let body_fv = free_vars_cmd body in
+      let body_fv' = VarMap.remove r body_fv in
+      add_vars [x; y] body_fv'
+  | FTm.Div (x, y, r, body) ->
+      let body_fv = free_vars_cmd body in
+      let body_fv' = VarMap.remove r body_fv in
+      add_vars [x; y] body_fv'
+  | FTm.Rem (x, y, r, body) ->
+      let body_fv = free_vars_cmd body in
+      let body_fv' = VarMap.remove r body_fv in
+      add_vars [x; y] body_fv'
   | FTm.Ifz (v, then_cmd, else_cmd) ->
       let then_fv = free_vars_cmd then_cmd in
       let else_fv = free_vars_cmd else_cmd in
@@ -370,6 +382,24 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
       let body' = linearize_cmd st (r :: new_ctx) body in
       wrap_with_reordering ctx subst (ATm.Sub (x, y, r, body'))
+
+  | FTm.Mul (x, y, r, body) ->
+      (* Mul does NOT consume x and y - unrestricted discipline for primitives *)
+      let (subst, new_ctx) = build_reordering st ctx [] fv in
+      let body' = linearize_cmd st (r :: new_ctx) body in
+      wrap_with_reordering ctx subst (ATm.Mul (x, y, r, body'))
+
+  | FTm.Div (x, y, r, body) ->
+      (* Div does NOT consume x and y - unrestricted discipline for primitives *)
+      let (subst, new_ctx) = build_reordering st ctx [] fv in
+      let body' = linearize_cmd st (r :: new_ctx) body in
+      wrap_with_reordering ctx subst (ATm.Div (x, y, r, body'))
+
+  | FTm.Rem (x, y, r, body) ->
+      (* Rem does NOT consume x and y - unrestricted discipline for primitives *)
+      let (subst, new_ctx) = build_reordering st ctx [] fv in
+      let body' = linearize_cmd st (r :: new_ctx) body in
+      wrap_with_reordering ctx subst (ATm.Rem (x, y, r, body'))
 
   | FTm.NewInt (k, v, branch, cont) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in

@@ -4,6 +4,7 @@
 *)
 
 open Common.Identifiers
+open Common.External
 open Types.FocusedBase
 open Types.FocusedTypes
 open Terms
@@ -56,7 +57,7 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       in
       let arrow = if cfg.unicode then " → " else " -> " in
       s1 ^ arrow ^ pp_typ ~cfg ~nested:false k2
-  | Ext Int -> "int"
+  | Ext t -> ext_type_to_string t
   | TVar id -> Ident.name id
   | TMeta id -> "?" ^ Ident.name id
   | Sgn (name, []) -> pp_sym name
@@ -159,7 +160,7 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
 
   (* lit n { v ⇒ body } *)
   | Lit (n_, v, body) ->
-      ind ^ "let " ^ pp_var v ^ " = " ^ string_of_int n_ ^ ";\n" ^
+      ind ^ "let " ^ pp_var v ^ " = " ^ Int64.to_string n_ ^ ";\n" ^
       pp_cmd ~cfg n body
 
   (* add(x, y) { r ⇒ body } *)
@@ -169,6 +170,18 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
   (* sub(x, y) { r ⇒ body } *)
   | Sub (x, y, r, body) ->
       ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " - " ^ pp_var y ^ ";\n" ^
+      pp_cmd ~cfg n body
+  (* mul(x, y) { r ⇒ body } *)
+  | Mul (x, y, r, body) ->
+      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " * " ^ pp_var y ^ ";\n" ^
+      pp_cmd ~cfg n body
+  (* div(x, y) { r ⇒ body } *)
+  | Div (x, y, r, body) ->
+      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " / " ^ pp_var y ^ ";\n" ^
+      pp_cmd ~cfg n body
+  (* rem(x, y) { r ⇒ body } *)
+  | Rem (x, y, r, body) ->
+      ind ^ "let " ^ pp_var r ^ " = " ^ pp_var x ^ " % " ^ pp_var y ^ ";\n" ^
       pp_cmd ~cfg n body
   (* new k = { v ⇒ branch }; cont *)
   | NewInt (k, v, branch, cont) ->

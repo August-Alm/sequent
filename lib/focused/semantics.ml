@@ -15,7 +15,7 @@ type value =
     DataVal of sym * env            (** {m; E} - constructor m with captured environment *)
   | CodataVal of env * branch list  (** {E; bs} - branches with captured environment *)
   | ReturnVal of env * var * command        (** {E; x ⇒ s} - return continuation *)
-  | IntVal of int                           (** Literal integers *)
+  | IntVal of int64                         (** Literal integers *)
 
 (** Environment maps variables to values *)
 and env =
@@ -40,7 +40,7 @@ let lookup (e: env) (x: var) : value =
 let lookup_opt (e: env) (x: var) : value option =
   Ident.find_opt x e.values
 
-let lookup_int (e: env) (x: var) : int =
+let lookup_int (e: env) (x: var) : int64 =
   match lookup e x with
     IntVal n -> n
   | _ -> failwith ("expected int value for: " ^ Ident.name x)
@@ -80,7 +80,7 @@ let pp_value = function
     DataVal (m, _) -> "{" ^ pp_sym m ^ "; ...}"
   | CodataVal (_, bs) -> "{...; " ^ string_of_int (List.length bs) ^ " branches}"
   | ReturnVal _ -> "{return; ...}"
-  | IntVal n -> string_of_int n
+  | IntVal n -> Int64.to_string n
 
 let pp_env (e: env) : string =
   let bindings = Ident.to_list e.values in
@@ -97,9 +97,12 @@ and cmd_name = function
   | NewInt (k, _, _, _) -> "new " ^ Ident.name k ^ " {int...}"
   | Invoke (v, _, x, _) -> Ident.name v ^ "." ^ pp_sym x
   | Axiom (_, v, k) -> "⟨" ^ Ident.name v ^ " | " ^ Ident.name k ^ "⟩"
-  | Lit (n, v, _) -> "lit " ^ string_of_int n ^ " → " ^ Ident.name v
+  | Lit (n, v, _) -> "lit " ^ Int64.to_string n ^ " → " ^ Ident.name v
   | Add (a, b, v, _) -> Ident.name a ^ " + " ^ Ident.name b ^ " → " ^ Ident.name v
   | Sub (a, b, v, _) -> Ident.name a ^ " - " ^ Ident.name b ^ " → " ^ Ident.name v
+  | Mul (a, b, v, _) -> Ident.name a ^ " * " ^ Ident.name b ^ " → " ^ Ident.name v
+  | Div (a, b, v, _) -> Ident.name a ^ " / " ^ Ident.name b ^ " → " ^ Ident.name v
+  | Rem (a, b, v, _) -> Ident.name a ^ " % " ^ Ident.name b ^ " → " ^ Ident.name v
   | Ifz (v, _, _) -> "ifz " ^ Ident.name v
   | Jump (label, _) -> "jump " ^ pp_sym label
   | End -> "end"
@@ -196,7 +199,7 @@ let step ((cmd, e): config) : config option =
   | Add (v1, v2, v, body) ->
       (match (lookup_opt e v1, lookup_opt e v2) with
         (Some (IntVal n1), Some (IntVal n2)) ->
-          let e' = extend e v (IntVal (n1 + n2)) in
+          let e' = extend e v (IntVal (Int64.add n1 n2)) in
           Some (body, e')
       | (Some val1, Some val2) ->
           failwith (Printf.sprintf "add: expected ints, got %s=%s, %s=%s"
@@ -208,13 +211,49 @@ let step ((cmd, e): config) : config option =
   | Sub (v1, v2, v, body) ->
       (match (lookup_opt e v1, lookup_opt e v2) with
         (Some (IntVal n1), Some (IntVal n2)) ->
-          let e' = extend e v (IntVal (n1 - n2)) in
+          let e' = extend e v (IntVal (Int64.sub n1 n2)) in
           Some (body, e')
       | (Some val1, Some val2) ->
           failwith (Printf.sprintf "sub: expected ints, got %s=%s, %s=%s"
             (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
       | (None, _) -> failwith ("sub: unbound " ^ Ident.name v1)
       | (_, None) -> failwith ("sub: unbound " ^ Ident.name v2))
+
+  (* (mul) ⟨mul(v1, v2) { v ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → E(v1) * E(v2)⟩ *)
+  | Mul (v1, v2, v, body) ->
+      (match (lookup_opt e v1, lookup_opt e v2) with
+        (Some (IntVal n1), Some (IntVal n2)) ->
+          let e' = extend e v (IntVal (Int64.mul n1 n2)) in
+          Some (body, e')
+      | (Some val1, Some val2) ->
+          failwith (Printf.sprintf "mul: expected ints, got %s=%s, %s=%s"
+            (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
+      | (None, _) -> failwith ("mul: unbound " ^ Ident.name v1)
+      | (_, None) -> failwith ("mul: unbound " ^ Ident.name v2))
+
+  (* (div) ⟨div(v1, v2) { v ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → E(v1) / E(v2)⟩ *)
+  | Div (v1, v2, v, body) ->
+      (match (lookup_opt e v1, lookup_opt e v2) with
+        (Some (IntVal n1), Some (IntVal n2)) ->
+          let e' = extend e v (IntVal (Int64.div n1 n2)) in
+          Some (body, e')
+      | (Some val1, Some val2) ->
+          failwith (Printf.sprintf "div: expected ints, got %s=%s, %s=%s"
+            (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
+      | (None, _) -> failwith ("div: unbound " ^ Ident.name v1)
+      | (_, None) -> failwith ("div: unbound " ^ Ident.name v2))
+
+  (* (rem) ⟨rem(v1, v2) { v ⇒ s } ∥ E⟩ → ⟨s ∥ E, v → E(v1) % E(v2)⟩ *)
+  | Rem (v1, v2, v, body) ->
+      (match (lookup_opt e v1, lookup_opt e v2) with
+        (Some (IntVal n1), Some (IntVal n2)) ->
+          let e' = extend e v (IntVal (Int64.rem n1 n2)) in
+          Some (body, e')
+      | (Some val1, Some val2) ->
+          failwith (Printf.sprintf "rem: expected ints, got %s=%s, %s=%s"
+            (Ident.name v1) (pp_value val1) (Ident.name v2) (pp_value val2))
+      | (None, _) -> failwith ("rem: unbound " ^ Ident.name v1)
+      | (_, None) -> failwith ("rem: unbound " ^ Ident.name v2))
 
   (* (newint) ⟨new k = { v ⇒ s1 }; s2 ∥ E⟩ → ⟨s2 ∥ E, k → intcns(E, v, s1)⟩ *)
   | NewInt (k, v, branch_body, cont) ->
@@ -225,7 +264,7 @@ let step ((cmd, e): config) : config option =
   (* (ifz) ⟨ifz v {s1} {s2} ∥ E⟩ → if E(v) = 0 then ⟨s1 ∥ E⟩ else ⟨s2 ∥ E⟩ *)
   | Ifz (v, then_cmd, else_cmd) ->
       let n = lookup_int e v in
-      if n = 0 then Some (then_cmd, e)
+      if n = Int64.zero then Some (then_cmd, e)
       else Some (else_cmd, e)
 
   (* (jump) ⟨jump l(args) ∥ E⟩ → ⟨body ∥ E'⟩ where E' binds params to E(args) 
@@ -279,13 +318,14 @@ let rec run ?(trace=false) ?(steps=0) ?(max_steps=500) (cfg: config) : config * 
     (* Extra info for ifz and arithmetic *)
     (match cmd with
       Ifz (v, _, _) -> 
-        (try Printf.printf " [ifz val = %d]" (lookup_int e v)
+        (try Printf.printf " [ifz val = %s]" (Int64.to_string (lookup_int e v))
         with _ -> Printf.printf " [ifz val = ?]")
     | Add (a, b, _, _) ->
-        (try Printf.printf " [%d + %d]" (lookup_int e a) (lookup_int e b)
+        (try Printf.printf " [%s + %s]" (Int64.to_string (lookup_int e a))
+                                        (Int64.to_string (lookup_int e b))
         with _ -> Printf.printf " [? + ?]")
     | Axiom (_, v, _) ->
-        (try Printf.printf " [val = %d]" (lookup_int e v)
+        (try Printf.printf " [val = %s]" (Int64.to_string (lookup_int e v))
         with _ -> ())
     | _ -> ());
     Printf.printf "\n"

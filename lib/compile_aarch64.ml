@@ -82,7 +82,7 @@ let is_ext_type (ct: chiral_typ) : bool =
 (* Control Flow Helpers                                                      *)
 (* ========================================================================= *)
 
-let skip_if_zero (this: Register.t) (code: code list) : code list state =
+let skip_if_zero (this: Register.t) (code: code) : code state =
   let* lab = fresh_label in
   let label = "lab" ^ string_of_int lab in
   return (
@@ -91,8 +91,8 @@ let skip_if_zero (this: Register.t) (code: code list) : code list state =
     code @
     LAB label :: [])
 
-let if_zero_then_else (this: Register.t) (thn: code list) (els: code list) 
-    : code list state =
+let if_zero_then_else (this: Register.t) (thn: code) (els: code) 
+    : code state =
   let* lab_then = fresh_label in
   let* lab_else = fresh_label in
   let label_then = "lab" ^ string_of_int lab_then in
@@ -110,30 +110,29 @@ let if_zero_then_else (this: Register.t) (thn: code list) (els: code list)
 (* Reference Counting                                                        *)
 (* ========================================================================= *)
 
-let share_block_n (this: Register.t) (k: int) : code list state =
+let share_block_n (this: Register.t) (k: int) : code state =
   skip_if_zero this (
     LDR (Register.temp, this, Offset.reference_count) ::
     ADDI (Register.temp, Register.temp, k) ::
     STR (Register.temp, this, Offset.reference_count) :: [])
 
-let share_block (this: Register.t) : code list state =
+let share_block (this: Register.t) : code state =
   share_block_n this 1
 
-let erase_valid_object (this: Register.t) : code list state =
+let erase_valid_object (this: Register.t) : code state =
   if_zero_then_else Register.temp
     (STR (Register.free, this, Offset.next_element) ::
      MOVR (Register.free, this) :: [])
     (SUBI (Register.temp, Register.temp, 1) ::
      STR (Register.temp, this, Offset.reference_count) :: [])
 
-let erase_block (this: Register.t) : code list state =
+let erase_block (this: Register.t) : code state =
   let* erase_code = erase_valid_object this in
   skip_if_zero this (
     LDR (Register.temp, this, Offset.reference_count) ::
     erase_code)
 
-let rec share_fields (accu: Register.t) (this: Register.t) (n: int) 
-    : code list state =
+let rec share_fields (accu: Register.t) (this: Register.t) (n: int) : code state =
   if n = 0 then return []
   else
     let* share_code = share_block accu in
@@ -143,8 +142,7 @@ let rec share_fields (accu: Register.t) (this: Register.t) (n: int)
       share_code @
       rest)
 
-let rec erase_fields (accu: Register.t) (this: Register.t) (n: int)
-    : code list state =
+let rec erase_fields (accu: Register.t) (this: Register.t) (n: int) : code state =
   if n = 0 then return []
   else
     let* erase_code = erase_block accu in
@@ -154,25 +152,25 @@ let rec erase_fields (accu: Register.t) (this: Register.t) (n: int)
       erase_code @
       rest)
 
-let acquire_block (accu: Register.t) (this: Register.t) : code list state =
+let acquire_block (accu: Register.t) (this: Register.t) : code state =
   let* erase_code = erase_fields accu Register.heap Offset.fields_per_block in
   let* adapt_free = if_zero_then_else Register.free
     (ADDI (Register.free, Register.heap, Offset.field1 Offset.fields_per_block) :: [])
-    (MOVI (Register.temp, 0) ::
+    (MOVI (Register.temp, 0L) ::
      STR (Register.temp, Register.heap, Offset.next_element) ::
      erase_code) in
   let* adapt_heap = if_zero_then_else Register.heap
     (MOVR (Register.heap, Register.free) ::
      LDR (Register.free, Register.free, Offset.next_element) ::
      adapt_free)
-    (MOVI (Register.temp, 0) ::
+    (MOVI (Register.temp, 0L) ::
      STR (Register.temp, this, Offset.reference_count) :: []) in
   return (
     MOVR (this, Register.heap) ::
     LDR (Register.heap, Register.heap, Offset.next_element) ::
     adapt_heap)
 
-let release_block (accu: Register.t) (this: Register.t) : code list state =
+let release_block (accu: Register.t) (this: Register.t) : code state =
   let* share_code = share_fields accu this Offset.fields_per_block in
   let* adapt_heap = if_zero_then_else Register.temp
     (STR (Register.heap, this, Offset.next_element) ::
@@ -193,11 +191,11 @@ let release_block (accu: Register.t) (this: Register.t) : code list state =
     For non-ext types, we must call share_block on the block pointer before storing,
     because storing creates an additional reference to that block. *)
 let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: int) 
-    : code list state =
+    : code state =
   if is_ext_type ct then
     return (
       STR (symbol_location2 src_ctx v, into, Offset.field2 k) ::
-      MOVI (Register.temp, 0) ::
+      MOVI (Register.temp, 0L) ::
       STR (Register.temp, into, Offset.field1 k) :: [])
   else
     (* Non-ext types have a block pointer - share it before storing *)
@@ -210,8 +208,8 @@ let store_value (v: var) (ct: chiral_typ) (src_ctx: ctx) (into: Register.t) (k: 
 
 (** Load a binder from a block.
     x_ctx is the context where x is at the head (x :: as). *)
-let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) 
-    : code list =
+let load_binder
+    (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: int) : code =
   let is_ext = is_ext_type ct in
   if is_ext then
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) :: []
@@ -219,16 +217,16 @@ let load_binder (x: var) (ct: chiral_typ) (x_ctx: ctx) (from: Register.t) (k: in
     LDR (symbol_location2 x_ctx x, from, Offset.field2 k) ::
     LDR (symbol_location1 x_ctx x, from, Offset.field1 k) :: []
 
-let store_block (ctx: ctx) (into: Register.t) (k: int) : code list =
+let store_block (ctx: ctx) (into: Register.t) (k: int) : code =
   STR (fresh_location1 ctx, into, Offset.field1 k) :: []
 
-let load_block (ctx: ctx) (from: Register.t) (k: int) : code list =
+let load_block (ctx: ctx) (from: Register.t) (k: int) : code =
   LDR (fresh_location1 ctx, from, Offset.field1 k) :: []
 
-let rec store_zeroes (into: Register.t) (k: int) : code list =
+let rec store_zeroes (into: Register.t) (k: int) : code =
   if k = 0 then []
   else
-    MOVI (Register.temp, 0) ::
+    MOVI (Register.temp, 0L) ::
     STR (Register.temp, into, Offset.field1 (k - 1)) ::
     store_zeroes into (k - 1)
 
@@ -236,7 +234,7 @@ let rec store_zeroes (into: Register.t) (k: int) : code list =
     vs: values to store (in order)
     src_ctx: context for looking up source registers *)
 let rec store_values (vs: ctx) (src_ctx: ctx) (into: Register.t) (k: int) 
-    : code list state =
+    : code state =
   match vs with
     [] -> return (store_zeroes into k)
   | _ when k = 0 -> return []
@@ -250,7 +248,7 @@ let rec store_values (vs: ctx) (src_ctx: ctx) (into: Register.t) (k: int)
     as_ctx: tail context (after xs)
     After load, the full context is: xs @ as_ctx *)
 let rec load_binders (xs: ctx) (as_ctx: ctx) (from: Register.t) (k: int) 
-    : code list =
+    : code =
   match xs with
     [] -> []
   | _ when k = 0 -> []
@@ -279,7 +277,7 @@ let drop n lst =
   in aux n lst
 
 (** Store remaining values in linked blocks. *)
-let rec store_rest (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
+let rec store_rest (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code state =
   match vs with
   | [] -> return []
   | _ ->
@@ -301,10 +299,10 @@ let rec store_rest (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
     vs: values to store
     src_ctx: context for source register lookups
     as_ctx: tail context (context after vs) *)
-let store (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
+let store (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code state =
   match vs with
   | [] ->
-      return (MOVI (fresh_location1 as_ctx, 0) :: [])
+      return (MOVI (fresh_location1 as_ctx, 0L) :: [])
   | _ ->
       let vars = take Offset.fields_per_block vs in
       let rest = drop Offset.fields_per_block vs in
@@ -320,7 +318,7 @@ let store (vs: ctx) (src_ctx: ctx) (as_ctx: ctx) : code list state =
         store_rest_code)
 
 (** Load remaining values from linked blocks. *)
-let rec load_rest (xs: ctx) (as_ctx: ctx) : code list state =
+let rec load_rest (xs: ctx) (as_ctx: ctx) : code state =
   match xs with
   | [] -> return []
   | _ ->
@@ -342,7 +340,7 @@ let rec load_rest (xs: ctx) (as_ctx: ctx) : code list state =
     as_ctx: tail context
     After load, context is xs @ as_ctx (xs at HEAD, as_ctx at TAIL).
     Used by both codeClause and codeMethod - they differ only in what xs and as_ctx are. *)
-let load (xs: ctx) (as_ctx: ctx) : code list state =
+let load (xs: ctx) (as_ctx: ctx) : code state =
   match xs with
     [] -> return []
   | _ ->
@@ -362,7 +360,7 @@ let load (xs: ctx) (as_ctx: ctx) : code list state =
 (* Branch Table Generation                                                   *)
 (* ========================================================================= *)
 
-let rec code_table (n: int) (lab_base: int) (lab_branch: int) : code list =
+let rec code_table (n: int) (lab_base: int) (lab_branch: int) : code =
   if n = 0 then []
   else
     B ("lab" ^ string_of_int lab_base ^ "b" ^ string_of_int lab_branch) ::
@@ -381,13 +379,13 @@ let transpose (src_ctx: ctx) (subst: (var * var) list)
     : (var * var list) list =
   List.map (fun (v, _) -> (v, occurrences subst v)) src_ctx
 
-let update_reference_count (r: Register.t) (n: int) : code list state =
+let update_reference_count (r: Register.t) (n: int) : code state =
   if n = 0 then erase_block r
   else if n = 1 then return []
   else share_block_n r (n - 1)
 
-let rec code_weakening_contraction (ctx: ctx) (usage: (var * var list) list)
-    : code list state =
+let rec code_weakening_contraction
+    (ctx: ctx) (usage: (var * var list) list) : code state =
   match ctx, usage with
     [], [] -> return []
   | (v, ct) :: rest_ctx, (_, targets) :: rest_usage ->
@@ -444,7 +442,7 @@ let label_index (lmap: label_map) (p: Path.t) : int =
 *)
 
 let rec code_command (lmap: label_map) (cmd: checked_command) 
-    : code list state =
+    : code state =
   match cmd with
   (* Substitute: explicit structural rules *)
     CSubstitute { src_ctx; mapping; tgt_ctx; body } ->
@@ -497,7 +495,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let* rest = code_command lmap body in
       return (
         stores @
-        MOVI (tag_reg, Offset.jump_length xtor_idx) ::
+        MOVI (tag_reg, Int64.of_int (Offset.jump_length xtor_idx)) ::
         rest)
 
   (* Switch: pattern match on data 
@@ -630,7 +628,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
 
   (* Literal: create integer value *)
   | CLit { ctx; n; v; body } ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       let* rest = code_command lmap body in
       return (
         MOVI (symbol_location2 new_ctx v, n) ::
@@ -645,7 +643,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
     - symbol_location1(k_ctx, k) = block pointer (captured environment)
     - symbol_location2(k_ctx, k) = code address *)
   | CNewInt { ctx; k; param; branch_body; cont_body } ->
-      let k_ctx = (k, Cns (Ext Common.Types.Int)) :: ctx in
+      let k_ctx = (k, Cns (Ext Int)) :: ctx in
       let k_block_reg = symbol_location1 k_ctx k in  (* r1 = block pointer *)
       let k_code_reg = symbol_location2 k_ctx k in   (* r2 = code address *)
       (* Arg incoming at X4, matching CAxiom's convention *)
@@ -653,10 +651,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       (* The arg register where method expects it.
         Method context after load = ctx @ tail_ctx = captured @ [param].
         param_ctx must match this order: ctx @ [param]. *)
-      let param_ctx = ctx @ [(param, Prd (Ext Common.Types.Int))] in
+      let param_ctx = ctx @ [(param, Prd (Ext Int))] in
       let arg_expected_reg = symbol_location2 param_ctx param in
       (* tail_ctx for block pointer calculation = [param] *)
-      let tail_ctx = [(param, Prd (Ext Common.Types.Int))] in
+      let tail_ctx = [(param, Prd (Ext Int))] in
       (* Store ctx as captured environment *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
@@ -682,7 +680,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
 
   (* Add: integer addition *)
   | CAdd { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       let* rest = code_command lmap body in
       return (
         ADD (symbol_location2 new_ctx v, symbol_location2 ctx x, 
@@ -691,14 +689,44 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
 
   (* Sub: integer subtraction *)
   | CSub { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       let x_reg = symbol_location2 ctx x in
       let y_reg = symbol_location2 ctx y in
       let v_reg = symbol_location2 new_ctx v in
       let* rest = code_command lmap body in
       return (
-        MOVI (Register.temp, 1) ::
+        MOVI (Register.temp, 1L) ::
         MSUB (v_reg, Register.temp, y_reg, x_reg) ::
+        rest)
+
+  (* Mul: integer multiplication *)
+  | CMul { ctx; x; y; v; body } ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let* rest = code_command lmap body in
+      return (
+        MUL (symbol_location2 new_ctx v, symbol_location2 ctx x, 
+             symbol_location2 ctx y) ::
+        rest)
+
+  (* Div: integer division *)
+  | CDiv { ctx; x; y; v; body } ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let* rest = code_command lmap body in
+      return (
+        SDIV (symbol_location2 new_ctx v, symbol_location2 ctx x, 
+              symbol_location2 ctx y) ::
+        rest)
+
+  (* Rem: integer remainder (x % y = x - (x / y) * y) *)
+  | CRem { ctx; x; y; v; body } ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let x_reg = symbol_location2 ctx x in
+      let y_reg = symbol_location2 ctx y in
+      let v_reg = symbol_location2 new_ctx v in
+      let* rest = code_command lmap body in
+      return (
+        SDIV (Register.temp, x_reg, y_reg) ::  (* temp = x / y *)
+        MSUB (v_reg, Register.temp, y_reg, x_reg) ::  (* v = x - temp*y *)
         rest)
 
   (* Ifz: conditional on zero *)
@@ -730,7 +758,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
     branch.args: binders introduced by this branch
     branch.branch_ctx = branch.args @ tail_ctx *)
 and code_clause (lmap: label_map) (tail_ctx: ctx) (branch: checked_branch)
-    : code list state =
+    : code state =
   (* Load args into HEAD positions, tail_ctx stays at TAIL *)
   let* loads = load branch.args tail_ctx in
   let* body_code = code_command lmap branch.body in
@@ -738,9 +766,9 @@ and code_clause (lmap: label_map) (tail_ctx: ctx) (branch: checked_branch)
 
 and code_clauses (lmap: label_map) (tail_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int) (branch_idx: int) 
-    : code list list state =
+    : code list state =
   match branches with
-  | [] -> return []
+    [] -> return []
   | branch :: rest ->
       let* clause = code_clause lmap tail_ctx branch in
       let* rest_clauses = code_clauses lmap tail_ctx rest base_lab (branch_idx + 1) in
@@ -755,9 +783,9 @@ and code_clauses (lmap: label_map) (tail_ctx: ctx)
 and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int)
     (get_original_index: Path.t -> int)
-    : code list list state =
+    : code list state =
   match branches with
-  | [] -> return []
+    [] -> return []
   | branch :: rest ->
       let* clause = code_clause lmap tail_ctx branch in
       let original_idx = get_original_index branch.xtor in
@@ -772,7 +800,7 @@ and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx)
     branch.args: arguments passed to this method
     branch.branch_ctx = captured_ctx @ args *)
 and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
-    : code list state =
+    : code state =
   let args = branch.args in
   let* loads = load captured_ctx args in
   let* body_code = code_command lmap branch.body in
@@ -780,9 +808,9 @@ and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
 
 and code_methods (lmap: label_map) (captured_ctx: ctx)
     (branches: checked_branch list) (base_lab: int) (branch_idx: int) 
-    : code list list state =
+    : code list state =
   match branches with
-  | [] -> return []
+    [] -> return []
   | branch :: rest ->
       let* method_code = code_method lmap captured_ctx branch in
       let* rest_methods = code_methods lmap captured_ctx rest base_lab (branch_idx + 1) in
@@ -797,9 +825,9 @@ and code_methods (lmap: label_map) (captured_ctx: ctx)
 and code_methods_sparse (lmap: label_map) (captured_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int)
     (get_original_index: Path.t -> int)
-    : code list list state =
+    : code list state =
   match branches with
-  | [] -> return []
+    [] -> return []
   | branch :: rest ->
       let* method_code = code_method lmap captured_ctx branch in
       let original_idx = get_original_index branch.xtor in
@@ -814,7 +842,7 @@ and code_methods_sparse (lmap: label_map) (captured_ctx: ctx)
 (* ========================================================================= *)
 
 let translate (lmap: label_map) (defs: checked_definition Path.tbl) 
-    : code list list state =
+    : code list state =
   let def_list = Path.to_list defs in
   let rec compile_all = function
       [] -> return []
@@ -826,16 +854,16 @@ let translate (lmap: label_map) (defs: checked_definition Path.tbl)
   in
   compile_all def_list
 
-let assemble (start_label: int) (sections: code list list) : code list =
+let assemble (start_label: int) (sections: code list) : code =
   let rec aux lab = function
-    | [] -> []
+      [] -> []
     | section :: rest ->
         (LAB ("lab" ^ string_of_int lab) :: section) @ aux (lab + 1) rest
   in
   aux start_label sections
 
 (** Main compilation entry point for checked definitions *)
-let compile_checked (defs: checked_definition Path.tbl) : code list * int =
+let compile_checked (defs: checked_definition Path.tbl) : code * int =
   let lmap = make_label_map defs in
   let num_defs = List.length (Path.to_list defs) in
   let (sections, _) = run_state (translate lmap defs) num_defs in
@@ -848,7 +876,7 @@ let compile_checked (defs: checked_definition Path.tbl) : code list * int =
 (** Main entry point: takes unchecked definitions, checks them, and compiles.
     This is the interface used by the pipeline. *)
 let compile (main: Axil.Terms.definition) (defs: Axil.Terms.definition Path.tbl) 
-    : code list * int =
+    : code * int =
   let all_defs = Path.add main.path main defs in
   let checked_defs = check_definitions all_defs in
   compile_checked checked_defs

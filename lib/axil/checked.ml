@@ -11,6 +11,7 @@
 *)
 
 open Common.Identifiers
+open Common.External
 open Terms
 open Types.AxilTypes
 open Types.AxilBase
@@ -94,14 +95,14 @@ and checked_command =
   (* <v | k> : axiom *)
   | CAxiom of
       { ctx: ctx
-      ; typ: Common.Types.ext_type
+      ; typ: ext_type
       ; v: var
       ; k: var
       }
   (* lit n { v => body } *)
   | CLit of
       { ctx: ctx
-      ; n: int
+      ; n: int64
       ; v: var
       ; body: checked_command         (* body in (v, Prd Int)::ctx *)
       }
@@ -123,6 +124,30 @@ and checked_command =
       }
   (* sub(x, y) { v => body } *)
   | CSub of
+      { ctx: ctx
+      ; x: var
+      ; y: var
+      ; v: var
+      ; body: checked_command
+      }
+  (* mul(x, y) { v => body } *)
+  | CMul of
+      { ctx: ctx
+      ; x: var
+      ; y: var
+      ; v: var
+      ; body: checked_command
+      }
+  (* div(x, y) { v => body } *)
+  | CDiv of
+      { ctx: ctx
+      ; x: var
+      ; y: var
+      ; v: var
+      ; body: checked_command
+      }
+  (* rem(x, y) { v => body } *)
+  | CRem of
       { ctx: ctx
       ; x: var
       ; y: var
@@ -304,13 +329,13 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
       CAxiom { ctx; typ; v; k }
 
   | Lit (n, v, body) ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       CLit { ctx; n; v; body = check_cmd defs new_ctx body }
 
   | NewInt (k, param, branch_body, cont_body) ->
-      let k_ctx = (k, Cns (Ext Common.Types.Int)) :: ctx in
+      let k_ctx = (k, Cns (Ext Int)) :: ctx in
       (* Captured at HEAD (high registers), args at TAIL (low registers). *)
-      let param_ctx = ctx @ [(param, Prd (Ext Common.Types.Int))] in
+      let param_ctx = ctx @ [(param, Prd (Ext Int))] in
       CNewInt
         { ctx
         ; k
@@ -320,12 +345,24 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
         }
 
   | Add (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       CAdd { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Sub (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Common.Types.Int)) :: ctx in
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
       CSub { ctx; x; y; v; body = check_cmd defs new_ctx body }
+
+  | Mul (x, y, v, body) ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      CMul { ctx; x; y; v; body = check_cmd defs new_ctx body }
+
+  | Div (x, y, v, body) ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      CDiv { ctx; x; y; v; body = check_cmd defs new_ctx body }
+
+  | Rem (x, y, v, body) ->
+      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      CRem { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Ifz (v, then_cmd, else_cmd) ->
       CIfz
@@ -417,6 +454,9 @@ let get_ctx : checked_command -> ctx = function
   | CNewInt { ctx; _ } -> ctx
   | CAdd { ctx; _ } -> ctx
   | CSub { ctx; _ } -> ctx
+  | CMul { ctx; _ } -> ctx
+  | CDiv { ctx; _ } -> ctx
+  | CRem { ctx; _ } -> ctx
   | CIfz { ctx; _ } -> ctx
   | CRet { ctx; _ } -> ctx
   | CEnd { ctx } -> ctx

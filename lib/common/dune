@@ -1,5 +1,5 @@
 (library
  (name common)
  (public_name sequent.common)
- (libraries utility)
+ (libraries stdint utility)
  (flags (:standard -warn-error -27-26-32-33-37)))

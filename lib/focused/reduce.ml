@@ -49,6 +49,12 @@ let subst_var (old_v: var) (new_v: var) (cmd: command) : command =
         Add (sv x, sv y, r, if Ident.equal r old_v then body else go body)
     | Sub (x, y, r, body) ->
         Sub (sv x, sv y, r, if Ident.equal r old_v then body else go body)
+    | Mul (x, y, r, body) ->
+        Mul (sv x, sv y, r, if Ident.equal r old_v then body else go body)
+    | Div (x, y, r, body) ->
+        Div (sv x, sv y, r, if Ident.equal r old_v then body else go body)
+    | Rem (x, y, r, body) ->
+        Rem (sv x, sv y, r, if Ident.equal r old_v then body else go body)
     | Ifz (v, then_cmd, else_cmd) ->
         Ifz (sv v, go then_cmd, go else_cmd)
     | Ret (ty, v) ->
@@ -93,6 +99,12 @@ let rec count_uses (v: var) (cmd: command) : int =
   | Add (x, y, _, body) ->
       cv x + cv y + count_uses v body
   | Sub (x, y, _, body) ->
+      cv x + cv y + count_uses v body
+  | Mul (x, y, _, body) ->
+      cv x + cv y + count_uses v body
+  | Div (x, y, _, body) ->
+      cv x + cv y + count_uses v body
+  | Rem (x, y, _, body) ->
       cv x + cv y + count_uses v body
   | Ifz (x, then_cmd, else_cmd) ->
       cv x + count_uses v then_cmd + count_uses v else_cmd
@@ -156,6 +168,18 @@ let rec find_and_replace_axiom (k: var) (replacement_fn: var -> command) (cmd: c
   | Sub (x, y, r, body) ->
       (match find_and_replace_axiom k replacement_fn body with
        | Found body' -> Found (Sub (x, y, r, body'))
+       | other -> other)
+  | Mul (x, y, r, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+       | Found body' -> Found (Mul (x, y, r, body'))
+       | other -> other)
+  | Div (x, y, r, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+       | Found body' -> Found (Div (x, y, r, body'))
+       | other -> other)
+  | Rem (x, y, r, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+       | Found body' -> Found (Rem (x, y, r, body'))
        | other -> other)
   | Ifz (v, then_cmd, else_cmd) ->
       (* k might be in both branches - that's OK if at most one use per branch *)
@@ -261,6 +285,21 @@ let rec find_and_replace_invoke (k: var) (cmd: command)
       (match find_and_replace_invoke k body with
        | Found (xtor, a, rebuild) ->
            Found (xtor, a, fun rep -> Sub (x, y, r, rebuild rep))
+       | other -> other)
+  | Mul (x, y, r, body) ->
+      (match find_and_replace_invoke k body with
+       | Found (xtor, a, rebuild) ->
+           Found (xtor, a, fun rep -> Mul (x, y, r, rebuild rep))
+       | other -> other)
+  | Div (x, y, r, body) ->
+      (match find_and_replace_invoke k body with
+       | Found (xtor, a, rebuild) ->
+           Found (xtor, a, fun rep -> Div (x, y, r, rebuild rep))
+       | other -> other)
+  | Rem (x, y, r, body) ->
+      (match find_and_replace_invoke k body with
+       | Found (xtor, a, rebuild) ->
+           Found (xtor, a, fun rep -> Rem (x, y, r, rebuild rep))
        | other -> other)
   | Ifz (v, then_cmd, else_cmd) ->
       let in_then = count_uses k then_cmd in
@@ -370,6 +409,12 @@ let rec reduce_cmd (cmd: command) : command =
       Add (x, y, r, reduce_cmd body)
   | Sub (x, y, r, body) ->
       Sub (x, y, r, reduce_cmd body)
+  | Mul (x, y, r, body) ->
+      Mul (x, y, r, reduce_cmd body)
+  | Div (x, y, r, body) ->
+      Div (x, y, r, reduce_cmd body)
+  | Rem (x, y, r, body) ->
+      Rem (x, y, r, reduce_cmd body)
   | Ifz (v, then_cmd, else_cmd) ->
       Ifz (v, reduce_cmd then_cmd, reduce_cmd else_cmd)
   | Ret (ty, v) ->

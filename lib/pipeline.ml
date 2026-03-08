@@ -249,7 +249,7 @@ module EmitStage = struct
 
   (** Compile Axil to assembly code list *)
   let compile (target: architecture) (main: ATm.definition) (defs: ATm.definition Path.tbl)
-      : (ACode.code list * int, string) result =
+      : (ACode.code * int, string) result =
     match target with
       AARCH64 ->
         try Ok (Compile_aarch64.compile main defs)
@@ -268,7 +268,7 @@ module EmitStage = struct
           Error (Printf.sprintf "Compilation error: %s" (Printexc.to_string e))
 
   (** Evaluate compiled assembly using abstract machine semantics *)
-  let eval ?(trace=false) ?(max_steps=500) (code: ACode.code list) : (int, string) result =
+  let eval ?(trace=false) ?(max_steps=500) (code: ACode.code) : (int, string) result =
     try
       if trace then begin
         let st = AMachine.initial code in

@@ -6,6 +6,7 @@
 *)
 
 open Common.Identifiers
+open Common.External
 open Types.MelcoreTypes
 open Terms
 
@@ -70,7 +71,7 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       in
       let inner = s1 ^ " -> " ^ pp_typ ~cfg ~nested:false k2 in
       if nested then parens inner else inner
-  | Ext Int -> "int"
+  | Ext t -> ext_type_to_string t
   | TVar id -> pp_ident id
   | TMeta id -> "?" ^ pp_ident id
   | Sgn (name, []) -> pp_path name
@@ -180,13 +181,22 @@ let pp_dec_full ?(cfg=default_config) ?(lvl=0) (d: dec) : string =
 
 let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   match tm with
-    Int n -> string_of_int n
+    Int n -> Int64.to_string n
   
   | Add (t1, t2) ->
       parens (pp_term ~cfg ~lvl t1 ^ " + " ^ pp_term ~cfg ~lvl t2)
   
   | Sub (t1, t2) ->
       parens (pp_term ~cfg ~lvl t1 ^ " - " ^ pp_term ~cfg ~lvl t2)
+  
+  | Mul (t1, t2) ->
+      parens (pp_term ~cfg ~lvl t1 ^ " * " ^ pp_term ~cfg ~lvl t2)
+  
+  | Div (t1, t2) ->
+      parens (pp_term ~cfg ~lvl t1 ^ " / " ^ pp_term ~cfg ~lvl t2)
+  
+  | Rem (t1, t2) ->
+      parens (pp_term ~cfg ~lvl t1 ^ " % " ^ pp_term ~cfg ~lvl t2)
   
   | Var x -> pp_ident x
   
@@ -254,7 +264,7 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
 
 and pp_term_app ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   match tm with
-    Int _ | Var _ | Sym _ | Add _ | Sub _ | App _ | Ins _ | Ctor _ | Dtor _ ->
+    Int _ | Var _ | Sym _ | Add _ | Sub _ | Mul _ | Div _ | Rem _ | App _ | Ins _ | Ctor _ | Dtor _ ->
       pp_term ~cfg ~lvl tm
   | _ -> parens (pp_term ~cfg ~lvl tm)
 
@@ -277,13 +287,22 @@ and pp_branch ?(cfg=default_config) ?(lvl=0) ((xtor, ty_vars, tm_vars, body): br
 
 let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   match tm with
-    TypedInt n -> string_of_int n
+    TypedInt n -> Int64.to_string n
   
   | TypedAdd (t1, t2) ->
       parens (pp_typed_term ~cfg ~lvl t1 ^ " + " ^ pp_typed_term ~cfg ~lvl t2)
   
   | TypedSub (t1, t2) ->
       parens (pp_typed_term ~cfg ~lvl t1 ^ " - " ^ pp_typed_term ~cfg ~lvl t2)
+  
+  | TypedMul (t1, t2) ->
+      parens (pp_typed_term ~cfg ~lvl t1 ^ " * " ^ pp_typed_term ~cfg ~lvl t2)
+  
+  | TypedDiv (t1, t2) ->
+      parens (pp_typed_term ~cfg ~lvl t1 ^ " / " ^ pp_typed_term ~cfg ~lvl t2)
+  
+  | TypedRem (t1, t2) ->
+      parens (pp_typed_term ~cfg ~lvl t1 ^ " % " ^ pp_typed_term ~cfg ~lvl t2)
   
   | TypedVar (x, ty) ->
       if cfg.show_types then pp_ident x ^ " : " ^ pp_typ ~cfg ty

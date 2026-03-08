@@ -53,11 +53,13 @@ let rec token lexbuf =
   | "=" -> EQUAL
   | "+" -> PLUS
   | "*" -> STAR
+  | "/" -> SLASH
+  | "%" -> PERCENT
   | "|" -> PIPE
   | ";" -> SEMICOLON
   | integer ->
       let s = Sedlexing.Utf8.lexeme lexbuf in
-      INT (int_of_string s)
+      INT (Int64.of_string s)
   | identifier ->
       let s = Sedlexing.Utf8.lexeme lexbuf in
       (try Hashtbl.find keyword_table s

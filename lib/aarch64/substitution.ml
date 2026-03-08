@@ -53,5 +53,5 @@ module Tree = struct
     else List.rev (List.concat_map (tree_moves x) xs)
 end
 
-let code_exhange (graph: Register.t list list) : code list =
+let code_exhange (graph: Register.t list list) : code =
   List.concat_map Tree.root_moves (Tree.spanning_forest graph Register.range)

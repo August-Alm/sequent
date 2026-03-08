@@ -8,7 +8,7 @@
 *)
 
 open Common.Identifiers
-open Common.Types
+open Common.External
 open Types.CoreTypes
 
 (* ========================================================================= *)
@@ -432,6 +432,21 @@ and generate_for_command (cmd: Terms.command): unit gen =
       generate_for_term t3
   
   | Sub (t1, t2, t3) ->
+      let+ () = generate_for_term t1 in
+      let+ () = generate_for_term t2 in
+      generate_for_term t3
+  
+  | Mul (t1, t2, t3) ->
+      let+ () = generate_for_term t1 in
+      let+ () = generate_for_term t2 in
+      generate_for_term t3
+  
+  | Div (t1, t2, t3) ->
+      let+ () = generate_for_term t1 in
+      let+ () = generate_for_term t2 in
+      generate_for_term t3
+  
+  | Rem (t1, t2, t3) ->
       let+ () = generate_for_term t1 in
       let+ () = generate_for_term t2 in
       generate_for_term t3

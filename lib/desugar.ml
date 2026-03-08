@@ -371,6 +371,15 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
   | AST_Sub (t1, t2) ->
       Trm.Sub (term_of_ast ctx t1, term_of_ast ctx t2)
   
+  | AST_Mul (t1, t2) ->
+      Trm.Mul (term_of_ast ctx t1, term_of_ast ctx t2)
+  
+  | AST_Div (t1, t2) ->
+      Trm.Div (term_of_ast ctx t1, term_of_ast ctx t2)
+  
+  | AST_Rem (t1, t2) ->
+      Trm.Rem (term_of_ast ctx t1, term_of_ast ctx t2)
+  
   | AST_Ifz (n, t, u) ->
       Trm.Ifz (term_of_ast ctx n, term_of_ast ctx t, term_of_ast ctx u)
   

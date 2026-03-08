@@ -72,7 +72,7 @@ let ( let* ) = Result.bind
 (** Convert ground_arg to a Core typ *)
 let rec ground_arg_to_typ (arg: Mono_spec.ground_arg): typ =
   match arg with
-    Mono_spec.GroundExt Int -> Ext Int
+    Mono_spec.GroundExt t -> Ext t
   | Mono_spec.GroundSgn (name, args) ->
       Sgn (name, List.map ground_arg_to_typ args)
 
@@ -122,7 +122,7 @@ and collect_instantiations_cmd (cmd: T.command): typ list =
     T.Cut (_, p, c) -> 
       collect_instantiations_term p @ collect_instantiations_term c
   | T.Call (_, _, args) -> List.concat_map collect_instantiations_term args
-  | T.Add (t1, t2, t3) | T.Sub (t1, t2, t3) ->
+  | T.Add (t1, t2, t3) | T.Sub (t1, t2, t3) | T.Mul (t1, t2, t3) | T.Div (t1, t2, t3) | T.Rem (t1, t2, t3) ->
       List.concat_map collect_instantiations_term [t1; t2; t3]
   | T.Ifz (c, then_cmd, else_cmd) ->
       collect_instantiations_term c @ 
@@ -281,6 +281,12 @@ and subst_command (sbs: typ Ident.tbl) (cmd: T.command): T.command =
       T.Add (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
   | T.Sub (t1, t2, t3) ->
       T.Sub (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
+  | T.Mul (t1, t2, t3) ->
+      T.Mul (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
+  | T.Div (t1, t2, t3) ->
+      T.Div (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
+  | T.Rem (t1, t2, t3) ->
+      T.Rem (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
   | T.Ifz (cond, then_cmd, else_cmd) ->
       T.Ifz (subst_term sbs cond, subst_command sbs then_cmd, subst_command sbs else_cmd)
   | T.Ret (typ, tm) ->
@@ -314,7 +320,7 @@ let traverse_result (results: ('a, 'e) result list): ('a list, 'e) result =
     This should never fail on well-typed terms - errors indicate earlier bugs. *)
 let rec typ_to_ground_arg (t: typ): Mono_spec.ground_arg =
   match t with
-    Ext Int -> Mono_spec.GroundExt Int
+    Ext t -> Mono_spec.GroundExt t
   | Sgn (name, args) -> Mono_spec.GroundSgn (name, List.map typ_to_ground_arg args)
   | PromotedCtor (data_name, ctor_name, args) ->
       (* Promoted constructors - preserve for type identity *)

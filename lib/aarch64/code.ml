@@ -3,6 +3,7 @@
   description:  Type definitions for the AARCCH64 encoding.
 *)
 
+
 module Register: sig
     type t
     val mk: int -> t
@@ -57,10 +58,10 @@ module Offset = struct
   let field2 i = address (2 + 2 * i + 1)
 end
 
-type 'a assembly =
+type instruction =
     ADD of Register.t * Register.t * Register.t
-  | ADDI of Register.t * Register.t * 'a
-  | SUBI of Register.t * Register.t * 'a
+  | ADDI of Register.t * Register.t * int
+  | SUBI of Register.t * Register.t * int
   | MUL of Register.t * Register.t * Register.t
   | SDIV of Register.t * Register.t * Register.t
   | MSUB of Register.t * Register.t * Register.t * Register.t
@@ -68,35 +69,37 @@ type 'a assembly =
   | BR of Register.t
   | ADR of Register.t * string
   | MOVR of Register.t * Register.t
-  | MOVI of Register.t * 'a
-  | LDR of Register.t * Register.t * 'a
-  | STR of Register.t * Register.t * 'a
+  | MOVI of Register.t * Stdint.int64
+  | LDR of Register.t * Register.t * int
+  | STR of Register.t * Register.t * int
   | CMPR of Register.t * Register.t
-  | CMPI of Register.t * 'a
+  | CMPI of Register.t * int
   | BEQ of string
   | BLT of string
   | LAB of string
 
-type code = int assembly
+type code = instruction list
 
 module Code = struct
 
-  (** Emit a move-immediate for 32-bit values.
-      - Small non-negative (0-65535): single MOV
-      - Larger values: MOVZ + MOVK sequence
-      Treats the value as unsigned 32-bit for encoding. *)
+  (** Emit a move-immediate for larger than 16-bit values.
+      Uses MOVZ for first chunk, MOVK for subsequent non-zero chunks.
+      Treats values as unsigned bit patterns for encoding. *)
   let emit_movi rd imm =
     let x = Register.to_string in
-    (* Convert to unsigned 32-bit representation *)
-    let u32 = imm land 0xFFFFFFFF in
-    let lo = u32 land 0xFFFF in
-    let hi = (u32 lsr 16) land 0xFFFF in
-    if hi = 0 then
-      (* Fits in 16 bits *)
-      Printf.sprintf "MOV %s, %d" (x rd) lo
+    (* 64-bit: up to 4 chunks *)
+    let chunk n = Int64.(to_int (logand (shift_right_logical imm (16 * n)) 0xFFFFL)) in
+    let c0, c1, c2, c3 = chunk 0, chunk 1, chunk 2, chunk 3 in
+    if c3 = 0 && c2 = 0 && c1 = 0 then
+      Printf.sprintf "MOV %s, %d" (x rd) c0
+    else if c3 = 0 && c2 = 0 then
+      Printf.sprintf "MOVZ %s, %d\nMOVK %s, %d, LSL #16" (x rd) c0 (x rd) c1
+    else if c3 = 0 then
+      Printf.sprintf "MOVZ %s, %d\nMOVK %s, %d, LSL #16\nMOVK %s, %d, LSL #32" 
+        (x rd) c0 (x rd) c1 (x rd) c2
     else
-      (* Need two instructions *)
-      Printf.sprintf "MOVZ %s, %d\nMOVK %s, %d, LSL #16" (x rd) lo (x rd) hi
+      Printf.sprintf "MOVZ %s, %d\nMOVK %s, %d, LSL #16\nMOVK %s, %d, LSL #32\nMOVK %s, %d, LSL #48"
+        (x rd) c0 (x rd) c1 (x rd) c2 (x rd) c3
 
   let emit =
     let x rd = Register.to_string rd in
@@ -120,7 +123,7 @@ module Code = struct
     | BLT label -> Printf.sprintf "BLT %s" label
     | LAB label -> Printf.sprintf "\n%s:" label
 
-  let emit_all code_list = String.concat "\n" (List.map emit code_list)
+  let emit_all code = String.concat "\n" (List.map emit code)
 
   let header name =
     "// To create an executable:\n" ^

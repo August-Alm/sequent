@@ -4,6 +4,7 @@
 *)
 
 open Common.Identifiers
+open Common.External
 open Types.CoreBase
 open Types.CoreTypes
 open Terms
@@ -65,7 +66,7 @@ and pp_typ ?(nested=false) (t: typ) : string =
   | Arrow (t1, t2) ->
       let inner = pp_typ ~nested:true t1 ^ " → " ^ pp_typ ~nested:false t2 in
       if nested then parens inner else inner
-  | Ext Int -> "int"
+  | Ext t -> ext_type_to_string t
   | TVar v -> pp_var v
   | TMeta v -> "?" ^ pp_var v
   | Sgn (name, []) -> pp_sym name
@@ -99,7 +100,7 @@ let pp_chiral_typ (ct: chiral_typ) : string =
 let rec pp_term ?(cfg=default_config) (tm: term) : string =
   match tm with
     Var v -> pp_var v
-  | Lit n -> string_of_int n
+  | Lit n -> Int64.to_string n
   
   | Ctor (dec, xtor, []) ->
       let ty_args = pp_type_args dec.type_args in
@@ -188,6 +189,15 @@ and pp_command ?(cfg=default_config) ~(n: int) (cmd: command) : string =
   
   | Sub (t1, t2, t3) ->
       "sub(" ^ pp_term ~cfg t1 ^ ", " ^ pp_term ~cfg t2 ^ ", " ^ pp_term ~cfg t3 ^ ")"
+  
+  | Mul (t1, t2, t3) ->
+      "mul(" ^ pp_term ~cfg t1 ^ ", " ^ pp_term ~cfg t2 ^ ", " ^ pp_term ~cfg t3 ^ ")"
+  
+  | Div (t1, t2, t3) ->
+      "div(" ^ pp_term ~cfg t1 ^ ", " ^ pp_term ~cfg t2 ^ ", " ^ pp_term ~cfg t3 ^ ")"
+  
+  | Rem (t1, t2, t3) ->
+      "rem(" ^ pp_term ~cfg t1 ^ ", " ^ pp_term ~cfg t2 ^ ", " ^ pp_term ~cfg t3 ^ ")"
   
   | Ifz (cond, then_cmd, else_cmd) ->
       let ind = indent (n + cfg.indent_size) in
@@ -348,7 +358,7 @@ let dec_to_string (dec: dec) : string =
 (** Pretty-print a ground argument *)
 let rec pp_ground_arg (arg: Mono_spec.ground_arg) : string =
   match arg with
-    Mono_spec.GroundExt Int -> "int"
+    Mono_spec.GroundExt t -> ext_type_to_string t
   | Mono_spec.GroundSgn (name, []) -> Path.name name
   | Mono_spec.GroundSgn (name, args) ->
       Path.name name ^ parens (comma_sep (List.map pp_ground_arg args))
