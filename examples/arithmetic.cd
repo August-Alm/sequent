@@ -1,7 +1,0 @@
---- Test multiplication, division, and remainder
---- main(17)(5) should equal 90.
-let main(a: int)(b: int): int =
-  let prod = a * b in
-  let quot = a / b in
-  let rem = a % b in
-  prod + quot + rem

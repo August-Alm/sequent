@@ -1,6 +1,22 @@
-let fib(n: int): int =
-  ifz(n) then 0 else ifz(n - 1) then 1
-  else fib(n - 1) + fib(n - 2)
+code pair: type -> type -> type where
+  { fst: {a}{b} pair(a)(b) -> a
+  ; snd: {a}{b} pair(a)(b) -> b
+  }
 
-let main(x: int): int =
-  fib(x)
+let fib(n: int): pair(int)(int) =
+  ifz(n) then
+    new pair(int)(int) { fst => 0; snd => 1 }
+  else
+    let ab = fib(n / 2) in
+    let a = fst{int}{int}(ab) in
+    let b = snd{int}{int}(ab) in
+    let c = a * (b * 2 - a) in
+    let d = a * a + b * b in
+    ifz(n % 2) then
+      new pair(int)(int) { fst => c; snd => d }
+    else
+      new pair(int)(int) { fst => d; snd => c + d }
+
+--- The n:th Fibonacci.
+let main(n: int): int =
+  fst{int}{int}(fib(n))

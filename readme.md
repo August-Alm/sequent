@@ -92,9 +92,9 @@ dune build
 ```bash
 $ dune exec bin/compile.exe -- --link examples/fibonacci.cd examples/fibonacci/fibonacci
 $ cd examples/fibonacci
-$ sudo chmod 777 fibonacci # Bite me!
-$ ./fibonacci 30
-832040
+$ sudo chmod +x fibonacci
+$ ./fibonacci 1000
+817770325994397771
 ```
 
 ### Run Tests
@@ -115,8 +115,11 @@ This compiler is based on:
 
 ## Future Work
 
-- [ ] Optimization passes
-- [ ] Module system
+- [] Primitive strings
+- [] Array support
+- [] I/O
+- [] Module system
+- [] Sweeter syntax and inference
 
 ## License
 
