@@ -80,6 +80,7 @@ let length{a}{n: nat}(v: vec(a)(n)): single_nat(n) =
 - Dune build system
 - Menhir parser generator
 - Sedlex lexer generator
+- GNU as and gcc (for compiling .asm to executables)
 
 ### Build
 

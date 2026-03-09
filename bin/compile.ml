@@ -94,15 +94,15 @@ let assemble_and_link ~asm_file ~obj_file ~exe_file : (unit, string) result =
   let gcc_cmd = Printf.sprintf "gcc -o %s %s %s" 
     (Filename.quote exe_file) (Filename.quote driver_path) (Filename.quote obj_file) in
   match Sys.command as_cmd with
-  | 0 -> 
+    0 -> 
       (match Sys.command gcc_cmd with
-       | 0 -> Ok ()
-       | n -> Error (Printf.sprintf "gcc failed with exit code %d" n))
+        0 -> Ok ()
+      | n -> Error (Printf.sprintf "gcc failed with exit code %d" n))
   | n -> Error (Printf.sprintf "as failed with exit code %d" n)
 
 let print_usage () =
   Printf.eprintf "Usage:\n";
-  Printf.eprintf "  %s <src_file> <asm_file>           -- compile to assembly\n" Sys.argv.(0);
+  Printf.eprintf "  %s <src_file> <asm_file>          -- compile to assembly\n" Sys.argv.(0);
   Printf.eprintf "  %s --link <src_file> <exe_file>   -- compile, assemble, and link\n" Sys.argv.(0)
 
 let () =
@@ -129,19 +129,19 @@ let () =
     in
     
     match compile_source source output_name with
-    | Error msg ->
+      Error msg ->
         Printf.eprintf "Compilation failed:\n%s\n" msg;
         exit 1
     | Ok asm_string ->
         ensure_dir asm_file;
         (try write_file asm_file asm_string
-         with Sys_error msg ->
-           Printf.eprintf "Error writing %s: %s\n" asm_file msg;
-           exit 1);
+        with Sys_error msg ->
+          Printf.eprintf "Error writing %s: %s\n" asm_file msg;
+          exit 1);
         Printf.printf "Compiled %s -> %s\n" src_file asm_file;
         
         match assemble_and_link ~asm_file ~obj_file ~exe_file with
-        | Ok () ->
+          Ok () ->
             Printf.printf "Assembled %s -> %s\n" asm_file obj_file;
             Printf.printf "Linked -> %s\n" exe_file
         | Error msg ->
@@ -167,7 +167,7 @@ let () =
     in
     
     match compile_source source output_name with
-    | Ok asm_string ->
+      Ok asm_string ->
         ensure_dir asm_file;
         (try 
           write_file asm_file asm_string;
