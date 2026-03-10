@@ -433,16 +433,58 @@ let label_index (lmap: label_map) (p: Path.t) : int =
   | None -> failwith ("undefined label: " ^ Path.name p)
 
 (* ========================================================================= *)
+(* Direct Branch Optimization                                                *)
+(* ========================================================================= *)
+(* For definitions that start with CSwitch (like foo.mono functions), we emit
+   direct-entry labels that skip the switch dispatch. When we see:
+     let v = ctor(args); jump foo.mono(v)
+   we can instead jump directly to foo.mono's branch for ctor, passing args
+   directly instead of packing them into a constructor and unpacking. *)
+
+(** Info about a definition that starts with CSwitch *)
+type switch_def_info =
+  { dec: dec                        (* The type being switched on *)
+  ; tail_ctx_size: int              (* Size of context after scrutinee *)
+  ; branch_xtors: Path.t list       (* List of xtors handled by branches *)
+  }
+
+type switch_defs_map = switch_def_info Path.tbl
+
+(** Build map of definitions that start with CSwitch *)
+let make_switch_defs_map (defs: checked_definition Path.tbl) : switch_defs_map =
+  let extract_switch_info (def: checked_definition) : switch_def_info option =
+    match def.body with
+      CSwitch { dec; tail_ctx; branches; _ } ->
+        Some { dec
+             ; tail_ctx_size = List.length tail_ctx
+             ; branch_xtors = List.map (fun b -> b.xtor) branches
+             }
+    | _ -> None
+  in
+  Path.of_list (List.filter_map (fun (p, def) ->
+    match extract_switch_info def with
+      Some info -> Some (p, info)
+    | None -> None
+  ) (Path.to_list defs))
+
+(** Direct-entry label for definition N, branch with original_index I *)
+let direct_entry_label (def_idx: int) (branch_idx: int) : string =
+  "lab" ^ string_of_int def_idx ^ "d" ^ string_of_int branch_idx
+
+(* ========================================================================= *)
 (* Main Code Generation                                                      *)
 (* ========================================================================= *)
 
 (*
   Compile a checked command to AARCH64 assembly.
   The context is embedded in each AST node, so no manual threading needed.
+  
+  switch_defs: map of definitions that start with CSwitch, used for
+  direct-branch optimization.
 *)
 
-let rec code_command (lmap: label_map) (cmd: checked_command) 
-    : code state =
+let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
+    (cmd: checked_command) : code state =
   match cmd with
   (* Substitute: explicit structural rules *)
     CSubstitute { src_ctx; mapping; tgt_ctx; body } ->
@@ -450,7 +492,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let* weaken_contract = code_weakening_contraction src_ctx usage in
       let graph = connections src_ctx tgt_ctx usage in
       let exchange = code_exhange graph in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (weaken_contract @ exchange @ rest)
 
   (* Jump to label - move args to target positions then branch *)
@@ -477,26 +519,82 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let exchange = code_exhange (Array.to_list graph) in
       return (exchange @ [B ("lab" ^ string_of_int idx)])
 
-  (* Let: construct data value *)
+  (* Let: construct data value 
+     
+    OPTIMIZATION: If body is `jump target(v)` where v is the just-constructed
+    value and target starts with a switch on this type, we can jump directly
+    to target's branch for this xtor, passing args directly. This eliminates:
+    - Storing args to block
+    - Setting tag
+    - Loading args from block in target's branch *)
   | CLet { ctx; v; v_typ; dec; xtor; args; tail_ctx; body } ->
-      let new_ctx = (v, v_typ) :: tail_ctx in
-      let tag_reg = symbol_location2 new_ctx v in
-      (* Use original_index to get consistent tag across filtered/unfiltered xtor lists *)
-      let xtor_idx = 
-        let rec find_xtor = function
-            [] -> failwith
-              (Printf.sprintf "Compilation error: xtor '%s' not found!\n" (Path.name xtor))
-          | (y: xtor) :: _ when Path.equal y.name xtor -> y.original_index
-          | _ :: rest -> find_xtor rest
-        in find_xtor dec.xtors
+      (* Check for direct-branch optimization pattern:
+        body = CJump { label = target; args = [(v, _)] }
+        where target is in switch_defs and handles xtor *)
+      let try_direct_branch () =
+        match body with
+          CJump { label = target; args = jump_args; _ } ->
+            (match jump_args with
+              [(jump_v, _)] when Ident.equal jump_v v ->
+                (* Found pattern: let v = xtor(args); jump target(v) *)
+                (match Path.find_opt target switch_defs with
+                  Some info when List.exists (Path.equal xtor) info.branch_xtors ->
+                    (* Target starts with switch and has branch for this xtor *)
+                    let target_idx = label_index lmap target in
+                    let xtor_original_idx =
+                      match List.find_opt (fun (x: xtor) ->
+                        Path.equal x.name xtor
+                      ) dec.xtors
+                      with
+                        Some x -> x.original_index
+                      | None -> 0
+                    in
+                    Some (target_idx, xtor_original_idx)
+                | _ -> None)
+            | _ -> None)
+        | _ -> None
       in
-      (* Store args with ctx as source context, tail_ctx as the "as" context *)
-      let* stores = store args ctx tail_ctx in
-      let* rest = code_command lmap body in
-      return (
-        stores @
-        MOVI (tag_reg, Int64.of_int (Offset.jump_length xtor_idx)) ::
-        rest)
+      (match try_direct_branch () with
+        Some (target_idx, branch_idx) ->
+          (* OPTIMIZATION: Jump directly to target's branch.
+            Move args to branch parameter positions and branch. *)
+          let num_args = List.length args in
+          let graph = Array.make 32 [] in
+          List.iteri (fun i ((arg, ct): var * chiral_typ) ->
+            let src_r2 = symbol_location2 ctx arg in
+            let tgt_pos = num_args - 1 - i in
+            let tgt_r2 = Register.mk (Register.reserved + 2 * tgt_pos + 1) in
+            if is_ext_type ct then
+              graph.(Register.to_int src_r2) <- [tgt_r2]
+            else begin
+              let src_r1 = symbol_location1 ctx arg in
+              let tgt_r1 = Register.mk (Register.reserved + 2 * tgt_pos) in
+              graph.(Register.to_int src_r1) <- [tgt_r1];
+              graph.(Register.to_int src_r2) <- [tgt_r2]
+            end
+          ) args;
+          let exchange = code_exhange (Array.to_list graph) in
+          return (exchange @ [B (direct_entry_label target_idx branch_idx)])
+      | None ->
+          (* Normal path: construct the value *)
+          let new_ctx = (v, v_typ) :: tail_ctx in
+          let tag_reg = symbol_location2 new_ctx v in
+          (* Use original_index to get consistent tag across filtered/unfiltered xtor lists *)
+          let xtor_idx = 
+            let rec find_xtor = function
+                [] -> failwith
+                  (Printf.sprintf "Compilation error: xtor '%s' not found!\n" (Path.name xtor))
+              | (y: xtor) :: _ when Path.equal y.name xtor -> y.original_index
+              | _ :: rest -> find_xtor rest
+            in find_xtor dec.xtors
+          in
+          (* Store args with ctx as source context, tail_ctx as the "as" context *)
+          let* stores = store args ctx tail_ctx in
+          let* rest = code_command lmap switch_defs body in
+          return (
+            stores @
+            MOVI (tag_reg, Int64.of_int (Offset.jump_length xtor_idx)) ::
+            rest))
 
   (* Switch: pattern match on data 
      
@@ -518,7 +616,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       ) 0 branches in
       (* Create sparse jump table: entries at original_index positions *)
       let* branch_codes =
-        code_clauses_sparse lmap tail_ctx branches base_lab get_original_index
+        code_clauses_sparse lmap switch_defs tail_ctx branches base_lab get_original_index
       in
       return (
         ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
@@ -554,10 +652,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
         as_ctx = ctx (so block ends up at fresh_location1(ctx) = k's position) *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       (* Create sparse jump table: entries at original_index positions *)
       let* branch_codes =
-        code_methods_sparse lmap ctx branches base_lab get_original_index
+        code_methods_sparse lmap switch_defs ctx branches base_lab get_original_index
       in
       return (
         stores @
@@ -629,7 +727,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Literal: create integer value *)
   | CLit { ctx; n; v; body } ->
       let new_ctx = (v, Prd (Ext Int)) :: ctx in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         MOVI (symbol_location2 new_ctx v, n) ::
         rest)
@@ -658,10 +756,10 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       (* Store ctx as captured environment *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
-      let* cont = code_command lmap cont_body in
+      let* cont = code_command lmap switch_defs cont_body in
       (* Method: load captured vars from block. After load, context is ctx @ tail_ctx. *)
       let* loads = load ctx tail_ctx in
-      let* method_body = code_command lmap branch_body in
+      let* method_body = code_command lmap switch_defs branch_body in
       (* After stores, block pointer is at fresh_location1 ctx.
         Set k's two registers: r1 = block, r2 = code address *)
       let this_reg = fresh_location1 ctx in
@@ -681,7 +779,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Add: integer addition *)
   | CAdd { ctx; x; y; v; body } ->
       let new_ctx = (v, Prd (Ext Int)) :: ctx in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         ADD (symbol_location2 new_ctx v, symbol_location2 ctx x, 
              symbol_location2 ctx y) ::
@@ -693,7 +791,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let x_reg = symbol_location2 ctx x in
       let y_reg = symbol_location2 ctx y in
       let v_reg = symbol_location2 new_ctx v in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         MOVI (Register.temp, 1L) ::
         MSUB (v_reg, Register.temp, y_reg, x_reg) ::
@@ -702,7 +800,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Mul: integer multiplication *)
   | CMul { ctx; x; y; v; body } ->
       let new_ctx = (v, Prd (Ext Int)) :: ctx in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         MUL (symbol_location2 new_ctx v, symbol_location2 ctx x, 
              symbol_location2 ctx y) ::
@@ -711,7 +809,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
   (* Div: integer division *)
   | CDiv { ctx; x; y; v; body } ->
       let new_ctx = (v, Prd (Ext Int)) :: ctx in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         SDIV (symbol_location2 new_ctx v, symbol_location2 ctx x, 
               symbol_location2 ctx y) ::
@@ -723,7 +821,7 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let x_reg = symbol_location2 ctx x in
       let y_reg = symbol_location2 ctx y in
       let v_reg = symbol_location2 new_ctx v in
-      let* rest = code_command lmap body in
+      let* rest = code_command lmap switch_defs body in
       return (
         SDIV (Register.temp, x_reg, y_reg) ::  (* temp = x / y *)
         MSUB (v_reg, Register.temp, y_reg, x_reg) ::  (* v = x - temp*y *)
@@ -734,8 +832,8 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
       let v_reg = symbol_location2 ctx v in
       let* lab = fresh_label in
       let label = "lab" ^ string_of_int lab in
-      let* else_code = code_command lmap else_cmd in
-      let* then_code = code_command lmap then_cmd in
+      let* else_code = code_command lmap switch_defs else_cmd in
+      let* then_code = code_command lmap switch_defs then_cmd in
       return (
         CMPI (v_reg, 0) ::
         BEQ label ::
@@ -757,21 +855,21 @@ let rec code_command (lmap: label_map) (cmd: checked_command)
     tail_ctx: context after consuming scrutinee
     branch.args: binders introduced by this branch
     branch.branch_ctx = branch.args @ tail_ctx *)
-and code_clause (lmap: label_map) (tail_ctx: ctx) (branch: checked_branch)
-    : code state =
+and code_clause (lmap: label_map) (switch_defs: switch_defs_map) (tail_ctx: ctx) 
+    (branch: checked_branch) : code state =
   (* Load args into HEAD positions, tail_ctx stays at TAIL *)
   let* loads = load branch.args tail_ctx in
-  let* body_code = code_command lmap branch.body in
+  let* body_code = code_command lmap switch_defs branch.body in
   return (loads @ body_code)
 
-and code_clauses (lmap: label_map) (tail_ctx: ctx) 
+and code_clauses (lmap: label_map) (switch_defs: switch_defs_map) (tail_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int) (branch_idx: int) 
     : code list state =
   match branches with
     [] -> return []
   | branch :: rest ->
-      let* clause = code_clause lmap tail_ctx branch in
-      let* rest_clauses = code_clauses lmap tail_ctx rest base_lab (branch_idx + 1) in
+      let* clause = code_clause lmap switch_defs tail_ctx branch in
+      let* rest_clauses = code_clauses lmap switch_defs tail_ctx rest base_lab (branch_idx + 1) in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int branch_idx) :: 
         clause in
@@ -780,16 +878,16 @@ and code_clauses (lmap: label_map) (tail_ctx: ctx)
 (** Compile clauses with sparse indexing based on original_index.
     Used for CSwitch when xtors may be filtered due to GADT instantiation.
     Each branch is labeled with its xtor's original_index, not sequential index. *)
-and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx) 
+and code_clauses_sparse (lmap: label_map) (switch_defs: switch_defs_map) (tail_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int)
     (get_original_index: Path.t -> int)
     : code list state =
   match branches with
     [] -> return []
   | branch :: rest ->
-      let* clause = code_clause lmap tail_ctx branch in
+      let* clause = code_clause lmap switch_defs tail_ctx branch in
       let original_idx = get_original_index branch.xtor in
-      let* rest_clauses = code_clauses_sparse lmap tail_ctx rest base_lab get_original_index in
+      let* rest_clauses = code_clauses_sparse lmap switch_defs tail_ctx rest base_lab get_original_index in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) :: 
         clause in
@@ -799,21 +897,21 @@ and code_clauses_sparse (lmap: label_map) (tail_ctx: ctx)
     captured_ctx: the context captured when creating the codata
     branch.args: arguments passed to this method
     branch.branch_ctx = captured_ctx @ args *)
-and code_method (lmap: label_map) (captured_ctx: ctx) (branch: checked_branch)
-    : code state =
+and code_method (lmap: label_map) (switch_defs: switch_defs_map) (captured_ctx: ctx) 
+    (branch: checked_branch) : code state =
   let args = branch.args in
   let* loads = load captured_ctx args in
-  let* body_code = code_command lmap branch.body in
+  let* body_code = code_command lmap switch_defs branch.body in
   return (loads @ body_code)
 
-and code_methods (lmap: label_map) (captured_ctx: ctx)
+and code_methods (lmap: label_map) (switch_defs: switch_defs_map) (captured_ctx: ctx)
     (branches: checked_branch list) (base_lab: int) (branch_idx: int) 
     : code list state =
   match branches with
     [] -> return []
   | branch :: rest ->
-      let* method_code = code_method lmap captured_ctx branch in
-      let* rest_methods = code_methods lmap captured_ctx rest base_lab (branch_idx + 1) in
+      let* method_code = code_method lmap switch_defs captured_ctx branch in
+      let* rest_methods = code_methods lmap switch_defs captured_ctx rest base_lab (branch_idx + 1) in
       let labeled =
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int branch_idx) ::
         method_code in
@@ -822,16 +920,16 @@ and code_methods (lmap: label_map) (captured_ctx: ctx)
 (** Compile methods with sparse indexing based on original_index.
     Used for CNew when xtors may be filtered due to GADT instantiation.
     Each method is labeled with its xtor's original_index, not sequential index. *)
-and code_methods_sparse (lmap: label_map) (captured_ctx: ctx) 
+and code_methods_sparse (lmap: label_map) (switch_defs: switch_defs_map) (captured_ctx: ctx) 
     (branches: checked_branch list) (base_lab: int)
     (get_original_index: Path.t -> int)
     : code list state =
   match branches with
     [] -> return []
   | branch :: rest ->
-      let* method_code = code_method lmap captured_ctx branch in
+      let* method_code = code_method lmap switch_defs captured_ctx branch in
       let original_idx = get_original_index branch.xtor in
-      let* rest_methods = code_methods_sparse lmap captured_ctx rest base_lab get_original_index in
+      let* rest_methods = code_methods_sparse lmap switch_defs captured_ctx rest base_lab get_original_index in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) :: 
         method_code in
@@ -841,14 +939,61 @@ and code_methods_sparse (lmap: label_map) (captured_ctx: ctx)
 (* Top-Level Compilation                                                     *)
 (* ========================================================================= *)
 
-let translate (lmap: label_map) (defs: checked_definition Path.tbl) 
-    : code list state =
+(** Compile a definition, emitting direct-entry labels for switch-at-entry defs *)
+let compile_def (lmap: label_map) (switch_defs: switch_defs_map) 
+    (def_idx: int) (def: checked_definition) : code state =
+  match def.body with
+    (* Definition starts with CSwitch - emit direct-entry labels for each branch *)
+    CSwitch { ctx; v; dec; tail_ctx; branches; _ } ->
+      let tag_reg = symbol_location2 ctx v in
+      let* base_lab = fresh_label in
+      let get_original_index xtor_path =
+        match List.find_opt (fun (x: xtor) -> Path.equal x.name xtor_path) dec.xtors with
+          Some x -> x.original_index
+        | None -> 0
+      in
+      let max_idx = List.fold_left (fun acc branch ->
+        max acc (get_original_index branch.xtor)
+      ) 0 branches in
+      (* Compile branches with direct-entry labels *)
+      let* branch_codes = 
+        let rec compile_branches = function
+            [] -> return []
+          | branch :: rest ->
+              let original_idx = get_original_index branch.xtor in
+              let* loads = load branch.args tail_ctx in
+              let* body_code = code_command lmap switch_defs branch.body in
+              let* rest_branches = compile_branches rest in
+              (* Normal entry label, then load, then direct-entry label, then body *)
+              let labeled = 
+                LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) ::
+                loads @
+                LAB (direct_entry_label def_idx original_idx) ::
+                body_code in
+              return (labeled :: rest_branches)
+        in compile_branches branches
+      in
+      return (
+        ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
+        (if max_idx = 0 then []
+         else ADD (Register.temp, Register.temp, tag_reg) :: []) @
+        BR Register.temp ::
+        LAB ("lab" ^ string_of_int base_lab) ::
+        (if max_idx = 0 then []
+         else code_table (max_idx + 1) base_lab 0) @
+        List.concat branch_codes)
+  | _ ->
+      (* Normal definition - just compile the body *)
+      code_command lmap switch_defs def.body
+
+let translate (lmap: label_map) (switch_defs: switch_defs_map) 
+    (defs: checked_definition Path.tbl) : code list state =
   let def_list = Path.to_list defs in
   let rec compile_all = function
       [] -> return []
     | (path, def) :: rest ->
-        let _ = path in
-        let* code = code_command lmap def.body in
+        let def_idx = label_index lmap path in
+        let* code = compile_def lmap switch_defs def_idx def in
         let* rest_code = compile_all rest in
         return (code :: rest_code)
   in
@@ -865,8 +1010,9 @@ let assemble (start_label: int) (sections: code list) : code =
 (** Main compilation entry point for checked definitions *)
 let compile_checked (defs: checked_definition Path.tbl) : code * int =
   let lmap = make_label_map defs in
+  let switch_defs = make_switch_defs_map defs in
   let num_defs = List.length (Path.to_list defs) in
-  let (sections, _) = run_state (translate lmap defs) num_defs in
+  let (sections, _) = run_state (translate lmap switch_defs defs) num_defs in
   let main_args = match Path.to_list defs with
       [] -> 0
     | (_, def) :: _ -> List.length def.params

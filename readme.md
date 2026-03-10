@@ -21,7 +21,7 @@ A compiler for a functional ML-like language with generalized algebraic data typ
 3. **Core** Polarized sequent calculus
 4. **Focused** Normalized ("focused") representation
 5. **Axil** Linearized and monomorphized representation
-6. **ASM** Currently only AArch64
+6. **ASM** Currently only AArch64/Arm64
 
 ## Language Examples
 
