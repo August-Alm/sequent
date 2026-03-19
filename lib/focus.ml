@@ -81,6 +81,7 @@ let rec subst_type (ts: TySub.t) (t: CTy.typ) : CTy.typ =
   | CTy.Sgn (p, args) -> CTy.Sgn (p, List.map (subst_type ts) args)
   | CTy.PromotedCtor (d, c, args) -> CTy.PromotedCtor (d, c, List.map (subst_type ts) args)
   | CTy.Forall (x, k, body) -> CTy.Forall (x, subst_type ts k, subst_type ts body)
+  | CTy.Dest t -> CTy.Dest (subst_type ts t)
 
 let subst_chiral_type (ts: TySub.t) (ct: CTy.chiral_typ) : CTy.chiral_typ =
   match ct with CB.Prd t -> CB.Prd (subst_type ts t) | CB.Cns t -> CB.Cns (subst_type ts t)
@@ -177,6 +178,7 @@ let rec focus_type (t: CTy.typ) : FTy.typ =
   | CTy.Sgn (p, args) -> FTy.Sgn (p, List.map focus_type args)
   | CTy.PromotedCtor (d, c, args) -> FTy.PromotedCtor (d, c, List.map focus_type args)
   | CTy.Forall (x, k, body) -> FTy.Forall (x, focus_type k, focus_type body)
+  | CTy.Dest t -> FTy.Dest (focus_type t)
 
 let collapse_chiral (ctx: focus_ctx) (ct: CTy.chiral_typ) : FTy.chiral_typ =
   match ct with

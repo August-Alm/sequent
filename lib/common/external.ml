@@ -15,7 +15,6 @@ type ext_value =
 let type_of = function
     IntVal _ -> Int
 
-
 (** Convert ext_type to string *)
 let ext_type_to_string = function
     Int -> "int"

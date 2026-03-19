@@ -46,6 +46,8 @@ let rec convert_typ (t: FTy.typ) : ATy.typ =
       ATy.PromotedCtor (d, c, List.map convert_typ args)
   | FTy.Forall (v, k, body) -> 
       ATy.Forall (v, convert_typ k, convert_typ body)
+  | FTy.Dest t ->
+      ATy.Dest (convert_typ t)
 
 let convert_chiral (ct: FTy.chiral_typ) : ATy.chiral_typ =
   match ct with

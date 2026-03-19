@@ -698,7 +698,71 @@ let main: int =
   to_int{succ(succ(succ(zero)))}(l)
   |};
 
-  
+  (* Test 26: Tree lookup *)
+  run_test
+    ~name:"Tree lookup with optimized closures"
+    ~expected:10
+    {|
+data tree: type where
+  { leaf: int -> tree
+  ; node: tree -> tree -> tree
+  }
+
+let create(i: int)(n: int): tree =
+  ifz(i / n) then
+    let t = create(i + 1)(n) in
+    node(t)(t)
+  else
+    leaf(n)
+
+let lookup(t: tree): int =
+  match t with
+  { leaf(v) => v
+  ; node(l)(_) => lookup(l)
+  }
+
+let main: int =
+  lookup(create(0)(10))
+    |};
+
+  (* Test 27: Recursively defined stream *)
+  run_test
+    ~name:"Recursively defined stream"
+    ~expected:10
+    {|
+data option: type -> type where
+  { none: {a} option(a)
+  ; some: {a} a -> option(a)
+  }
+
+code stream: type -> type where
+  { state: {a} stream(a) -> a
+  ; next: {a} stream(a) -> option(stream(a))
+  }
+
+let repeat(x: int): stream(int) =
+  new stream(int)
+  { state => x
+  ; next => some{stream(int)}(repeat(x))
+  }
+
+let item{a}(n: int)(s: stream(a)): option(a) =
+  ifz(n) then
+    some{a}(state{a}(s))
+  else
+    match next{a}(s) with
+    { none{_} => none{a}
+    ; some{_}(s') => item{a}(n - 1)(s')
+    }
+
+let main: int =
+  let tens = repeat(10) in
+  match item{int}(13)(tens) with
+  { none{_} => 0
+  ; some{_}(x) => x
+  }
+    |};
+
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Results: %d/%d tests passed\n" !pass_count !test_count;

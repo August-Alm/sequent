@@ -231,6 +231,7 @@ let rec free_type_vars_in_typ (t: MT.typ) : Ident.t list =
       let fv = free_type_vars_in_typ body in
       List.filter (fun x -> not (Ident.equal x v)) fv @
       free_type_vars_in_typ k
+  | MT.Dest t -> free_type_vars_in_typ t
 
 let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (idx: int) (xtor: ast_xtor) : MT.xtor =
   (* Build context with type parameters *)

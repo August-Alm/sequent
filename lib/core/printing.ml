@@ -81,6 +81,8 @@ and pp_typ ?(nested=false) (t: typ) : string =
   | Forall (v, k, body) ->
       let inner = "∀" ^ pp_var v ^ ":" ^ pp_kind k ^ "." ^ pp_typ ~nested:false body in
       if nested then parens inner else inner
+  | Dest t ->
+      "dest(" ^ pp_typ ~nested t ^ ")"
 
 let typ_to_string (t: typ) : string = pp_typ ~nested:false t
 
@@ -362,6 +364,8 @@ let rec pp_ground_arg (arg: Mono_spec.ground_arg) : string =
   | Mono_spec.GroundSgn (name, []) -> Path.name name
   | Mono_spec.GroundSgn (name, args) ->
       Path.name name ^ parens (comma_sep (List.map pp_ground_arg args))
+  | Mono_spec.GroundDest t ->
+      "dest" ^ parens (pp_ground_arg t)
 
 let ground_arg_to_string (arg: Mono_spec.ground_arg) : string =
   pp_ground_arg arg

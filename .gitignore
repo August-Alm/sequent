@@ -42,6 +42,7 @@ AzuriteConfig
 output.txt
 outputs/
 notes.txt
+destinations.txt
 
 # Compiler-generated files (examples/foo.cd is source, examples/foo/ is output)
 examples/*/

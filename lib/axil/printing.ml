@@ -77,6 +77,8 @@ let rec pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       in
       let inner = binder ^ pp_typ ~cfg ~nested:false body in
       if nested then parens inner else inner
+  | Dest t ->
+      "dest(" ^ pp_typ ~cfg t ^ ")"
 
 let typ_to_string (t: typ) : string = pp_typ ~cfg:default_config ~nested:false t
 

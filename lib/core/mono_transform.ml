@@ -44,6 +44,7 @@ let rec typ_uses_vars (vars: Ident.t list) (ty: typ): bool =
   | Forall (_, k, b) -> typ_uses_vars vars k || typ_uses_vars vars b
   | Arrow (a, b) -> typ_uses_vars vars a || typ_uses_vars vars b
   | PromotedCtor (_, _, args) -> List.exists (typ_uses_vars vars) args
+  | Dest t -> typ_uses_vars vars t
 
 (** Check if a type contains ANY type variable (TVar) *)
 let rec typ_has_tvar (ty: typ): bool =
@@ -54,6 +55,7 @@ let rec typ_has_tvar (ty: typ): bool =
   | Forall (_, k, b) -> typ_has_tvar k || typ_has_tvar b
   | Arrow (a, b) -> typ_has_tvar a || typ_has_tvar b
   | PromotedCtor (_, _, args) -> List.exists typ_has_tvar args
+  | Dest t -> typ_has_tvar t
 
 (** Find calls to monomorphized functions in a command.
     Returns list of (def_path, type_args) for each call found. *)

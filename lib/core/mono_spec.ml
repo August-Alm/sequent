@@ -27,6 +27,7 @@ type mono_arg =
     MonoExt of ext_type                     (* External types like Int *)
   | MonoVar of Path.t * int                 (* Type variable: (definition path, param index) *)
   | MonoSgn of Path.t * mono_arg list       (* Applied type constructor *)
+  | MonoDest of mono_arg                    (* Destination type *)
 
 (** Flow constraint input *)
 type flow_input = 
@@ -131,6 +132,8 @@ let typ_to_mono_arg (t: typ): mono_arg gen =
             Convert to MonoSgn with a path like "'nat.zero" *)
           let promoted_path = Path.of_string ("'" ^ Path.name data_name ^ "." ^ Path.name ctor_name) in
           MonoSgn (promoted_path, List.map convert args)
+      | Dest t ->
+          MonoDest (convert t)
     in
     (convert t, [])
 
@@ -146,6 +149,7 @@ let typ_has_free_tvar (t: typ): bool gen =
       | Arrow (a, b) -> has_free a || has_free b
       | Forall (_, k, b) -> has_free k || has_free b
       | PromotedCtor (_, _, args) -> List.exists has_free args
+      | Dest t -> has_free t
     in
     (has_free t, [])
 
@@ -581,6 +585,7 @@ let rec arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge lis
       [{ edge_src = (src_path, src_index); edge_dst = (dst, index); edge_type = Stable }]
   | MonoSgn (_, targs) -> 
       List.concat_map (fun arg -> inner_arg_to_edges arg dst index) targs
+  | MonoDest t -> arg_to_edges t dst index
 
 (** Extract edges from nested arguments (growing edges) *)
 and inner_arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge list =
@@ -590,6 +595,7 @@ and inner_arg_to_edges (src: mono_arg) (dst: Path.t) (index: index): mono_edge l
   | MonoExt _ -> []
   | MonoVar (src_path, src_index) ->
       [{ edge_src = (src_path, src_index); edge_dst = (dst, index); edge_type = Growing }]
+  | MonoDest t -> inner_arg_to_edges t dst index
 
 (** Convert a flow to edges and/or a meta-edge *)
 let flow_to_edges (flow: flow): mono_edge list option * forward_edge option =
@@ -637,6 +643,7 @@ let find_growing_cycle (flows: flow list): node list option =
 type ground_arg =
     GroundExt of ext_type
   | GroundSgn of Path.t * ground_arg list
+  | GroundDest of ground_arg
 
 (** A ground instantiation: specific type args for a definition *)
 type ground_flow = 
@@ -650,12 +657,14 @@ let rec get_type_vars (arg: mono_arg): (Path.t * int) list =
     MonoExt _ -> []
   | MonoVar (path, idx) -> [(path, idx)]
   | MonoSgn (_, targs) -> List.concat_map get_type_vars targs
+  | MonoDest t -> get_type_vars t
 
 (** Convert mono arg to ground arg if possible *)
 let rec mono_arg_as_ground (arg: mono_arg): ground_arg option =
   match arg with
     MonoExt ext -> Some (GroundExt ext)
   | MonoVar _ -> None
+  | MonoDest t -> mono_arg_as_ground t
   | MonoSgn (name, targs) ->
       let rec collect_grounds acc = function
           [] -> Some (List.rev acc)
@@ -672,6 +681,7 @@ let rec ground_arg_as_mono (arg: ground_arg): mono_arg =
   match arg with
     GroundExt ext -> MonoExt ext
   | GroundSgn (name, args) -> MonoSgn (name, List.map ground_arg_as_mono args)
+  | GroundDest t -> MonoDest (ground_arg_as_mono t)
 
 (** Convert flow input to ground if all args are ground *)
 let flow_input_as_ground (input: flow_input): ground_arg list option =
@@ -699,6 +709,8 @@ let rec partially_instantiate (arg: mono_arg) (fact: ground_flow): mono_arg =
         MonoVar (path, index)
   | MonoSgn (name, targs) -> 
       MonoSgn (name, List.map (fun t -> partially_instantiate t fact) targs)
+  | MonoDest t ->
+      MonoDest (partially_instantiate t fact)
 
 (** Instantiate a flow rule using known ground facts *)
 let rec instantiate_rule (rule: flow) (facts: ground_flow list): ground_flow list =

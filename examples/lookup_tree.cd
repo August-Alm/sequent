@@ -1,0 +1,20 @@
+data tree: type where
+  { leaf: int -> tree
+  ; node: tree -> tree -> tree
+  }
+
+let create(i: int)(n: int): tree =
+  ifz(i / n) then
+    let t = create(i + 1)(n) in
+    node(t)(t)
+  else
+    leaf(n)
+
+let lookup(t: tree): int =
+  match t with
+  { leaf(v) => v
+  ; node(l)(_) => lookup(l)
+  }
+
+let main(n: int): int =
+  lookup(create(0)(n))

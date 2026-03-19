@@ -57,6 +57,7 @@ module TypeSystem(Base: BASE) = struct
     | Sgn of Path.t * typ list (* Signatures; applied data or codata type *)
     | PromotedCtor of Path.t * Path.t * typ list
     | Forall of Ident.t * typ * typ (* ∀(x: k). body, has kind - when x: k implies body: - *)
+    | Dest of typ (* Destination type *)
 
   let as_typ = fun pol -> Base pol
 
@@ -374,6 +375,8 @@ module TypeSystem(Base: BASE) = struct
           ) subst_arg_kinds kind_args in
           let subst_result = apply_fresh_subst ty_subst info.result_kind in
           Ok subst_result
+    | Dest tty ->
+        infer_kind ctx tty
 
   (* Apply type arguments to a kind, returning the resulting kind *)
   and apply_args (ctx: context) (kind: typ) (args: typ list)
@@ -528,6 +531,7 @@ module TypeSystem(Base: BASE) = struct
       | Sgn (_, args) -> List.fold_left collect_metas acc args
       | PromotedCtor (_, _, args) -> List.fold_left collect_metas acc args
       | Forall (_, k, body) -> collect_metas (collect_metas acc k) body
+      | Dest t -> collect_metas acc t
     in
     (* Instantiate a single xtor with a substitution derived from unification.
       For GADTs, xtor.quantified may have different length than type_args,

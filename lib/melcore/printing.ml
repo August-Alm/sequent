@@ -100,6 +100,8 @@ and pp_typ ?(cfg=default_config) ?(nested=false) (t: typ) : string =
       let k_str = if cfg.show_kinds then ": " ^ pp_kind ~cfg k else "" in
       let inner = braces (pp_ident x ^ k_str) ^ " " ^ pp_typ ~cfg ~nested:false body in
       if nested then parens inner else inner
+  | Dest t ->
+      "dest(" ^ pp_typ ~cfg t ^ ")"
 
 and pp_typ_base ?(cfg=default_config) (t: typ) : string =
   match t with
@@ -113,6 +115,7 @@ and pp_typ_atom ?(cfg=default_config) (t: typ) : string =
   match t with
     Base _ | Ext _ | TVar _ | TMeta _ | Sgn _ | PromotedCtor _ | Arrow _ -> pp_typ ~cfg t
   | Forall _ -> parens (pp_typ ~cfg t)
+  | Dest t -> "dest" ^ parens (pp_typ ~cfg t)
 
 (* ========================================================================= *)
 (* Xtor printing                                                             *)

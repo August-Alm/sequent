@@ -75,6 +75,8 @@ let rec ground_arg_to_typ (arg: Mono_spec.ground_arg): typ =
     Mono_spec.GroundExt t -> Ext t
   | Mono_spec.GroundSgn (name, args) ->
       Sgn (name, List.map ground_arg_to_typ args)
+  | Mono_spec.GroundDest t ->
+      Dest (ground_arg_to_typ t)
 
 (** Generate destructor name for an instantiation *)
 let dtor_name_for_inst (base_path: Path.t) (idx: int): Path.t =
@@ -94,6 +96,7 @@ let rec contains_forall (t: typ): bool =
     Forall _ -> true
   | Sgn (_, args) -> List.exists contains_forall args
   | Arrow (t1, t2) -> contains_forall t1 || contains_forall t2
+  | Dest t -> contains_forall t
   | TVar _ | TMeta _ | Ext _ | Base _ | PromotedCtor _ -> false
 
 (** Extract the forall-bound variable from a higher-rank type.
@@ -330,6 +333,7 @@ let rec typ_to_ground_arg (t: typ): Mono_spec.ground_arg =
       (* Base polarities *)
       let name = match pol with Types.CoreBase.Pos -> "+" | Types.CoreBase.Neg -> "-" in
       Mono_spec.GroundSgn (Path.of_string name, [])
+  | Dest t -> Mono_spec.GroundDest (typ_to_ground_arg t)
   | TVar v -> failwith ("unexpected type variable in instantiation: " ^ Ident.name v)
   | TMeta v -> failwith ("unexpected meta variable in instantiation: " ^ Ident.name v)
   | Arrow _ -> failwith "unexpected arrow kind in instantiation"

@@ -50,9 +50,11 @@ let rec encode_type (sorts: data_sort Path.tbl) (t: MTy.typ) : CTy.typ =
       CTy.PromotedCtor (d, c, List.map (encode_type sorts) args)
   | MTy.Forall (x, k, body) ->
       (* Forall is codata/negative, so wrap result in raise.
-         Body type is positive (like all types now), keep it as-is.
-         The forall itself works with positive body types. *)
+        Body type is positive (like all types now), keep it as-is.
+        The forall itself works with positive body types. *)
       raise (CTy.Forall (x, encode_type sorts k, encode_type sorts body))
+  | MTy.Dest t ->
+      CTy.Dest (encode_type sorts t)
 
 (** Encode an xtor definition *)
 let encode_xtor (sorts: data_sort Path.tbl) (ds: data_sort) (x: MTy.xtor) : CTy.xtor =
