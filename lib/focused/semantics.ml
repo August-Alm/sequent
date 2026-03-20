@@ -105,6 +105,9 @@ and cmd_name = function
   | Rem (a, b, v, _) -> Ident.name a ^ " % " ^ Ident.name b ^ " → " ^ Ident.name v
   | Ifz (v, _, _) -> "ifz " ^ Ident.name v
   | Jump (label, _) -> "jump " ^ pp_sym label
+  | Alloc (v, d, _, _) -> "alloc(" ^ Ident.name v ^ ", " ^ Ident.name d ^ ")"
+  | Fill (d, v, _, _) -> "fill " ^ Ident.name d ^ " " ^ Ident.name v
+  | Unfold (_, d, _, x, _) -> "unfold " ^ Ident.name d ^ " " ^ pp_sym x
   | End -> "end"
   | Ret (_, v) -> "ret " ^ Ident.name v
 
@@ -283,6 +286,12 @@ let step ((cmd, e): config) : config option =
             param_names (List.map (lookup e) args)
           in
           Some (def.body, e'))
+
+  (* Destination primitives are not implemented in the interpreter.
+     They are for compilation to native code only. *)
+  | Alloc (_, _, _, _) -> None
+  | Fill (_, _, _, _) -> None
+  | Unfold (_, _, _, _, _) -> None
 
   (* =========== Terminals =========== *)
   | End -> None

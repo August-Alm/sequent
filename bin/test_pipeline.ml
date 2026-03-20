@@ -600,10 +600,6 @@ let main: int =
     ~name:"GADT codata (streams of even/odd numbers)"
     ~expected:8
     {|
-data unit: type where
-  { U: unit
-  }
-
 data message: type where
   { hello: message
   ; this_is_your_key: int -> message
@@ -630,9 +626,9 @@ let main: int =
         new
         { connect =>
             new
-            { send(msg) => U
+            { send(msg) => ()
             ; receive => this_is_your_key(8)
-            ; close => U
+            ; close => ()
             }
         }
     }
@@ -762,6 +758,58 @@ let main: int =
   ; some{_}(x) => x
   }
     |};
+
+  (* Test 28: Destinations parsing *)
+  run_test
+    ~name: "Destinations parsing"
+    ~expected: 3
+    {|
+let test_alloc{a}(): lack(a)(dest(a)) =
+  alloc{a}()
+
+let test_fill(d: dest(int))(v: int): unit =
+  fill(d)(v)
+
+let test_finalize(x: lack(int)(unit)): int =
+  finalize(x)
+
+let main: int =
+  3
+    |};
+
+  (* Test 29: Destination-passing list map *)
+  run_test
+    ~name: "Destination-passing list map"
+    ~expected: 3
+    {|
+data list: type -> type where
+  { nil: {a} list(a)
+  ; cons: {a} a -> list(a) -> list(a)
+  }
+
+let map_dsp{a}{b}(f: a -> b)(xs: list(a))(ds: dest(list(b))): unit =
+  match xs with
+  { nil{_} => fill(ds)(nil{b})
+  ; cons{_}(x)(xs) =>
+      let (d, ds) = ds @ cons{b} in
+      let _ = fill(d)(f(x)) in
+      map_dsp{a}{b}(f)(xs)(ds)
+  }
+
+let map{a}{b}(f: a -> b)(xs: list(a)): list(b) =
+  let init = alloc{list(b)}() in
+  let r = update init with { (ds) => map_dsp{a}{b}(f)(xs)(ds) } in
+  finalize(r)
+
+let main: int =
+  let xs = cons{int}(2)(nil{int}) in
+  let f = fun(x: int) => x + 1 in
+  let ys = map{int}{int}(f)(xs) in
+  match ys with
+  { nil{_} => 0
+  ; cons{_}(y)(ys) => y
+  }
+|};
 
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";

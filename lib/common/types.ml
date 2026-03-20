@@ -16,12 +16,16 @@ open Uses
 open Identifiers
 
 module Prim = struct
-  let fun_sym = Path.of_primitive 1 "fun"
+  let unit_sym = Path.of_primitive 1 "unit"
+  let the_unit_sym = Path.access unit_sym "()"
+  let fun_sym = Path.of_primitive 2 "fun"
   let apply_sym = Path.access fun_sym "apply"
-  let lower_sym = Path.of_primitive 2 "lower"
+  let lower_sym = Path.of_primitive 3 "lower"
   let return_sym = Path.access lower_sym "return"
-  let raise_sym = Path.of_primitive 3 "raise"
+  let raise_sym = Path.of_primitive 4 "raise"
   let thunk_sym = Path.access raise_sym "thunk"
+  let lack_sym = Path.of_primitive 5 "lack"
+  let lack_ctor_sym = Path.access lack_sym "mk"
 end
 
 module type BASE = sig
@@ -174,6 +178,7 @@ module TypeSystem(Base: BASE) = struct
     | Sgn (name, args) -> Sgn (name, List.map (apply_subst sbs) args)
     | PromotedCtor (data_name, ctor_name, args) ->
         PromotedCtor (data_name, ctor_name, List.map (apply_subst sbs) args)
+    | Dest t' -> Dest (apply_subst sbs t')
     | _ -> t
 
   let rec occurs v t =
@@ -184,6 +189,7 @@ module TypeSystem(Base: BASE) = struct
     | Forall (x, k, body) -> occurs v k || (not (Ident.equal v x) && occurs v body)
     | Sgn (_, args) -> List.exists (occurs v) args
     | PromotedCtor (_, _, args) -> List.exists (occurs v) args
+    | Dest t' -> occurs v t'
     | _ -> false
 
   let rec apply_fresh_subst sbs t =
@@ -206,6 +212,7 @@ module TypeSystem(Base: BASE) = struct
           Forall (x', apply_fresh_subst sbs k, apply_fresh_subst sbs body')
         else
           Forall (x, apply_fresh_subst sbs k, apply_fresh_subst sbs body)
+    | Dest t' -> Dest (apply_fresh_subst sbs t')
     | _ -> t
 
   let rec unify t1 t2 sbs =
@@ -241,6 +248,7 @@ module TypeSystem(Base: BASE) = struct
           Path.equal d1 d2 && Path.equal c1 c2 &&
           List.length args1 = List.length args2 ->
         fold_zip (Some sbs) (args1, args2)
+    | Dest t1', Dest t2' -> unify t1' t2' sbs
     | _ -> None
 
   let equiv sbs t1 t2 =
@@ -629,6 +637,26 @@ module TypeSystem(Base: BASE) = struct
 
   (* Primitives *)
 
+  (* This is (). *)
+  let unit_ctor =
+    { name = Prim.the_unit_sym
+    ; quantified = []
+    ; existentials = []
+    ; argument_types = []
+    ; main = Sgn (Prim.unit_sym, [])
+    ; original_index = 0
+    }
+
+  let unit_dec =
+    { name = Prim.unit_sym
+    ; data_sort = Data
+    ; param_kinds = []
+    ; type_args = []
+    ; xtors = [unit_ctor]
+    }
+  
+  let unit_sgn = Sgn (Prim.unit_sym, [])
+
   (* fun[a, b] is the negative (codata) function type.
     apply destructor takes: (continuation: Cns b, arg: Prd a)
     Order: [Cns b; Prd a] = [continuation; argument] *)
@@ -713,7 +741,7 @@ module TypeSystem(Base: BASE) = struct
       ; promoted_ctors = Path.emptytbl
       ; typ_vars = Ident.emptytbl
       } 
-      [ fun_dec; raise_dec; lower_dec ]
+      [ unit_dec; fun_dec; raise_dec; lower_dec ]
     |> Option.get 
 
 end

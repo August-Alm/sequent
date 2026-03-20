@@ -23,6 +23,37 @@ type command =
   | Div of term * term * term
   | Rem of term * term * term
   | Ifz of term * command * command
+  (* Destination primitives *)
+
+    (* let (v, d) = alloc{T}; s
+
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ s
+      ------------------------------------- [ALLOC]
+      Γ ⊢ let (v, d) = alloc{T}; s
+
+    Alloc: Create fresh (unitialized) v and destination x (writing to v). *)
+  | Alloc of var * var * typ * command
+
+    (* fill{T} d v; s
+    
+      Γ ⊢ s
+      ----------------------------------------------- [FILL]
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ fill x v; s
+
+    Fill: Fill a destination x with a value v. *)
+  | Fill of var * var * typ * command
+
+    (* let (xi) = unfold d m; s
+    
+      m(prd[1] τ_i) constructor of τ
+      Γ, (xi: prd[1] dest(τi)) ⊢ s
+      ------------------------------------------- [UNFOLD]
+      Γ, (d: prd[1] τ) ⊢ let (xi) = unfold d m; s 
+
+    Unfold: Extracts the subdestinations with respect to a data constructor.  *)
+    (* xi's, x, instantiated dec, m, s *)
+  | Unfold of (var list) * var * dec * sym * command
+
   (* Explicit return - terminal command that returns a value *)
   | Ret of typ * term
   | End
@@ -91,6 +122,7 @@ type check_error =
   | CallArgTypeMismatch of { defn: Path.t; index: int; expected: chiral_typ; got: chiral_typ }
   | AddTypeMismatch of { arg1: chiral_typ; arg2: chiral_typ; result: chiral_typ }
   | IfzConditionNotInt of chiral_typ
+  | ExpectedSignature of typ
 
 type 'a check_result = ('a, check_error) result
 
@@ -225,7 +257,18 @@ let freshen_xtor_existentials (xtor: xtor)
     Used for GADT refinement to convert TVars to TMetas before checking. *)
 let rec refine_cmd_types (subst: typ Ident.tbl) (cmd: command) : command =
   let refine_typ = apply_fresh_subst subst in
+  let refine_chiral ct = chiral_map refine_typ ct in
   let refine_term t = refine_term_types subst t in
+  let refine_dec (d: dec) : dec =
+    { d with
+      type_args = List.map refine_typ d.type_args
+    ; xtors = List.map (fun (x: xtor) ->
+        { x with
+          argument_types = List.map refine_chiral x.argument_types
+        ; main = refine_typ x.main
+        }) d.xtors
+    }
+  in
   match cmd with
     Cut (ty, t1, t2) -> Cut (refine_typ ty, refine_term t1, refine_term t2)
   | Call (path, type_args, term_args) ->
@@ -237,6 +280,12 @@ let rec refine_cmd_types (subst: typ Ident.tbl) (cmd: command) : command =
   | Rem (t1, t2, t3) -> Rem (refine_term t1, refine_term t2, refine_term t3)
   | Ifz (t, c1, c2) ->
       Ifz (refine_term t, refine_cmd_types subst c1, refine_cmd_types subst c2)
+  | Alloc (v, d, ty, body) ->
+      Alloc (v, d, refine_typ ty, refine_cmd_types subst body)
+  | Fill (d, v, ty, body) ->
+      Fill (d, v, refine_typ ty, refine_cmd_types subst body)
+  | Unfold (xi_vars, d, dec, xtor, body) ->
+      Unfold (xi_vars, d, refine_dec dec, xtor, refine_cmd_types subst body)
   | Ret (ty, t) -> Ret (refine_typ ty, refine_term t)
   | End -> End
 
@@ -608,6 +657,58 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
           let* _ = expect_prd t_ct in
           let* _ = check_command ctx subs'' cmd1 in
           check_command ctx subs'' cmd2)
+
+  (* Destination primitives *)
+  
+  (* let (v, d) = alloc{T}; s
+     Extends context with v: prd[ω] ty and d: prd[1] dest(ty) *)
+  | Alloc (v, d, ty, body) ->
+      let v_typ = Prd (Unr, ty) in
+      let d_typ = Prd (Lin, Dest ty) in
+      let ctx' = extend (extend ctx v v_typ) d d_typ in
+      check_command ctx' subs body
+
+  (* fill d v; s
+     Checks d: prd[1] dest(ty) and v: prd[ω] ty are in scope *)
+  | Fill (d, v, _ty, body) ->
+      let* d_ct = lookup_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      let* v_ct = lookup_var ctx v in
+      let* v_ty = expect_prd v_ct in
+      (* d_ty should be Dest(inner_ty) where inner_ty = v_ty *)
+      (match d_ty with
+        Dest inner_ty ->
+          (match unify inner_ty v_ty subs with
+            None -> Error (UnificationFailed (inner_ty, v_ty))
+          | Some subs' -> check_command ctx subs' body)
+      | _ -> Error (UnificationFailed (d_ty, Dest v_ty)))
+
+  (* let (xi) = unfold d m; s
+     Consumes d: prd[1] dest(ty), introduces xi: prd[1] dest(τi) for each argument of constructor m *)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      let* d_ct = lookup_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      (* d_ty should be Dest(Sgn(...)) *)
+      let* _sgn_ty = (match d_ty with
+          Dest (Sgn (_, _) as s) -> Ok s
+        | _ -> Error (ExpectedSignature d_ty)) in
+      (* Find xtor m in dec *)
+      (match find_xtor dec xtor_name with
+        None -> Error (UnboundXtor (dec.name, xtor_name))
+      | Some xtor ->
+          if List.length xi_vars <> List.length xtor.argument_types then
+            Error (XtorArityMismatch
+              { xtor = xtor_name
+              ; expected = List.length xtor.argument_types
+              ; got = List.length xi_vars })
+          else
+            (* Each xi gets type prd[1] dest(τi) where τi is the arg type *)
+            let ctx' = List.fold_left2 (fun c xi arg_ct ->
+              let arg_ty = strip_chirality arg_ct in
+              extend c xi (Prd (Lin, Dest arg_ty))
+            ) ctx xi_vars xtor.argument_types in
+            check_command ctx' subs body)
+
   | Ret (_ty, t) ->
       (* Ret returns a producer value - just check it's a valid producer *)
       let* (t_ct, _subs') = infer_typ ctx subs t in

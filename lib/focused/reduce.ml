@@ -75,6 +75,14 @@ let subst_var (old_v: var) (new_v: var) (cmd: command) : command =
         Rem (sv x, sv y, r, if Ident.equal r old_v then body else go body)
     | Ifz (v, then_cmd, else_cmd) ->
         Ifz (sv v, go then_cmd, go else_cmd)
+    | Alloc (v, d, ty, body) ->
+        let shadowed = Ident.equal v old_v || Ident.equal d old_v in
+        Alloc (v, d, ty, if shadowed then body else go body)
+    | Fill (d, v, ty, body) ->
+        Fill (sv d, sv v, ty, go body)
+    | Unfold (xi_vars, d, dec, xtor, body) ->
+        let shadowed = List.exists (Ident.equal old_v) xi_vars in
+        Unfold (xi_vars, sv d, dec, xtor, if shadowed then body else go body)
     | Ret (ty, v) ->
         Ret (ty, sv v)
     | End -> End
@@ -126,6 +134,12 @@ let rec count_uses (v: var) (cmd: command) : int =
       cv x + cv y + count_uses v body
   | Ifz (x, then_cmd, else_cmd) ->
       cv x + count_uses v then_cmd + count_uses v else_cmd
+  | Alloc (_, _, _, body) ->
+      count_uses v body
+  | Fill (d, x, _, body) ->
+      cv d + cv x + count_uses v body
+  | Unfold (_, d, _, _, body) ->
+      cv d + count_uses v body
   | Ret (_, x) ->
       cv x
   | End -> 0
@@ -177,6 +191,12 @@ let rec replace_all_switches_with_args (v: var) (xtor: sym) (ctor_args: var list
       Rem (x, y, r, go body)
   | Ifz (x, then_cmd, else_cmd) ->
       Ifz (x, go then_cmd, go else_cmd)
+  | Alloc (v, d, ty, body) ->
+      Alloc (v, d, ty, go body)
+  | Fill (d, v, ty, body) ->
+      Fill (d, v, ty, go body)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      Unfold (xi_vars, d, dec, xtor_name, go body)
   | Ret (ty, x) ->
       Ret (ty, x)
   | End -> End
@@ -217,6 +237,12 @@ let rec replace_all_invokes (k: var) (xtor: sym) (replacement_fn: var list -> co
       Rem (x, y, r, go body)
   | Ifz (x, then_cmd, else_cmd) ->
       Ifz (x, go then_cmd, go else_cmd)
+  | Alloc (v, d, ty, body) ->
+      Alloc (v, d, ty, go body)
+  | Fill (d, v, ty, body) ->
+      Fill (d, v, ty, go body)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      Unfold (xi_vars, d, dec, xtor_name, go body)
   | Ret (ty, x) ->
       Ret (ty, x)
   | End -> End
@@ -316,6 +342,18 @@ let rec find_and_replace_axiom (k: var) (replacement_fn: var -> command) (cmd: c
         (match find_and_replace_axiom k replacement_fn else_cmd with
           Found else' -> Found (Ifz (v, then_cmd, else'))
         | other -> other)
+  | Alloc (v, d, ty, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+        Found body' -> Found (Alloc (v, d, ty, body'))
+      | other -> other)
+  | Fill (d, v, ty, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+        Found body' -> Found (Fill (d, v, ty, body'))
+      | other -> other)
+  | Unfold (xi_vars, d, dec, xtor, body) ->
+      (match find_and_replace_axiom k replacement_fn body with
+        Found body' -> Found (Unfold (xi_vars, d, dec, xtor, body'))
+      | other -> other)
   | Ret (_, _) -> NotFound
   | End -> NotFound
 
@@ -424,6 +462,21 @@ let rec find_and_replace_invoke (k: var) (cmd: command)
           Found (x, a, rebuild) ->
             Found (x, a, fun r -> Ifz (v, then_cmd, rebuild r))
         | other -> other)
+  | Alloc (v, d, ty, body) ->
+      (match find_and_replace_invoke k body with
+        Found (xtor, a, rebuild) ->
+          Found (xtor, a, fun rep -> Alloc (v, d, ty, rebuild rep))
+      | other -> other)
+  | Fill (d, v, ty, body) ->
+      (match find_and_replace_invoke k body with
+        Found (xtor, a, rebuild) ->
+          Found (xtor, a, fun rep -> Fill (d, v, ty, rebuild rep))
+      | other -> other)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      (match find_and_replace_invoke k body with
+        Found (x, a, rebuild) ->
+          Found (x, a, fun rep -> Unfold (xi_vars, d, dec, xtor_name, rebuild rep))
+      | other -> other)
   | Ret (_, _) -> NotFound
   | End -> NotFound
 
@@ -544,6 +597,12 @@ let rec reduce_cmd (cmd: command) : command =
       Rem (x, y, r, reduce_cmd body)
   | Ifz (v, then_cmd, else_cmd) ->
       Ifz (v, reduce_cmd then_cmd, reduce_cmd else_cmd)
+  | Alloc (v, d, ty, body) ->
+      Alloc (v, d, ty, reduce_cmd body)
+  | Fill (d, v, ty, body) ->
+      Fill (d, v, ty, reduce_cmd body)
+  | Unfold (xi_vars, d, dec, xtor, body) ->
+      Unfold (xi_vars, d, dec, xtor, reduce_cmd body)
   | Ret (ty, v) ->
       Ret (ty, v)
   | End -> End

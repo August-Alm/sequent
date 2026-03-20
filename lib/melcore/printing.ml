@@ -264,10 +264,32 @@ let rec pp_term ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   | Ifz (c, t, e) ->
       "ifz " ^ pp_term ~cfg ~lvl c ^ " then " ^
       pp_term ~cfg ~lvl t ^ " else " ^ pp_term ~cfg ~lvl e
+  
+  (* Destination primitives *)
+  | Alloc ty ->
+      "alloc" ^ braces (pp_typ ~cfg ty) ^ "()"
+  
+  | Fill (d, t) ->
+      "fill" ^ parens (pp_term ~cfg ~lvl d) ^ parens (pp_term ~cfg ~lvl t)
+  
+  | Unfold (dvars, d, (_, xtor, ty_args), body) ->
+      let dvars_str = List.map pp_ident dvars |> String.concat ", " in
+      let ty_args_str = List.map (fun a -> braces (pp_typ ~cfg a)) ty_args |> String.concat "" in
+      "let " ^ parens dvars_str ^ " = " ^ pp_term ~cfg ~lvl d ^ " @ " ^
+      pp_xtor_name xtor ^ ty_args_str ^ " in" ^
+      indent lvl ^ pp_term ~cfg ~lvl body
+  
+  | Update (t, d, u) ->
+      "update " ^ pp_term ~cfg ~lvl t ^ " with { " ^
+      parens (pp_ident d) ^ " => " ^ pp_term ~cfg ~lvl u ^ " }"
+  
+  | Finalize t ->
+      "finalize" ^ parens (pp_term ~cfg ~lvl t)
 
 and pp_term_app ?(cfg=default_config) ?(lvl=0) (tm: term) : string =
   match tm with
-    Int _ | Var _ | Sym _ | Add _ | Sub _ | Mul _ | Div _ | Rem _ | App _ | Ins _ | Ctor _ | Dtor _ ->
+    Int _ | Var _ | Sym _ | Add _ | Sub _ | Mul _ | Div _ | Rem _ | App _ | Ins _ 
+  | Ctor _ | Dtor _ | Alloc _ | Fill _ | Finalize _ ->
       pp_term ~cfg ~lvl tm
   | _ -> parens (pp_term ~cfg ~lvl tm)
 
@@ -371,11 +393,33 @@ let rec pp_typed_term ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   | TypedIfz (c, t, e, _) ->
       "ifz " ^ pp_typed_term ~cfg ~lvl c ^ " then " ^
       pp_typed_term ~cfg ~lvl t ^ " else " ^ pp_typed_term ~cfg ~lvl e
+  
+  (* Destination primitives *)
+  | TypedAlloc (ty, _) ->
+      "alloc" ^ braces (pp_typ ~cfg ty) ^ "()"
+  
+  | TypedFill (d, t, _) ->
+      "fill" ^ parens (pp_typed_term ~cfg ~lvl d) ^ parens (pp_typed_term ~cfg ~lvl t)
+  
+  | TypedUnfold (dvars, d, (_, xtor, ty_args), body, _) ->
+      let dvars_str = List.map pp_ident dvars |> String.concat ", " in
+      let ty_args_str = List.map (fun a -> braces (pp_typ ~cfg a)) ty_args |> String.concat "" in
+      "let " ^ parens dvars_str ^ " = " ^ pp_typed_term ~cfg ~lvl d ^ " @ " ^
+      pp_xtor_name xtor ^ ty_args_str ^ " in" ^
+      indent lvl ^ pp_typed_term ~cfg ~lvl body
+  
+  | TypedUpdate (t, d, u, _) ->
+      "update " ^ pp_typed_term ~cfg ~lvl t ^ " with { " ^
+      parens (pp_ident d) ^ " => " ^ pp_typed_term ~cfg ~lvl u ^ " }"
+  
+  | TypedFinalize (t, _) ->
+      "finalize" ^ parens (pp_typed_term ~cfg ~lvl t)
 
 and pp_typed_term_app ?(cfg=default_config) ?(lvl=0) (tm: typed_term) : string =
   match tm with
     TypedInt _ | TypedVar _ | TypedSym _ | TypedAdd _ | TypedSub _ | TypedApp _ 
-  | TypedIns _ | TypedCtor _ | TypedDtor _ -> pp_typed_term ~cfg ~lvl tm
+  | TypedIns _ | TypedCtor _ | TypedDtor _
+  | TypedAlloc _ | TypedFill _ | TypedFinalize _ -> pp_typed_term ~cfg ~lvl tm
   | _ -> parens (pp_typed_term ~cfg ~lvl tm)
 
 and pp_typed_clause ?(cfg=default_config) ?(lvl=0) 

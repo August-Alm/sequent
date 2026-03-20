@@ -210,6 +210,27 @@ and pp_cmd ?(cfg=default_config) (n: int) (cmd: command) : string =
       pp_cmd ~cfg (n + cfg.indent_size) else_cmd ^ "\n" ^
       ind ^ "}"
 
+  (* =========== Destination Primitives =========== *)
+
+  (* let (v, d) = alloc{ty}; body *)
+  | Alloc (v, d, ty, body) ->
+      let ty_ann = if cfg.show_types then "{" ^ pp_typ ty ^ "}" else "" in
+      ind ^ "let (" ^ pp_var v ^ ", " ^ pp_var d ^ ") = alloc" ^ ty_ann ^ ";\n" ^
+      pp_cmd ~cfg n body
+
+  (* fill d v; body *)
+  | Fill (d, v, ty, body) ->
+      let ty_ann = if cfg.show_types then "{" ^ pp_typ ty ^ "}" else "" in
+      ind ^ "fill" ^ ty_ann ^ " " ^ pp_var d ^ " " ^ pp_var v ^ ";\n" ^
+      pp_cmd ~cfg n body
+
+  (* let (xi) = unfold d m; body *)
+  | Unfold (xi_vars, d, dec, xtor, body) ->
+      let ty_ann = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
+      let xi_str = if xi_vars = [] then "()" else "(" ^ pp_vars xi_vars ^ ")" in
+      ind ^ "let " ^ xi_str ^ " = unfold " ^ pp_var d ^ " " ^ pp_sym xtor ^ ty_ann ^ ";\n" ^
+      pp_cmd ~cfg n body
+
   (* =========== Terminals =========== *)
 
   (* ret{ty} v *)

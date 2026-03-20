@@ -122,7 +122,38 @@ type command =
   | Rem of var * var * var * command (* rem(x, y) { v ⇒ s } *)
   | Ifz of var * command * command   (* ifz(v) { sThen; sElse } *)
 
-    (* Terminals *)
+  (* Destination primitives *)
+
+    (* let (v, d) = alloc{T}; s
+
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ s
+      ------------------------------------- [ALLOC]
+      Γ ⊢ let (v, d) = alloc{T}; s
+
+    Alloc: Create fresh (unitialized) v and destination x (writing to v). *)
+  | Alloc of var * var * typ * command
+
+    (* fill{T} d v; s
+    
+      Γ ⊢ s
+      ----------------------------------------------- [FILL]
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ fill x v; s
+
+    Fill: Fill a destination x with a value v. *)
+  | Fill of var * var * typ * command
+
+    (* let (xi) = unfold d m; s
+    
+      m(prd[1] τ_i) constructor of τ
+      Γ, (xi: prd[1] dest(τi)) ⊢ s
+      ------------------------------------------- [UNFOLD]
+      Γ, (d: prd[1] τ) ⊢ let (xi) = unfold d m; s 
+
+    Unfold: Extracts the subdestinations with respect to a data constructor.  *)
+    (* xi's, x, instantiated dec, m, s *)
+  | Unfold of (var list) * var * dec * sym * command
+
+  (* Terminals *)
   | Ret of typ * var  (* ret τ v *)
   | End
 
@@ -749,6 +780,79 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       | Some _ -> Ok ())
 
   | End -> Ok ()
+
+  (* Destination primitives *)
+
+  (* let (v, d) = alloc{T}; s
+
+    Γ, v: prd[ω] τ, d: prd[1] dest(τ) ⊢ s
+    ------------------------------------- [ALLOC]
+    Γ ⊢ let (v, d) = alloc{T}; s
+
+    Creates uninitialized v and destination d. d is at head, v next. *)
+  | Alloc (v, d, ty, body) ->
+      let v_typ = Prd (Unr, ty) in
+      let d_typ = Prd (Lin, Dest ty) in
+      (* d at head, v second *)
+      let ctx1 = prepend ctx v v_typ in
+      let ctx2 = prepend ctx1 d d_typ in
+      check_command ctx2 subs body
+
+  (* fill d v; s
+
+    Γ ⊢ s
+    ----------------------------------------------- [FILL]
+    Γ, v: prd[ω] τ, d: prd[1] dest(τ) ⊢ fill d v; s
+
+    Consumes d and v, filling destination d with value v. *)
+  | Fill (d, v, _ty, body) ->
+      (* d is at head, v is second *)
+      let* (d_ct, ctx1) = consume_head_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      let* (v_ct, ctx2) = consume_head_var ctx1 v in
+      let* v_ty = expect_prd v_ct in
+      (* d_ty should be Dest(inner_ty) where inner_ty = v_ty *)
+      (match d_ty with
+        Dest inner_ty ->
+          (match unify inner_ty v_ty subs with
+            None -> Error (UnificationFailed (inner_ty, v_ty))
+          | Some subs' -> check_command ctx2 subs' body)
+      | _ -> Error (UnificationFailed (d_ty, Dest v_ty)))
+
+  (* let (xi) = unfold d m; s
+
+    m(prd[1] τ_i) constructor of τ
+    Γ, (xi: prd[1] dest(τi)) ⊢ s
+    ------------------------------------------- [UNFOLD]
+    Γ, d: prd[1] dest(τ) ⊢ let (xi) = unfold d m; s
+
+    Consumes d, introduces subdestinations xi for constructor m's arguments. *)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      (* d is at head *)
+      let* (d_ct, tail_ctx) = consume_head_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      (* d_ty should be Dest(Sgn(...)) *)
+      let* _sgn_ty = (match d_ty with
+          Dest (Sgn (_, _) as s) -> Ok s
+        | _ -> Error (ExpectedSignature d_ty)) in
+      (* Find xtor m in dec *)
+      (match find_xtor dec xtor_name with
+        None -> Error (UnboundXtor (dec.name, xtor_name))
+      | Some xtor ->
+          if List.length xi_vars <> List.length xtor.argument_types then
+            Error (XtorArityMismatch
+              { xtor = xtor_name
+              ; expected = List.length xtor.argument_types
+              ; got = List.length xi_vars })
+          else
+            (* Each xi gets type prd[1] dest(τi) where τi is the arg type *)
+            let xi_bindings = List.map2 (fun xi arg_ct ->
+              let arg_ty = strip_chirality arg_ct in
+              (xi, Prd (Lin, Dest arg_ty))
+            ) xi_vars xtor.argument_types in
+            (* xi's are prepended at head of tail context *)
+            let new_ctx = prepend_many tail_ctx xi_bindings in
+            check_command new_ctx subs body)
 
 (** Helper: check that consumed bindings match expected xtor argument types *)
 and check_bindings_against_types 

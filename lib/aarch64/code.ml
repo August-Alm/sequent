@@ -54,8 +54,13 @@ module Offset = struct
   let reference_count = address 0
   let next_element = address 0
   let code_pointer = address 1  (* For int consumers: method code address *)
+  (* For destination-passed values, store the constructor tag at code_pointer offset
+     since data types don't use the code_pointer slot *)
+  let data_tag = address 1  (* offset 8, same as code_pointer *)
   let field1 i = address (2 + 2 * i)
   let field2 i = address (2 + 2 * i + 1)
+  (* Sentinel value indicating tag should be loaded from memory (destination-passing) *)
+  let alloc_sentinel = Int64.minus_one  (* -1 / 0xFFFFFFFFFFFFFFFF *)
 end
 
 type instruction =

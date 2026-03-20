@@ -27,6 +27,10 @@ let keywords = [
   ("ifz", KW_IFZ);
   ("then", KW_THEN);
   ("else", KW_ELSE);
+  ("alloc", KW_ALLOC);
+  ("fill", KW_FILL);
+  ("update", KW_UPDATE);
+  ("finalize", KW_FINALIZE);
 ]
 
 let keyword_table =
@@ -57,6 +61,8 @@ let rec token lexbuf =
   | "%" -> PERCENT
   | "|" -> PIPE
   | ";" -> SEMICOLON
+  | "@" -> AT
+  | "," -> COMMA
   | integer ->
       let s = Sedlexing.Utf8.lexeme lexbuf in
       INT (Int64.of_string s)

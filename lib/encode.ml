@@ -119,6 +119,10 @@ type encode_ctx =
 
 (** Build an encoding context from Melcore type declarations *)
 let make_encode_ctx ?(defs=Path.emptytbl) (melcore_decs: MTy.dec list) : encode_ctx =
+  (* Get built-in declarations from Melcore's empty context *)
+  let builtin_decs = MTy.empty_context.decs |> Path.to_list |> List.map snd in
+  (* Combine built-in and user-defined declarations *)
+  let all_melcore_decs = builtin_decs @ melcore_decs in
   let empty_sorts =
     MTy.empty_context.decs
     |> Path.to_list
@@ -128,7 +132,7 @@ let make_encode_ctx ?(defs=Path.emptytbl) (melcore_decs: MTy.dec list) : encode_
   let sorts = List.fold_left (fun tbl (dec: MTy.dec) ->
     Path.add dec.name dec.data_sort tbl
   ) empty_sorts melcore_decs in
-  let core_decs = List.map (encode_dec sorts) melcore_decs in
+  let core_decs = List.map (encode_dec sorts) all_melcore_decs in
   let types = List.fold_left CTy.add_dec CTy.empty_context core_decs in
   { types = types; data_sorts = sorts; defs = defs }
 
@@ -648,6 +652,119 @@ and encode_term_inner (ctx: encode_ctx) (tm: MTm.typed_term) : CTm.term =
         CTm.Ifz (cond',
           make_cut ty' then' (CTm.Var alpha),
           make_cut ty' else' (CTm.Var alpha)))
+
+  (* ===== Destination Primitives ===== *)
+  
+  (* alloc{a}() : lack(a)(dest(a)) 
+     Encoded as: μk. let (v, d) = alloc{a}; ⟨lack.mk{a,dest(a)}(v, d) | k⟩ *)
+  | MTm.TypedAlloc (a, result_ty) ->
+      let a' = encode_type ctx.data_sorts a in
+      let result_ty' = encode_type ctx.data_sorts result_ty in
+      let k = Ident.fresh () in
+      let v = Ident.fresh () in
+      let d = Ident.fresh () in
+      (* Get the instantiated lack declaration *)
+      let dest_a = CTy.Dest a' in
+      let lack_dec = get_instantiated_dec ctx Prim.lack_sym [a'; dest_a] in
+      (* Build: lack.mk(v, d) where v: a, d: dest(a) *)
+      let lack_value = CTm.Ctor (lack_dec, Prim.lack_ctor_sym, [CTm.Var v; CTm.Var d]) in
+      CTm.MuPrd (result_ty', k,
+        CTm.Alloc (v, d, a',
+          make_cut result_ty' lack_value (CTm.Var k)))
+
+  (* fill(d)(t) : unit 
+     where d: dest(a), t: a
+     The dest is a consumer, so we cut it against a fresh producer var.
+     The value is a producer, so we cut it against a fresh consumer var.
+     Then we use Fill. *)
+  | MTm.TypedFill (d_tm, t_tm, result_ty) ->
+      let d' = encode_term ctx d_tm in
+      let t' = encode_term ctx t_tm in
+      let t_ty = MTm.get_type t_tm in
+      let t_ty' = encode_type ctx.data_sorts t_ty in
+      let result_ty' = encode_type ctx.data_sorts result_ty in
+      let k = Ident.fresh () in
+      let vvar = Ident.fresh () in
+      let dvar = Ident.fresh () in
+      let unit_dec = get_instantiated_dec ctx Prim.unit_sym [] in
+      let unit_term = CTm.Ctor (unit_dec, Prim.the_unit_sym, []) in
+      (* d' is a term producing dest(t_ty), t' is a term producing t_ty.
+         We need to bind both to variables for Fill.
+         Fill(d, v, ty, body): d has type dest(ty), v has type ty *)
+      CTm.MuPrd (result_ty', k,
+        CTm.Cut (CTy.Dest t_ty', d',
+          CTm.MuCns (CTy.Dest t_ty', dvar,
+            CTm.Cut (t_ty', t',
+              CTm.MuCns (t_ty', vvar,
+                CTm.Fill (dvar, vvar, t_ty',
+                  (* Return unit - cut unit value against k *)
+                  CTm.Cut (result_ty', unit_term, CTm.Var k)))))))
+
+  (* let (dj) = d @ ctor{ai} in body 
+     Encoded using Core.Unfold *)
+  | MTm.TypedUnfold (dvars, d_tm, (dec_name, xtor_name, ty_args), body, result_ty) ->
+      let d' = encode_term ctx d_tm in
+      let ty_args' = List.map (encode_type ctx.data_sorts) ty_args in
+      let body' = encode_term_inner ctx body in
+      let result_ty' = encode_type ctx.data_sorts result_ty in
+      let k = Ident.fresh () in
+      let dvar = Ident.fresh () in
+      let d_ty = MTm.get_type d_tm in
+      let d_ty' = encode_type ctx.data_sorts d_ty in
+      let inst_dec = get_instantiated_dec ctx dec_name ty_args' in
+      CTm.MuPrd (result_ty', k,
+        CTm.Cut (d_ty', d',
+          CTm.MuCns (d_ty', dvar,
+            CTm.Unfold (dvars, dvar, inst_dec, xtor_name,
+              make_cut result_ty' body' (CTm.Var k)))))
+
+  (* update t with { (d) => u } : lack(a)(c)
+     where t: lack(a)(b), d: b, u: c
+     Desugar to: match t with { lack.mk(v, d) => lack.mk(v, u) } *)
+  | MTm.TypedUpdate (t_tm, dvar, u_tm, result_ty) ->
+      let t_ty = MTm.get_type t_tm in
+      let u_ty = MTm.get_type u_tm in
+      (* Extract inner types from lack(a)(b) *)
+      let inner_a = match t_ty with 
+          MTy.Sgn (_, [a; _]) -> a
+        | _ -> MTy.TMeta (Ident.fresh ())
+      in
+      (* Fresh variable for the value component *)
+      let v = Ident.fresh () in
+      (* Build the ctor for the result: lack.mk{a, u_ty}(v, u) *)
+      let result_ctor = MTm.TypedCtor (
+        Prim.lack_sym, Prim.lack_ctor_sym,
+        [inner_a; u_ty],
+        [MTm.TypedVar (v, inner_a); u_tm],
+        result_ty
+      ) in
+      (* Build the match: match t with { lack.mk(v, dvar) => result_ctor } *)
+      let desugared = MTm.TypedMatch (
+        t_tm,
+        [(Prim.lack_ctor_sym, [], [v; dvar], result_ctor)],
+        result_ty
+      ) in
+      encode_term_inner ctx desugared
+
+  (* finalize(t) : a  where t: lack(a)(unit)
+     Encoded by matching on lack.mk(v, u) where v:a and u:unit, returning v *)
+  | MTm.TypedFinalize (t_tm, result_ty) ->
+      let t' = encode_term ctx t_tm in
+      let t_ty = MTm.get_type t_tm in
+      let t_ty' = encode_type ctx.data_sorts t_ty in
+      let result_ty' = encode_type ctx.data_sorts result_ty in
+      let k = Ident.fresh () in
+      let v = Ident.fresh () in
+      let u = Ident.fresh () in
+      (* Match on lack to extract lack.mk(v, u), return v *)
+      let lack_dec = get_instantiated_dec ctx Prim.lack_sym 
+        [result_ty'; CTy.unit_sgn] in
+      CTm.MuPrd (result_ty', k,
+        CTm.Cut (t_ty', t',
+          CTm.Match (lack_dec,
+            [(Prim.lack_ctor_sym, [], [v; u],
+              (* v is the value we want, u is unit (ignored) *)
+              CTm.Cut (result_ty', CTm.Var v, CTm.Var k))])))
 
 (** Helper: wrap body and cut against k, handling Lower codomain *)
 and wrap_body_for_cod (ctx: encode_ctx) (body: CTm.term) (body_ty: CTy.typ) 

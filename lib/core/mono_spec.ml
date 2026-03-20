@@ -459,6 +459,16 @@ and generate_for_command (cmd: Terms.command): unit gen =
       let+ () = generate_for_term cond in
       let+ () = generate_for_command then_cmd in
       generate_for_command else_cmd
+
+  (* Destination primitives - just recurse into body *)
+  | Alloc (_v, _d, _ty, body) ->
+      generate_for_command body
+
+  | Fill (_d, _v, _ty, body) ->
+      generate_for_command body
+
+  | Unfold (_xi_vars, _d, _dec, _xtor, body) ->
+      generate_for_command body
   
   | Ret (_typ, tm) ->
       generate_for_term tm

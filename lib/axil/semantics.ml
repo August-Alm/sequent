@@ -147,6 +147,9 @@ and cmd_name = function
   | Substitute (subst, _) -> 
       "subst [" ^ String.concat ", " 
         (List.map (fun (v', v) -> Ident.name v' ^ " ← " ^ Ident.name v) subst) ^ "]"
+  | Alloc (v, d, _, _) -> "alloc " ^ Ident.name v ^ ", " ^ Ident.name d
+  | Fill (d, v, _, _) -> "fill " ^ Ident.name d ^ " " ^ Ident.name v
+  | Unfold (_, d, _, x, _) -> "unfold " ^ Ident.name d ^ " " ^ pp_sym x
   | End -> "end"
   | Ret (_, v) -> "ret " ^ Ident.name v
 
@@ -342,6 +345,12 @@ let step ((cmd, e): config) : config option =
           let arg_vals = List.map (lookup e.values) args in
           let new_values = List.combine param_names arg_vals in
           Some (def.body, { e with values = new_values }))
+
+  (* =========== Destination Primitives =========== *)
+  (* These are for destination-passing compilation, not high-level semantics *)
+  | Alloc _ -> failwith "Alloc: destination primitives not supported in interpreter"
+  | Fill _ -> failwith "Fill: destination primitives not supported in interpreter"
+  | Unfold _ -> failwith "Unfold: destination primitives not supported in interpreter"
 
   (* =========== Terminals =========== *)
   | End -> None

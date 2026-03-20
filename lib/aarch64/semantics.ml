@@ -78,7 +78,7 @@ let store (mem: int array ref) (addr: int) (value: int) : unit =
   (!mem).(addr) <- value
 
 (** Execute one instruction, return new state *)
-let step (st: state) (mem_ref: int array ref) : state =
+let step (st: state) (mem_ref: int array ref) (_step_count: int) : state =
   let instr = fetch_at_debug st.code st.counter in
   match instr with
   | ADD (rd, rs1, rs2) ->
@@ -130,8 +130,7 @@ let step (st: state) (mem_ref: int array ref) : state =
   
   | LDR (rt, rn, offset) ->
       let addr = get st.registers rn + offset in
-      let v = load !mem_ref addr in
-      set st.registers rt v;
+      set st.registers rt (load !mem_ref addr);
       { st with counter = st.counter + 4 }
   
   | STR (rs, rn, offset) ->
@@ -198,10 +197,12 @@ let initial (code: code) : state =
 (** Run until counter returns to 0 (cleanup jumped to lab0) *)
 let run ?(max_steps=10000) (st: state) : int array =
   let mem_ref = ref st.memory in
+  let step_count = ref 0 in
   let rec loop st steps =
     if steps >= max_steps then 
       failwith (Printf.sprintf "Max steps (%d) exceeded at counter %d" max_steps st.counter);
-    let st' = step st mem_ref in
+    incr step_count;
+    let st' = step st mem_ref !step_count in
     if st'.counter = 0 then st'.registers
     else loop st' (steps + 1)
   in
@@ -224,7 +225,7 @@ let trace ?(max_steps=1000) (st: state) : unit =
       Printf.printf "Registers: ";
       print_regs st.registers
     end else begin
-      let st' = step st mem_ref in
+      let st' = step st mem_ref steps in
       if st'.counter = 0 then begin
         Printf.printf "Final: ";
         print_regs st'.registers

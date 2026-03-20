@@ -600,10 +600,15 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
      
     IMPORTANT: Tags are based on original_index (for consistent GADT handling).
     The jump table must be sparse - branches are at their original_index positions,
-    not sequential. This ensures tag values match jump table offsets. *)
+    not sequential. This ensures tag values match jump table offsets.
+    
+    For destination-passed values (from alloc), the tag is in memory, not in
+    the register. We detect this via ALLOC_SENTINEL in loc2. *)
   | CSwitch { ctx; v; dec; tail_ctx; branches; _ } ->
       let tag_reg = symbol_location2 ctx v in
+      let block_reg = symbol_location1 ctx v in
       let* base_lab = fresh_label in
+      let* load_lab = fresh_label in
       (* Look up original_index for each branch's xtor *)
       let get_original_index xtor_path =
         match List.find_opt (fun (x: xtor) -> Path.equal x.name xtor_path) dec.xtors with
@@ -618,7 +623,24 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
       let* branch_codes =
         code_clauses_sparse lmap switch_defs tail_ctx branches base_lab get_original_index
       in
+      (* Check if tag is ALLOC_SENTINEL - if so, load from memory *)
+      let sentinel_check =
+        CMPI (tag_reg, -1) ::
+        BEQ ("lab" ^ string_of_int load_lab) ::
+        []
+      in
+      let load_from_memory =
+        LAB ("lab" ^ string_of_int load_lab) ::
+        LDR (tag_reg, block_reg, Offset.data_tag) ::
+        []
+      in
       return (
+        sentinel_check @
+        ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
+        (if max_idx = 0 then []
+         else ADD (Register.temp, Register.temp, tag_reg) :: []) @
+        BR Register.temp ::
+        load_from_memory @
         ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
         (if max_idx = 0 then []
          else ADD (Register.temp, Register.temp, tag_reg) :: []) @
@@ -840,6 +862,130 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
         else_code @
         LAB label ::
         then_code)
+
+  (* Destination primitives *)
+
+  (* Alloc: allocate uninitialized value and destination.
+     After alloc, context = (d, dest(ty))::(v, ty)::ctx
+     - v points to the allocated block (loc1=block, loc2=ALLOC_SENTINEL)
+     - d points to where v's data should be filled (loc1=block, loc2=offset)
+     
+     The ALLOC_SENTINEL (-1) marks v as a "destination-passed value" whose
+     actual tag is in memory at v.loc1 + field2(0), not in v.loc2. *)
+  | CAlloc { ctx; v; d; ty; body } ->
+      let v_typ = Prd (Unr, ty) in
+      let d_typ = Prd (Lin, Dest ty) in
+      let new_ctx = (d, d_typ) :: (v, v_typ) :: ctx in
+      (* Acquire block for v's data *)
+      let accu = fresh_location2 ctx in
+      let this = fresh_location1 ctx in
+      let* acquire = acquire_block accu this in
+      (* v's registers in new context *)
+      let v_loc1 = symbol_location1 new_ctx v in
+      let v_loc2 = symbol_location2 new_ctx v in
+      (* d's registers - d = (block, 0) meaning base destination *)
+      let d_loc1 = symbol_location1 new_ctx d in
+      let d_loc2 = symbol_location2 new_ctx d in
+      let* rest = code_command lmap switch_defs body in
+      let is_ext = match ty with Ext _ -> true | _ -> false in
+      if is_ext then
+        (* For external types, v uses only loc2 *)
+        return (
+          acquire @
+          MOVR (d_loc1, this) ::
+          MOVI (d_loc2, 0L) ::
+          rest)
+      else
+        return (
+          acquire @
+          MOVR (v_loc1, this) ::  (* v points to block *)
+          MOVI (v_loc2, Offset.alloc_sentinel) ::  (* sentinel: tag in memory *)
+          MOVR (d_loc1, this) ::  (* d points to same block *)
+          MOVI (d_loc2, 0L) ::    (* base slot 0 *)
+          rest)
+
+  (* Fill: fill destination d with value v.
+     - Read destination (block, slot) from d
+     - Store v's data into block at slot *)
+  | CFill { ctx; d; v; ty; body; _ } ->
+      let d_loc1 = symbol_location1 ctx d in
+      let d_loc2 = symbol_location2 ctx d in
+      let v_loc1 = symbol_location1 ctx v in
+      let v_loc2 = symbol_location2 ctx v in
+      (* Use scratch register for address computation *)
+      let scratch = fresh_location1 ctx in
+      let is_ext = match ty with Ext _ -> true | _ -> false in
+      let* rest = code_command lmap switch_defs body in
+      if is_ext then
+        (* External: store just the value (loc2) *)
+        return (
+          (* Compute offset: d_loc2 holds slot number, multiply by 16 for field offset *)
+          MOVI (Register.temp, 16L) ::
+          MUL (Register.temp, d_loc2, Register.temp) ::
+          ADDI (Register.temp, Register.temp, Offset.field2 0) ::
+          ADD (Register.temp, d_loc1, Register.temp) ::
+          STR (v_loc2, Register.temp, 0) ::
+          rest)
+      else
+        (* Non-external: store both block ptr and tag *)
+        return (
+          (* Compute base offset for this slot *)
+          MOVI (Register.temp, 16L) ::
+          MUL (Register.temp, d_loc2, Register.temp) ::
+          (* Store loc1 (block ptr) at field1 offset *)
+          ADDI (scratch, Register.temp, Offset.field1 0) ::
+          ADD (scratch, d_loc1, scratch) ::
+          STR (v_loc1, scratch, 0) ::
+          (* Store loc2 (tag) at field2 offset *)
+          ADDI (scratch, Register.temp, Offset.field2 0) ::
+          ADD (scratch, d_loc1, scratch) ::
+          STR (v_loc2, scratch, 0) ::
+          rest)
+
+  (* Unfold: create subdestinations for constructor arguments.
+     - d is destination for type T 
+     - xtor is constructor with argument types τi
+     - xi_vars become destinations for each argument slot
+     Also sets tag on the parent value. *)
+  | CUnfold { ctx; xi_vars; d; dec; xtor; tail_ctx; body } ->
+      (* d at head of context *)
+      let d_loc1 = symbol_location1 ctx d in
+      let d_loc2 = symbol_location2 ctx d in
+      (* Find xtor for tag *)
+      let xtor_data = match List.find_opt (fun (x: xtor) ->
+          Path.equal x.name xtor) dec.xtors with
+        | Some x -> x
+        | None -> failwith ("xtor not found in unfold: " ^ Path.name xtor)
+      in
+      let tag = xtor_data.original_index in
+      (* Context after unfold: xi_vars @ tail_ctx *)
+      let new_ctx = xi_vars @ tail_ctx in
+      (* Use scratch register *)
+      let scratch = fresh_location1 ctx in
+      (* Set up subdestinations: each xi gets (block, slot_i)
+         Use reverse slot numbering to match CCtor/load_binders convention:
+         first arg -> slot (fields_per_block - 1), second -> (fields_per_block - 2), etc. *)
+      let setup_code = List.mapi (fun i (xi, _ct) ->
+        let xi_loc1 = symbol_location1 new_ctx xi in
+        let xi_loc2 = symbol_location2 new_ctx xi in
+        (* Slot number matches CCtor: start from fields_per_block - 1 *)
+        let slot = Offset.fields_per_block - 1 - i in
+        [MOVR (xi_loc1, d_loc1);
+         MOVI (xi_loc2, Int64.of_int slot)]
+      ) xi_vars |> List.concat in
+      (* Set the tag in the block at data_tag offset (offset 8, not conflicting with slots) *)
+      let tag_offset = Offset.data_tag in
+      let* rest = code_command lmap switch_defs body in
+      return (
+        (* Compute tag storage address: base + parent_slot*16 + tag_offset *)
+        MOVI (Register.temp, 16L) ::
+        MUL (Register.temp, d_loc2, Register.temp) ::
+        ADDI (Register.temp, Register.temp, tag_offset) ::
+        ADD (Register.temp, d_loc1, Register.temp) ::
+        MOVI (scratch, Int64.of_int (Offset.jump_length tag)) ::
+        STR (scratch, Register.temp, 0) ::
+        setup_code @
+        rest)
 
   (* Return: final result *)
   | CRet { ctx; v; _ } ->

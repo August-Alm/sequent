@@ -167,6 +167,19 @@ let rec free_vars_cmd (cmd: FTm.command) : int VarMap.t =
   | FTm.End ->
       VarMap.empty
 
+  (* Destination primitives *)
+  | FTm.Alloc (v, d, _ty, body) ->
+      let body_fv = free_vars_cmd body in
+      let body_fv' = VarMap.remove v body_fv in
+      VarMap.remove d body_fv'
+  | FTm.Fill (d, v, _ty, body) ->
+      let body_fv = free_vars_cmd body in
+      add_vars [d; v] body_fv
+  | FTm.Unfold (xi_vars, d, _dec, _xtor, body) ->
+      let body_fv = free_vars_cmd body in
+      let body_fv' = List.fold_left (fun acc x -> VarMap.remove x acc) body_fv xi_vars in
+      add_var d body_fv'
+
 and free_vars_branch ((_, ty_vars, term_vars, body): FTm.branch) : int VarMap.t =
   let body_fv = free_vars_cmd body in
   (* Remove bound type and term variables *)
@@ -416,6 +429,31 @@ let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list)
       let then' = linearize_cmd st new_ctx then_cmd in
       let else' = linearize_cmd st new_ctx else_cmd in
       wrap_with_reordering ctx subst (ATm.Ifz (v, then', else'))
+
+  (* Destination primitives *)
+  | FTm.Alloc (v, d, ty, body) ->
+      (* Nothing consumed; d and v are bound for body (d at head, v second) *)
+      let (subst, new_ctx) = build_reordering st ctx [] fv in
+      let body' = linearize_cmd st (d :: v :: new_ctx) body in
+      wrap_with_reordering ctx subst (ATm.Alloc (v, d, convert_typ ty, body'))
+
+  | FTm.Fill (d, v, ty, body) ->
+      (* d is linear (consumed), v is unrestricted (not consumed) *)
+      let (subst, new_ctx) = build_reordering st ctx [d] fv in
+      let remaining_ctx = List.filter (fun x ->
+        not (Common.Identifiers.Ident.equal x d)
+      ) new_ctx in
+      let body' = linearize_cmd st remaining_ctx body in
+      wrap_with_reordering ctx subst (ATm.Fill (d, v, convert_typ ty, body'))
+
+  | FTm.Unfold (xi_vars, d, dec, xtor, body) ->
+      (* d is linear (consumed); xi_vars are bound for body *)
+      let (subst, new_ctx) = build_reordering st ctx [d] fv in
+      let remaining_ctx = List.filter (fun x ->
+        not (Common.Identifiers.Ident.equal x d)
+      ) new_ctx in
+      let body' = linearize_cmd st (xi_vars @ remaining_ctx) body in
+      wrap_with_reordering ctx subst (ATm.Unfold (xi_vars, d, convert_dec dec, xtor, body'))
 
   | FTm.Ret (ty, v) ->
       let (subst, _) = build_reordering st ctx [v] fv in

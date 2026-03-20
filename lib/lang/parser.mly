@@ -5,8 +5,9 @@
 (* Token declarations *)
 %token KW_FUN KW_LET KW_IN KW_MATCH KW_WITH KW_NEW KW_DATA KW_CODE KW_WHERE KW_END KW_TYPE
 %token KW_IFZ KW_THEN KW_ELSE
+%token KW_ALLOC KW_FILL KW_UPDATE KW_FINALIZE
 %token LPAREN RPAREN LBRACE RBRACE LBRACK RBRACK
-%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR SLASH PERCENT PIPE PLUS MINUS
+%token ARROW DBLARROW COLON SEMICOLON EQUAL STAR SLASH PERCENT PIPE PLUS MINUS AT COMMA
 %token <string> IDENT
 %token <int64> INT
 %token EOF
@@ -103,6 +104,9 @@ expr:
     { AST_New (Some ty, clauses) }
   | KW_IFZ LPAREN n = expr RPAREN KW_THEN t = expr KW_ELSE u = expr
     { AST_Ifz (n, t, u) }
+  (* Destination primitives - update keyword *)
+  | KW_UPDATE t = expr KW_WITH LBRACE LPAREN d = IDENT RPAREN DBLARROW u = expr RBRACE
+    { AST_Update (t, d, u) }
 
 expr_app:
   | e = expr_atom { e }
@@ -112,6 +116,13 @@ expr_app:
   (* Type application: f{T} *)
   | f = expr_app LBRACE ty = typ RBRACE
     { AST_Ins (f, ty) }
+  (* Destination primitives with higher precedence than regular function calls *)
+  | KW_ALLOC LBRACE ty = typ RBRACE LPAREN RPAREN
+    { AST_Alloc ty }
+  | KW_FILL LPAREN d = expr RPAREN LPAREN t = expr RPAREN
+    { AST_Fill (d, t) }
+  | KW_FINALIZE LPAREN t = expr RPAREN
+    { AST_Finalize t }
   (* Constructor/destructor with type args: Xtor{T1}{T2}(x)(y) *)
   | x = IDENT ty_args = type_applications term_args = term_applications
     { 
@@ -124,7 +135,12 @@ expr_app:
 expr_atom:
   | n = INT { AST_Int n }
   | x = IDENT { AST_Var x }
+  | LPAREN RPAREN { AST_Unit }
   | LPAREN e = expr RPAREN { e }
+  (* Unfold: let (di) = d @ ctor{ai} in t *)
+  | KW_LET LPAREN dvars = separated_list(COMMA, IDENT) RPAREN EQUAL 
+    d = expr AT ctor = IDENT ty_args = type_applications KW_IN body = expr
+    { AST_Unfold (dvars, d, (AST_Var ctor, ty_args), body) }
 
 (* Type arguments: {T1}{T2}... *)
 type_applications:
@@ -214,6 +230,7 @@ term_def:
 
 term_def_args:
   | { [] }
+  | LPAREN RPAREN { [] }
   | LPAREN x = IDENT COLON t = typ RPAREN rest = term_def_args { (x, t) :: rest }
 
 %%

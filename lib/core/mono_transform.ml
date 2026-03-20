@@ -78,6 +78,12 @@ let rec find_mono_calls_in_cmd
       find_mono_calls_in_term mono_infos cond @ 
       find_mono_calls_in_cmd mono_infos then_cmd @ 
       find_mono_calls_in_cmd mono_infos else_cmd
+  | T.Alloc (_v, _d, _ty, body) ->
+      find_mono_calls_in_cmd mono_infos body
+  | T.Fill (_d, _v, _ty, body) ->
+      find_mono_calls_in_cmd mono_infos body
+  | T.Unfold (_xi_vars, _d, _dec, _xtor, body) ->
+      find_mono_calls_in_cmd mono_infos body
   | T.Ret (_, tm) -> find_mono_calls_in_term mono_infos tm
   | T.End -> []
 
@@ -150,6 +156,9 @@ let find_called_function_in_newforall (tvar: Ident.t) (cmd: T.command): Path.t o
         (* Look in both sides *)
         (match find_call_term producer with
           Some p -> Some p | None -> find_call_consumer consumer)
+    | T.Alloc (_, _, _, body) -> find_call body
+    | T.Fill (_, _, _, body) -> find_call body
+    | T.Unfold (_, _, _, _, body) -> find_call body
     | T.Add _ | T.Sub _ | T.Mul _ | T.Div _ | T.Rem _ | T.Ifz _ | T.Ret _ | T.End -> None
   and find_call_term tm =
     match tm with
@@ -631,6 +640,19 @@ and transform_command (ctx: transform_ctx) (cmd: T.command): T.command mono_chec
       let* then_cmd' = transform_command ctx then_cmd in
       let* else_cmd' = transform_command ctx else_cmd in
       Ok (T.Ifz (cond', then_cmd', else_cmd'))
+
+  (* Destination primitives *)
+  | T.Alloc (v, d, ty, body) ->
+      let* body' = transform_command ctx body in
+      Ok (T.Alloc (v, d, ty, body'))
+
+  | T.Fill (d, v, ty, body) ->
+      let* body' = transform_command ctx body in
+      Ok (T.Fill (d, v, ty, body'))
+
+  | T.Unfold (xi_vars, d, dec, xtor, body) ->
+      let* body' = transform_command ctx body in
+      Ok (T.Unfold (xi_vars, d, dec, xtor, body'))
   
   | T.Ret (typ, tm) ->
       let* tm' = transform_term ctx tm in

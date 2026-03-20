@@ -49,6 +49,17 @@ type term =
   | Dtor of sym * sym * (typ list) * (term list)
   (* ifz t then u else v *)
   | Ifz of term * term * term
+  (* alloc{a}() *)
+  | Alloc of typ
+  (* fill(d)(t) *)
+  | Fill of term * term
+  (* let (di) = d @ ctor{ai} in t *)
+  (* Second paranthesis is type name, ctor name, type arguments *)
+  | Unfold of (var list) * term * (sym * sym * (typ list)) * term
+  (* update t with { (d) => u } *)
+  | Update of term * var * term
+  (* finalize(t) *)
+  | Finalize of term
 
 and branch =
   (* xtor(ti's) => t; type and term arguments, and return *)
@@ -76,6 +87,12 @@ type typed_term =
   | TypedCtor of sym * sym * typ list * typed_term list * typ
   | TypedDtor of sym * sym * typ list * typed_term list * typ
   | TypedIfz of typed_term * typed_term * typed_term * typ
+  (* Destination primitives *)
+  | TypedAlloc of typ * typ  (* inner type, result type = lack(a)(dest(a)) *)
+  | TypedFill of typed_term * typed_term * typ  (* d, t, unit *)
+  | TypedUnfold of var list * typed_term * (sym * sym * typ list) * typed_term * typ
+  | TypedUpdate of typed_term * var * typed_term * typ
+  | TypedFinalize of typed_term * typ
 
 and typed_clause =
   sym * var list * var list * typed_term
@@ -100,6 +117,11 @@ let get_type (tm: typed_term) : typ =
   | TypedCtor (_, _, _, _, ty) -> ty
   | TypedDtor (_, _, _, _, ty) -> ty
   | TypedIfz (_, _, _, ty) -> ty
+  | TypedAlloc (_, ty) -> ty
+  | TypedFill (_, _, ty) -> ty
+  | TypedUnfold (_, _, _, _, ty) -> ty
+  | TypedUpdate (_, _, _, ty) -> ty
+  | TypedFinalize (_, ty) -> ty
 
 (** Substitute type variables (Unbound) in all type annotations of a typed term.
     Used for type-level beta reduction: (Λa. body){ty_arg} -> body[ty_arg/a] *)
@@ -133,6 +155,12 @@ let rec subst_type_in_typed_term (sbs: subst) (tm: typed_term) : typed_term =
       TypedDtor (d, c, List.map go_typ ty_args, List.map go args, go_typ ty)
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (go cond, go then_br, go else_br, go_typ ty)
+  | TypedAlloc (a, ty) -> TypedAlloc (go_typ a, go_typ ty)
+  | TypedFill (d, t, ty) -> TypedFill (go d, go t, go_typ ty)
+  | TypedUnfold (dvars, d, (data, ctor, ty_args), body, ty) ->
+      TypedUnfold (dvars, go d, (data, ctor, List.map go_typ ty_args), go body, go_typ ty)
+  | TypedUpdate (t, dvar, u, ty) -> TypedUpdate (go t, dvar, go u, go_typ ty)
+  | TypedFinalize (t, ty) -> TypedFinalize (go t, go_typ ty)
 
 (** Substitute a term variable with a typed term in a typed term.
     Used for term-level beta reduction: (λx. body) arg -> body[arg/x] *)
@@ -175,6 +203,18 @@ let rec subst_term_in_typed_term (x: Ident.t) (replacement: typed_term) (tm: typ
       TypedDtor (d, c, ty_args, List.map go args, ty)
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (go cond, go then_br, go else_br, ty)
+  | TypedAlloc (a, ty) -> TypedAlloc (a, ty)  (* no term variables to substitute *)
+  | TypedFill (d, t, ty) -> TypedFill (go d, go t, ty)
+  | TypedUnfold (dvars, d, ctor_info, body, ty) ->
+      (* dvars shadow x in body *)
+      if List.exists (Ident.equal x) dvars then
+        TypedUnfold (dvars, go d, ctor_info, body, ty)
+      else
+        TypedUnfold (dvars, go d, ctor_info, go body, ty)
+  | TypedUpdate (t, dvar, u, ty) ->
+      let u' = if Ident.equal x dvar then u else go u in
+      TypedUpdate (go t, dvar, u', ty)
+  | TypedFinalize (t, ty) -> TypedFinalize (go t, ty)
 
 (** Normalize a typed term:
     - Beta-reduce term applications to weak head normal form (WHNF)
@@ -262,6 +302,12 @@ let rec normalize (tm: typed_term) : typed_term =
       TypedDtor (d, c, ty_args, List.map normalize args, ty)
   | TypedIfz (cond, then_br, else_br, ty) ->
       TypedIfz (normalize cond, normalize then_br, normalize else_br, ty)
+  | TypedAlloc (a, ty) -> TypedAlloc (a, ty)
+  | TypedFill (d, t, ty) -> TypedFill (normalize d, normalize t, ty)
+  | TypedUnfold (dvars, d, ctor_info, body, ty) ->
+      TypedUnfold (dvars, normalize d, ctor_info, normalize body, ty)
+  | TypedUpdate (t, dvar, u, ty) -> TypedUpdate (normalize t, dvar, normalize u, ty)
+  | TypedFinalize (t, ty) -> TypedFinalize (normalize t, ty)
 
 and normalize_clause (xtor_name, ty_vars, tm_vars, body) =
   (xtor_name, ty_vars, tm_vars, normalize body)
@@ -309,6 +355,14 @@ and normalize_types_only (tm: typed_term) : typed_term =
       TypedIfz (normalize_types_only cond, normalize_types_only then_br, 
         normalize_types_only else_br, ty)
   | TypedInt _ | TypedVar _ | TypedSym _ -> tm
+  | TypedAlloc (a, ty) -> TypedAlloc (a, ty)
+  | TypedFill (d, t, ty) ->
+      TypedFill (normalize_types_only d, normalize_types_only t, ty)
+  | TypedUnfold (dvars, d, ctor_info, body, ty) ->
+      TypedUnfold (dvars, normalize_types_only d, ctor_info, normalize_types_only body, ty)
+  | TypedUpdate (t, dvar, u, ty) ->
+      TypedUpdate (normalize_types_only t, dvar, normalize_types_only u, ty)
+  | TypedFinalize (t, ty) -> TypedFinalize (normalize_types_only t, ty)
 
 type term_def =
   { name: sym
@@ -745,6 +799,72 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
             else
               let* (typed_args, sbs) = check_args ctx sbs expected_term_types term_args in
               Ok (TypedDtor (dec_name, xtor_name, type_args, typed_args, result_ty), result_ty, sbs))
+
+  (* ===== Destination Primitives ===== *)
+  
+  (* alloc{a}() : [1] lack(a)(dest(a)) *)
+  | Alloc a ->
+      let result_ty = lack_sgn a (Dest a) in
+      Ok (TypedAlloc (a, result_ty), result_ty, sbs)
+
+  (* fill(d)(t) : unit   where d:[1] dest(a), t:[ω] a *)
+  | Fill (d, t) ->
+      (* Infer type of d, expect dest(a) *)
+      let a = fresh_meta () in
+      let dest_ty = Dest a in
+      let* (d', _, sbs) = check ctx sbs d dest_ty in
+      (* Check t against the inner type a *)
+      let* (t', _, sbs) = check ctx sbs t a in
+      let result_ty = unit_sgn in
+      Ok (TypedFill (d', t', result_ty), result_ty, sbs)
+
+  (* let (dj) = d @ ctor{ai} in body : c 
+     where d:[1] dest(c), ctor{ai}(bj): c, and dj:[1] dest(bj) *)
+  | Unfold (dvars, d, (dec_name, xtor_name, type_args), body) ->
+      let* dec = lookup_dec ctx dec_name in
+      (match find_xtor dec xtor_name with
+        None -> Error (UnboundXtor (dec_name, xtor_name))
+      | Some xtor ->
+          (* Instantiate the constructor to get argument types and main type *)
+          let inst_args, inst_main = instantiate_ctor xtor type_args in
+          (* d should have type dest(main) *)
+          let d_ty = Dest inst_main in
+          let* (d', _, sbs) = check ctx sbs d d_ty in
+          (* Each dvar in dvars gets type dest(arg_ty) *)
+          let dvar_tys = List.map (fun (_, arg_ty) -> Dest arg_ty) inst_args in
+          if List.length dvars <> List.length dvar_tys then
+            Error (XtorArityMismatch
+              { xtor = xtor_name
+              ; expected = List.length inst_args
+              ; got = List.length dvars })
+          else
+            let bindings = List.map2 (fun v ty -> (v, (Lin, ty))) dvars dvar_tys in
+            let ctx' = extend_vars ctx bindings in
+            let* (body', body_ty, sbs) = infer ctx' sbs body in
+            Ok (TypedUnfold (dvars, d', (dec_name, xtor_name, type_args), body', body_ty),
+                body_ty, sbs))
+
+  (* update t with { (d) => u } : [1] lack(a)(c)
+     where t:[1] lack(a)(b), d:[1] b, u:[1] c *)
+  | Update (t, dvar, u) ->
+      (* t has type lack(a)(b) for some a, b *)
+      let a = fresh_meta () in
+      let b = fresh_meta () in
+      let t_expected = lack_sgn a b in
+      let* (t', _, sbs) = check ctx sbs t t_expected in
+      (* dvar has type b *)
+      let ctx' = extend_var ctx dvar (Lin, b) in
+      let* (u', u_ty, sbs) = infer ctx' sbs u in
+      let result_ty = lack_sgn a u_ty in
+      Ok (TypedUpdate (t', dvar, u', result_ty), result_ty, sbs)
+
+  (* finalize(t) : a  where t:[1] lack(a)(unit) *)
+  | Finalize t ->
+      let a = fresh_meta () in
+      let t_expected = lack_sgn a unit_sgn in
+      let* (t', _, sbs) = check ctx sbs t t_expected in
+      let result_type = apply_subst sbs a in
+      Ok (TypedFinalize (t', result_type), result_type, sbs)
 
 (** Check a term against an expected type *)
 and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)

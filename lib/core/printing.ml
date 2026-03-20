@@ -212,6 +212,26 @@ and pp_command ?(cfg=default_config) ~(n: int) (cmd: command) : string =
   | Ret (t, tm) ->
       let ty_ann = if cfg.show_types then brackets (pp_typ t) else "" in
       "ret" ^ ty_ann ^ " " ^ pp_term ~cfg tm
+
+  (* Destination primitives *)
+  | Alloc (v, d, ty, body) ->
+      let ty_ann = if cfg.show_types then braces (pp_typ ty) else "" in
+      let ind = indent (n + cfg.indent_size) in
+      "let (" ^ pp_var v ^ ", " ^ pp_var d ^ ") = alloc" ^ ty_ann ^ ";\n" ^
+      ind ^ pp_command ~cfg ~n:(n + cfg.indent_size) body
+
+  | Fill (d, v, ty, body) ->
+      let ty_ann = if cfg.show_types then braces (pp_typ ty) else "" in
+      let ind = indent (n + cfg.indent_size) in
+      "fill" ^ ty_ann ^ " " ^ pp_var d ^ " " ^ pp_var v ^ ";\n" ^
+      ind ^ pp_command ~cfg ~n:(n + cfg.indent_size) body
+
+  | Unfold (xi_vars, d, dec, xtor, body) ->
+      let ty_ann = if cfg.show_types then " : " ^ pp_sym dec.name else "" in
+      let xi_str = if xi_vars = [] then "()" else "(" ^ comma_sep (List.map pp_var xi_vars) ^ ")" in
+      let ind = indent (n + cfg.indent_size) in
+      "let " ^ xi_str ^ " = unfold " ^ pp_var d ^ " " ^ pp_sym xtor ^ ty_ann ^ ";\n" ^
+      ind ^ pp_command ~cfg ~n:(n + cfg.indent_size) body
   
   | End -> "end"
 
@@ -331,6 +351,8 @@ let pp_check_error (err: Terms.check_error) : string =
       " → " ^ pp_chiral_typ result
   | Terms.IfzConditionNotInt ct ->
       "ifz condition not int: " ^ pp_chiral_typ ct
+  | Terms.ExpectedSignature ty ->
+      "expected signature type but got: " ^ pp_typ ty
 
 let check_error_to_string (err: Terms.check_error) : string =
   pp_check_error err

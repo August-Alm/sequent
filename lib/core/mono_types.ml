@@ -131,6 +131,9 @@ and collect_instantiations_cmd (cmd: T.command): typ list =
       collect_instantiations_term c @ 
       collect_instantiations_cmd then_cmd @ 
       collect_instantiations_cmd else_cmd
+  | T.Alloc (_v, _d, _ty, body) -> collect_instantiations_cmd body
+  | T.Fill (_d, _v, _ty, body) -> collect_instantiations_cmd body
+  | T.Unfold (_xi_vars, _d, _dec, _xtor, body) -> collect_instantiations_cmd body
   | T.Ret (_, tm) -> collect_instantiations_term tm
   | T.End -> []
 
@@ -292,6 +295,12 @@ and subst_command (sbs: typ Ident.tbl) (cmd: T.command): T.command =
       T.Rem (subst_term sbs t1, subst_term sbs t2, subst_term sbs t3)
   | T.Ifz (cond, then_cmd, else_cmd) ->
       T.Ifz (subst_term sbs cond, subst_command sbs then_cmd, subst_command sbs else_cmd)
+  | T.Alloc (v, d, ty, body) ->
+      T.Alloc (v, d, apply_fresh_subst sbs ty, subst_command sbs body)
+  | T.Fill (d, v, ty, body) ->
+      T.Fill (d, v, apply_fresh_subst sbs ty, subst_command sbs body)
+  | T.Unfold (xi_vars, d, dec, xtor, body) ->
+      T.Unfold (xi_vars, d, subst_dec sbs dec, xtor, subst_command sbs body)
   | T.Ret (typ, tm) ->
       T.Ret (apply_fresh_subst sbs typ, subst_term sbs tm)
   | T.End -> T.End

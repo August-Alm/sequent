@@ -161,6 +161,33 @@ and checked_command =
       ; then_cmd: checked_command
       ; else_cmd: checked_command
       }
+  (* let (v, d) = alloc{ty}; body *)
+  | CAlloc of
+      { ctx: ctx
+      ; v: var
+      ; d: var
+      ; ty: typ
+      ; body: checked_command          (* in (d, Prd dest(ty))::(v, Prd ty)::ctx *)
+      }
+  (* fill d v; body *)
+  | CFill of
+      { ctx: ctx                        (* d at head, v second *)
+      ; d: var
+      ; v: var
+      ; ty: typ
+      ; tail_ctx: ctx                   (* ctx after consuming d and v *)
+      ; body: checked_command           (* in tail_ctx *)
+      }
+  (* let (xi) = unfold d m; body *)
+  | CUnfold of
+      { ctx: ctx                        (* d at head *)
+      ; xi_vars: (var * chiral_typ) list  (* subdestinations with types *)
+      ; d: var
+      ; dec: dec
+      ; xtor: Path.t
+      ; tail_ctx: ctx                   (* ctx after consuming d *)
+      ; body: checked_command           (* in xi_vars @ tail_ctx *)
+      }
   (* ret ty v *)
   | CRet of
       { ctx: ctx
@@ -372,6 +399,42 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
         ; else_cmd = check_cmd defs ctx else_cmd
         }
 
+  (* Destination primitives *)
+
+  | Alloc (v, d, ty, body) ->
+      let v_typ = Prd (Unr, ty) in
+      let d_typ = Prd (Lin, Dest ty) in
+      (* d at head, v second *)
+      let ctx1 = (v, v_typ) :: ctx in
+      let ctx2 = (d, d_typ) :: ctx1 in
+      CAlloc { ctx; v; d; ty; body = check_cmd defs ctx2 body }
+
+  | Fill (d, v, ty, body) ->
+      (* d at head, v second *)
+      let tail_ctx = drop_ctx 2 ctx in
+      CFill { ctx; d; v; ty; tail_ctx; body = check_cmd defs tail_ctx body }
+
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      (* d at head *)
+      let tail_ctx = drop_ctx 1 ctx in
+      (* Find xtor to get argument types *)
+      let xtor = match List.find_opt (fun (x: xtor) ->
+          Path.equal x.name xtor_name
+        ) dec.xtors
+        with
+          Some x -> x
+        | None -> failwith ("xtor not found in Unfold: " ^ Path.name xtor_name)
+      in
+      (* Each xi gets type prd[1] dest(τi) *)
+      let xi_bindings = List.map2 (fun xi arg_ct ->
+        let arg_ty = strip_chirality arg_ct in
+        (xi, Prd (Lin, Dest arg_ty))
+      ) xi_vars xtor.argument_types in
+      (* xi's prepended at head of tail_ctx *)
+      let new_ctx = xi_bindings @ tail_ctx in
+      CUnfold { ctx; xi_vars = xi_bindings; d; dec; xtor = xtor_name; tail_ctx
+              ; body = check_cmd defs new_ctx body }
+
   | Ret (typ, v) ->
       CRet { ctx; typ; v }
 
@@ -458,5 +521,8 @@ let get_ctx : checked_command -> ctx = function
   | CDiv { ctx; _ } -> ctx
   | CRem { ctx; _ } -> ctx
   | CIfz { ctx; _ } -> ctx
+  | CAlloc { ctx; _ } -> ctx
+  | CFill { ctx; _ } -> ctx
+  | CUnfold { ctx; _ } -> ctx
   | CRet { ctx; _ } -> ctx
   | CEnd { ctx } -> ctx

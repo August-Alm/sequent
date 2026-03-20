@@ -98,7 +98,38 @@ type command =
   | Rem of var * var * var * command (* rem(x, y) { v ⇒ s } *)
   | Ifz of var * command * command   (* ifz(v) { sThen; sElse } *)
 
-    (* Terminals *)
+  (* Destination primitives *)
+
+    (* let (v, d) = alloc{T}; s
+
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ s
+      ------------------------------------- [ALLOC]
+      Γ ⊢ let (v, d) = alloc{T}; s
+
+    Alloc: Create fresh (unitialized) v and destination x (writing to v). *)
+  | Alloc of var * var * typ * command
+
+    (* fill{T} d v; s
+    
+      Γ ⊢ s
+      ----------------------------------------------- [FILL]
+      Γ, v: prd[ω] τ, x: prd[1] dest(τ) ⊢ fill x v; s
+
+    Fill: Fill a destination x with a value v. *)
+  | Fill of var * var * typ * command
+
+    (* let (xi) = unfold d m; s
+    
+      m(prd[1] τ_i) constructor of τ
+      Γ, (xi: prd[1] dest(τi)) ⊢ s
+      ------------------------------------------- [UNFOLD]
+      Γ, (d: prd[1] τ) ⊢ let (xi) = unfold d m; s 
+
+    Unfold: Extracts the subdestinations with respect to a data constructor.  *)
+    (* xi's, x, instantiated dec, m, s *)
+  | Unfold of (var list) * var * dec * sym * command
+
+  (* Terminals *)
   | Ret of typ * var  (* ret τ v *)
   | End
 
@@ -594,6 +625,57 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           | _ -> assert false
         in
         check_args subs def.term_params args
+
+  (* Destination primitives *)
+
+  (* let (v, d) = alloc{T}; s
+     Extends context with v: prd[ω] ty and d: prd[1] dest(ty) *)
+  | Alloc (v, d, ty, body) ->
+      let v_typ = Prd (Unr, ty) in
+      let d_typ = Prd (Lin, Dest ty) in
+      let ctx' = extend (extend ctx v v_typ) d d_typ in
+      check_command ctx' subs body
+
+  (* fill d v; s
+     Checks d: prd[1] dest(ty) and v: prd[ω] ty are in scope *)
+  | Fill (d, v, _ty, body) ->
+      let* d_ct = lookup_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      let* v_ct = lookup_var ctx v in
+      let* v_ty = expect_prd v_ct in
+      (* d_ty should be Dest(inner_ty) where inner_ty = v_ty *)
+      (match d_ty with
+        Dest inner_ty ->
+          (match unify inner_ty v_ty subs with
+            None -> Error (UnificationFailed (inner_ty, v_ty))
+          | Some subs' -> check_command ctx subs' body)
+      | _ -> Error (UnificationFailed (d_ty, Dest v_ty)))
+
+  (* let (xi) = unfold d m; s
+     Consumes d: prd[1] dest(ty), introduces xi: prd[1] dest(τi) for each argument of constructor m *)
+  | Unfold (xi_vars, d, dec, xtor_name, body) ->
+      let* d_ct = lookup_var ctx d in
+      let* d_ty = expect_prd d_ct in
+      (* d_ty should be Dest(Sgn(...)) *)
+      let* _sgn_ty = (match d_ty with
+          Dest (Sgn (_, _) as s) -> Ok s
+        | _ -> Error (ExpectedSignature d_ty)) in
+      (* Find xtor m in dec *)
+      (match find_xtor dec xtor_name with
+        None -> Error (UnboundXtor (dec.name, xtor_name))
+      | Some xtor ->
+          if List.length xi_vars <> List.length xtor.argument_types then
+            Error (XtorArityMismatch
+              { xtor = xtor_name
+              ; expected = List.length xtor.argument_types
+              ; got = List.length xi_vars })
+          else
+            (* Each xi gets type prd[1] dest(τi) where τi is the arg type *)
+            let ctx' = List.fold_left2 (fun c xi arg_ct ->
+              let arg_ty = strip_chirality arg_ct in
+              extend c xi (Prd (Lin, Dest arg_ty))
+            ) ctx xi_vars xtor.argument_types in
+            check_command ctx' subs body)
 
   | End -> Ok ()
 

@@ -13,6 +13,7 @@ open Melcore.Types.MelcoreBase
 module MT = Melcore.Types.MelcoreTypes
 module Trm = Melcore.Terms
 module StringMap = Utility.StringMap
+module Prim = Common.Types.Prim
 
 type data_sort = Common.Types.data_sort
 
@@ -122,6 +123,7 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
       (* Check for primitive types first *)
       (match x with
         "int" -> MT.Ext Int
+      | "unit" -> MT.unit_sgn
       | _ ->
           (* Check if it's a type alias *)
           (match lookup_type_alias ctx x with
@@ -147,36 +149,43 @@ let rec typ_of_ast (ctx: conv_ctx) (ty: ast_typ) : MT.typ =
       (* Type application: could be List(int), algebra(b)(c), succ(n) etc.
         Handle curried applications by collecting all args.
         If the head is a type symbol name, we create Sgn(name, all_args).
-        If the head is a promoted constructor, we create PromotedCtor. *)
+        If the head is a promoted constructor, we create PromotedCtor.
+        Special case: dest(a) becomes MT.Dest(a). *)
       let rec collect_ty_app head acc =
         match head with
           AST_TyApp (h, more_args) -> collect_ty_app h (more_args @ acc)
         | _ -> (head, acc)
       in
       let (head, all_args) = collect_ty_app t args in
-      let all_args' = List.map (typ_of_ast ctx) all_args in
-      (match head with
-        AST_TyVar name ->
-          (match lookup_type_symbol ctx name with
-            Some (path, _pol, _sgn) -> MT.Sgn (path, all_args')
-          | None ->
-              (* Check if it's a promoted constructor *)
-              (match lookup_xtor_symbol ctx name with
-                Some (data_path, xtor, _ds) ->
-                  MT.PromotedCtor (data_path, xtor.name, all_args')
-              | None ->
-                  (* Check if it's a type variable (higher-kinded) *)
-                  (match lookup_type_var ctx name with
-                    Some id ->
-                      (* Higher-kinded type variable application *)
-                      (* For now, just return the variable - full HKT support TBD *)
-                      if all_args' = [] then MT.TVar id
-                      else failwith ("Higher-kinded type variable application not supported: " ^ name)
-                  | None ->
-                      failwith ("Unknown type in application: " ^ name))))
+      (* Special case: dest(a) is the primitive destination type *)
+      (match head, all_args with
+        AST_TyVar "dest", [a] -> MT.Dest (typ_of_ast ctx a)
+      | AST_TyVar "unit", [] -> MT.unit_sgn
+      | AST_TyVar "lack", [a; b] -> MT.lack_sgn (typ_of_ast ctx a) (typ_of_ast ctx b)
       | _ ->
-          (* Complex type in function position - not supported *)
-          failwith "Complex type application not supported")
+          let all_args' = List.map (typ_of_ast ctx) all_args in
+          (match head with
+            AST_TyVar name ->
+              (match lookup_type_symbol ctx name with
+                Some (path, _pol, _sgn) -> MT.Sgn (path, all_args')
+              | None ->
+                  (* Check if it's a promoted constructor *)
+                  (match lookup_xtor_symbol ctx name with
+                    Some (data_path, xtor, _ds) ->
+                      MT.PromotedCtor (data_path, xtor.name, all_args')
+                  | None ->
+                      (* Check if it's a type variable (higher-kinded) *)
+                      (match lookup_type_var ctx name with
+                        Some id ->
+                          (* Higher-kinded type variable application *)
+                          (* For now, just return the variable - full HKT support TBD *)
+                          if all_args' = [] then MT.TVar id
+                          else failwith ("Higher-kinded type variable application not supported: " ^ name)
+                      | None ->
+                          failwith ("Unknown type in application: " ^ name))))
+          | _ ->
+              (* Complex type in function position - not supported *)
+              failwith "Complex type application not supported"))
 
   | AST_TyFun (t1, t2) -> (* TODO: Is this really correct? Doesn't handle polarization *)
       MT.fun_sgn (typ_of_ast ctx t1) (typ_of_ast ctx t2)
@@ -365,7 +374,8 @@ let rec collect_apps (trm: ast) : ast * ast_typ list * ast list =
 
 let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
   match trm with
-    AST_Int n -> Trm.Int n
+    AST_Unit -> Trm.Ctor (Prim.unit_sym, Prim.the_unit_sym, [], [])
+  | AST_Int n -> Trm.Int n
   
   | AST_Add (t1, t2) ->
       Trm.Add (term_of_ast ctx t1, term_of_ast ctx t2)
@@ -517,6 +527,42 @@ let rec term_of_ast (ctx: conv_ctx) (trm: ast) : Trm.term =
                     Data -> Trm.Ctor (dec_path, xtor.name, ty_args', args')
                   | Codata -> Trm.Dtor (dec_path, xtor.name, ty_args', args'))
               | None -> failwith ("Unknown constructor/destructor: " ^ name))))
+
+  (* ===== DESTINATION PRIMITIVES ===== *)
+
+  | AST_Alloc ty ->
+      Trm.Alloc (typ_of_ast ctx ty)
+
+  | AST_Fill (d, t) ->
+      Trm.Fill (term_of_ast ctx d, term_of_ast ctx t)
+
+  | AST_Unfold (dvars, d, (ctor_ast, ty_args), body) ->
+      (* ctor_ast should be AST_Var "ctor_name" *)
+      let ctor_name = match ctor_ast with
+          AST_Var name -> name
+        | _ -> failwith "Unfold constructor must be an identifier"
+      in
+      (* Look up the constructor to get the dec_path *)
+      let (dec_path, xtor, ds) = match lookup_xtor_symbol ctx ctor_name with
+          Some x -> x
+        | None -> failwith ("Unknown constructor in unfold: " ^ ctor_name)
+      in
+      let _ = ds in  (* constructors are Data, but we don't need to check here *)
+      let ty_args' = List.map (typ_of_ast ctx) ty_args in
+      let dvars' = List.map Ident.mk dvars in
+      (* Bind destination variables in the body context *)
+      let ctx' = List.fold_left (fun ctx (name, id) ->
+        add_term_var ctx name id
+      ) ctx (List.combine dvars dvars') in
+      Trm.Unfold (dvars', term_of_ast ctx d, (dec_path, xtor.name, ty_args'), term_of_ast ctx' body)
+
+  | AST_Update (t, d, u) ->
+      let d_id = Ident.mk d in
+      let ctx' = add_term_var ctx d d_id in
+      Trm.Update (term_of_ast ctx t, d_id, term_of_ast ctx' u)
+
+  | AST_Finalize t ->
+      Trm.Finalize (term_of_ast ctx t)
 
 and branch_of_clause
     (ctx: conv_ctx) (xtor_name, ty_binders, tm_binders, body) : Trm.branch =

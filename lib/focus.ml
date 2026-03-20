@@ -128,6 +128,10 @@ and subst_command (ts: TySub.t) (cmd: CTm.command) : CTm.command =
   | CTm.Div (m, n, k) -> CTm.Div (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Rem (m, n, k) -> CTm.Rem (subst_term ts m, subst_term ts n, subst_term ts k)
   | CTm.Ifz (cond, s1, s2) -> CTm.Ifz (subst_term ts cond, subst_command ts s1, subst_command ts s2)
+  | CTm.Alloc (v, d, ty, body) -> CTm.Alloc (v, d, subst_type ts ty, subst_command ts body)
+  | CTm.Fill (d, v, ty, body) -> CTm.Fill (d, v, subst_type ts ty, subst_command ts body)
+  | CTm.Unfold (xi_vars, d, dec, xtor, body) -> 
+      CTm.Unfold (xi_vars, d, subst_dec ts dec, xtor, subst_command ts body)
   | CTm.Ret (ty, t) -> CTm.Ret (subst_type ts ty, subst_term ts t)
   | CTm.Call (p, tys, args) -> CTm.Call (p, List.map (subst_type ts) tys, List.map (subst_term ts) args)
   | CTm.End -> CTm.End
@@ -243,6 +247,10 @@ module Target = struct
     | Rem of Ident.t * Ident.t * Ident.t * command
     | Ifz of Ident.t * command * command
     | Call of Path.t * CTy.typ list * Ident.t list
+    (* Destination primitives *)
+    | Alloc of Ident.t * Ident.t * CTy.typ * command
+    | Fill of Ident.t * Ident.t * CTy.typ * command
+    | Unfold of Ident.t list * Ident.t * CTy.dec * Path.t * command
     | Ret of CTy.typ * Ident.t
     | End
   and branch = Path.t * Ident.t list * Ident.t list * command
@@ -301,6 +309,15 @@ module Target = struct
         let k' = Ident.fresh () in Rem (Sub.apply h x, Sub.apply h y, k', rename (Sub.add k k' h) cont)
     | Ifz (v, s1, s2) -> Ifz (Sub.apply h v, rename h s1, rename h s2)
     | Call (p, tys, args) -> Call (p, tys, List.map (Sub.apply h) args)
+    | Alloc (v, d, ty, cont) ->
+        let v' = Ident.fresh () in let d' = Ident.fresh () in
+        Alloc (v', d', ty, rename (Sub.add d d' (Sub.add v v' h)) cont)
+    | Fill (d, v, ty, cont) ->
+        Fill (Sub.apply h d, Sub.apply h v, ty, rename h cont)
+    | Unfold (xi_vars, d, dec, xtor, cont) ->
+        let xi_vars' = List.map (fun _ -> Ident.fresh ()) xi_vars in
+        let h' = List.fold_left2 (fun acc p p' -> Sub.add p p' acc) h xi_vars xi_vars' in
+        Unfold (xi_vars', Sub.apply h d, dec, xtor, rename h' cont)
     | Ret (ty, x) -> Ret (ty, Sub.apply h x)
     | End -> End
 
@@ -629,6 +646,20 @@ module Transform = struct
         bind_term ctx cond h (fun _i v ->
           Target.Ifz (v, transform_command ctx s1 h, transform_command ctx s2 h))
 
+    (* Destination primitives - directly map to Target equivalents *)
+    | CTm.Alloc (v, d, ty, body) ->
+        let v' = Ident.fresh () in
+        let d' = Ident.fresh () in
+        Target.Alloc (v', d', ty, transform_command ctx body (Sub.add d d' (Sub.add v v' h)))
+
+    | CTm.Fill (d, v, ty, body) ->
+        Target.Fill (Sub.apply h d, Sub.apply h v, ty, transform_command ctx body h)
+
+    | CTm.Unfold (xi_vars, d, dec, xtor, body) ->
+        let xi_vars' = fresh_params xi_vars in
+        let h' = List.fold_left2 (fun acc p p' -> Sub.add p p' acc) h xi_vars xi_vars' in
+        Target.Unfold (xi_vars', Sub.apply h d, dec, xtor, transform_command ctx body h')
+
     (* === CUT TRANSFORMATIONS === *)
 
     (* CutPos (Variable x) (Variable y) - eta expand *)
@@ -884,6 +915,10 @@ module Collapse = struct
     | Target.Div (x, y, k, cont) -> FTm.Div (x, y, k, collapse_command ctx parity cont)
     | Target.Rem (x, y, k, cont) -> FTm.Rem (x, y, k, collapse_command ctx parity cont)
     | Target.Ifz (v, s1, s2) -> FTm.Ifz (v, collapse_command ctx parity s1, collapse_command ctx parity s2)
+    | Target.Alloc (v, d, ty, cont) -> FTm.Alloc (v, d, focus_type ty, collapse_command ctx parity cont)
+    | Target.Fill (d, v, ty, cont) -> FTm.Fill (d, v, focus_type ty, collapse_command ctx parity cont)
+    | Target.Unfold (xi_vars, d, dec, xtor, cont) -> 
+        FTm.Unfold (xi_vars, d, collapse_dec ctx dec, xtor, collapse_command ctx parity cont)
     | Target.Call (path, [], args) -> FTm.Jump (path, args)
     | Target.Call _ -> failwith " -- not monomorphic"
     | Target.Ret (ty, x) -> FTm.Ret (focus_type ty, x)

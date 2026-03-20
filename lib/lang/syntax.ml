@@ -22,8 +22,10 @@ type ast_typ =
   | AST_TyAll of (string * ast_kind option) * ast_typ
 
 type ast =
+  (* () *)
+    AST_Unit
   (* n *)
-    AST_Int of int64
+  | AST_Int of int64
   (* t + u *)
   | AST_Add of ast * ast
   (* t - u *)
@@ -44,10 +46,6 @@ type ast =
   | AST_Ins of ast * ast_typ
   (* (fun {a: k} x (y: a) => t)  *)
   | AST_Lam of type_args * term_args * ast
-  (*
-    forall {a: k} t or forall {a} t
-  | AST_All of type_args * ast_typ
-  *)
   (* let x = t in u *)
   | AST_Let of string * ast * ast
   (* match t with clauses *)
@@ -56,6 +54,17 @@ type ast =
   | AST_New of (ast_typ option) * (ast_clause list)
   (* xtor{ai's}(ti's); type and term arguments *)
   | AST_Xtor of string * (ast_typ list) * (ast list)
+  (* alloc{a}() *)
+  | AST_Alloc of ast_typ
+  (* fill(d)(t) *)
+  | AST_Fill of ast * ast
+  (* let (di) = d @ ctor{ai} in t *)
+  (* Second paranthesis is ctor name, type arguments *)
+  | AST_Unfold of (string list) * ast * (ast * (ast_typ list)) * ast
+  (* update t with { (d) => u } *)
+  | AST_Update of ast * string * ast
+  (* finalize(t) *)
+  | AST_Finalize of ast
 
 and type_args = (string * (ast_kind option)) list
 and term_args = (string * (ast_typ option)) list
@@ -168,7 +177,8 @@ and typ_atom_to_string = function
 
 (* Convert term to string *)
 let rec ast_to_string (lvl: int) = function
-    AST_Int n -> Int64.to_string n
+    AST_Unit -> "()"
+  | AST_Int n -> Int64.to_string n
   | AST_Add (t1, t2) ->
     "(" ^ ast_to_string lvl t1 ^ " + " ^ ast_to_string lvl t2 ^ ")"
   | AST_Sub (t1, t2) ->
@@ -217,9 +227,25 @@ let rec ast_to_string (lvl: int) = function
       String.concat "" (List.map (fun tm -> "(" ^ ast_to_string lvl tm ^ ")") tm_args)
     in
     name ^ ty_args_str ^ tm_args_str
+  | AST_Alloc ty ->
+    "alloc{" ^ typ_to_string ty ^ "}()"
+  | AST_Fill (d, t) ->
+    "fill(" ^ ast_to_string lvl d ^ ")(" ^ ast_to_string lvl t ^ ")"
+  | AST_Unfold (dvars, d, (ctor, ty_args), body) ->
+    let dvars_str = String.concat ", " dvars in
+    let ty_args_str = String.concat "" (List.map (fun ty -> "{" ^ typ_to_string ty ^ "}") ty_args) in
+    "let (" ^ dvars_str ^ ") = " ^ ast_to_string lvl d ^ " @ " ^
+    ast_to_string lvl ctor ^ ty_args_str ^ " in" ^
+    ident lvl ^ ast_to_string lvl body
+  | AST_Update (t, d, u) ->
+    "update " ^ ast_to_string lvl t ^ " with { (" ^ d ^ ") => " ^
+    ast_to_string lvl u ^ " }"
+  | AST_Finalize t ->
+    "finalize(" ^ ast_to_string lvl t ^ ")"
 
 and ast_app_to_string (lvl: int) = function
-    AST_Int _ | AST_Var _ | AST_Add _ | AST_Sub _ | AST_App _ | AST_Ins _ | AST_Xtor _ as t ->
+    AST_Int _ | AST_Var _ | AST_Add _ | AST_Sub _ | AST_App _ | AST_Ins _ | AST_Xtor _
+  | AST_Alloc _ | AST_Fill _ | AST_Finalize _ as t ->
       ast_to_string lvl t
   | t -> "(" ^ ast_to_string lvl t ^ ")"
 
