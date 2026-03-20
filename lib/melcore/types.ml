@@ -11,6 +11,7 @@
 *)
 
 open Common.Types
+open Common.Uses
 
 module MelcoreBase = struct
   type polarity = Typ
@@ -19,13 +20,16 @@ module MelcoreBase = struct
   let code_polarity = Typ
   let polarities = [Typ]
 
-  type 'a chiral = 'a
-  let chiral_map f x =  f x
-  let strip_chirality x = x
-  let mk_producer x = x
-  let mk_consumer x = x
+  type 'a chiral = use * 'a
+  let chiral_map f (u, x) =  (u, f x)
+  let strip_chirality (_, x) = x
+  let chiral_use (u, _) = u
+  let mk_producer (u, x) = (u, x)
+  let mk_consumer (u, x) = (u, x)
   let is_producer _ = true
   let is_consumer _ = true
+  (* In Melcore there's no Prd/Cns distinction, usage is covariant *)
+  let chiral_sub typ_eq (u1, t1) (u2, t2) = typ_eq t1 t2 && Use.leq u1 u2
 end
 
 module MelcoreTypes = TypeSystem(MelcoreBase)

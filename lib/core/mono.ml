@@ -188,7 +188,7 @@ let monomorphize (exe: Mono_spec.exe_ctx): mono_result mono_check =
               { name = dtor_name_for_inst codata_name idx
               ; quantified = []
               ; existentials = []
-              ; argument_types = [Prd inst_typ; Cns inst_typ]  (* arg and continuation *)
+              ; argument_types = [Prd (Lin, inst_typ); Cns (Lin, inst_typ)]  (* arg and continuation *)
               ; main = codata_typ
               ; original_index = idx
               }

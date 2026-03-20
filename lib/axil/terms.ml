@@ -289,13 +289,13 @@ let expect_empty (ctx: context) : unit check_result =
 (** Check that a chiral type is Prd and extract the type *)
 let expect_prd (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Prd t -> Ok t
+    Prd (_, t) -> Ok t
   | Cns _ -> Error (ChiralityMismatch { expected_chirality = `Prd; actual = ct })
 
 (** Check that a chiral type is Cns and extract the type *)
 let expect_cns (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Cns t -> Ok t
+    Cns (_, t) -> Ok t
   | Prd _ -> Error (ChiralityMismatch { expected_chirality = `Cns; actual = ct })
 
 (** Expect a type to be a signature *)
@@ -516,7 +516,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
             let* (prefix_bindings, tail_ctx) = consume_prefix_vars ctx term_vars in
             (* Verify types match *)
             let* subs' = check_bindings_against_types prefix_bindings inst_args subs in
-            let v_typ = Prd inst_main in
+            let v_typ = Prd (Lin, inst_main) in
             (* ORDERED: Prepend v at head of tail Γ *)
             check_command (prepend tail_ctx v v_typ) subs' body)
 
@@ -556,7 +556,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let* _ =
         check_methods ctx dec branches check_command subs
       in
-      let v_typ = Cns (Sgn (dec.name, dec.type_args)) in
+      let v_typ = Cns (Lin, Sgn (dec.name, dec.type_args)) in
       (* ORDERED: Prepend v at head *)
       check_command (prepend ctx v v_typ) subs body
 
@@ -638,7 +638,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* lit n { v => s } - introduces v : Prd Int at head *)
   | Lit (_, v, body) ->
-      let v_typ = Prd (Ext Int) in
+      let v_typ = Prd (Unr, Ext Int) in
       check_command (prepend ctx v v_typ) subs body
 
   (* add(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
@@ -654,7 +654,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (prepend ctx v v_typ) subs'' body))
 
   (* sub(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
@@ -670,7 +670,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (prepend ctx v v_typ) subs'' body))
 
   (* mul(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
@@ -686,7 +686,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (prepend ctx v v_typ) subs'' body))
 
   (* div(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
@@ -702,7 +702,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (prepend ctx v v_typ) subs'' body))
 
   (* rem(x, y) { v => s } - doesn't consume x, y; introduces v : Prd Int at head *)
@@ -718,16 +718,16 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (prepend ctx v v_typ) subs'' body))
 
   (* new k = { v => s1 }; s2 - Int consumer binding *)
   | NewInt (k, v, branch_body, cont) ->
       let int_ty = Ext Int in
       (* Branch: v prepended at head *)
-      let* _ = check_command (prepend ctx v (Prd int_ty)) subs branch_body in
+      let* _ = check_command (prepend ctx v (Prd (Unr, int_ty))) subs branch_body in
       (* Continuation: k prepended at head *)
-      check_command (prepend ctx k (Cns int_ty)) subs cont
+      check_command (prepend ctx k (Cns (Lin, int_ty))) subs cont
 
   (* ifz(v) { then; else } - doesn't consume v *)
   | Ifz (v, then_cmd, else_cmd) ->

@@ -84,7 +84,7 @@ let rec subst_type (ts: TySub.t) (t: CTy.typ) : CTy.typ =
   | CTy.Dest t -> CTy.Dest (subst_type ts t)
 
 let subst_chiral_type (ts: TySub.t) (ct: CTy.chiral_typ) : CTy.chiral_typ =
-  match ct with CB.Prd t -> CB.Prd (subst_type ts t) | CB.Cns t -> CB.Cns (subst_type ts t)
+  match ct with CB.Prd (u, t) -> CB.Prd (u, subst_type ts t) | CB.Cns (u, t) -> CB.Cns (u, subst_type ts t)
 
 let subst_xtor (ts: TySub.t) (x: CTy.xtor) : CTy.xtor =
   { name = x.name
@@ -182,12 +182,12 @@ let rec focus_type (t: CTy.typ) : FTy.typ =
 
 let collapse_chiral (ctx: focus_ctx) (ct: CTy.chiral_typ) : FTy.chiral_typ =
   match ct with
-    CB.Prd t -> 
+    CB.Prd (u, t) -> 
       let neg = is_negative ctx t in
-      if neg then FB.Cns (focus_type t) else FB.Prd (focus_type t)
-  | CB.Cns t -> 
+      if neg then FB.Cns (u, focus_type t) else FB.Prd (u, focus_type t)
+  | CB.Cns (u, t) -> 
       let neg = is_negative ctx t in
-      if neg then FB.Prd (focus_type t) else FB.Cns (focus_type t)
+      if neg then FB.Prd (u, focus_type t) else FB.Cns (u, focus_type t)
 
 let collapse_xtor (ctx: focus_ctx) (x: CTy.xtor) : FTy.xtor =
   let extended_ty_ctx = 

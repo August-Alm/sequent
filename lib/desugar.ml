@@ -7,6 +7,7 @@
 *)
 
 open Common.Identifiers
+open Common.Uses
 open Lang.Syntax
 open Melcore.Types.MelcoreBase
 module MT = Melcore.Types.MelcoreTypes
@@ -268,8 +269,8 @@ let xtor_of_ast (ctx: conv_ctx) (ds: Common.Types.data_sort) (idx: int) (xtor: a
       | main :: args -> (List.rev args, main))
   in
   
-  (* Wrap arguments as chiral types (in Melcore, mk_producer is identity) *)
-  let chiral_args = List.map mk_producer arguments in
+  (* Wrap arguments as chiral types with linear usage *)
+  let chiral_args = List.map (fun t -> (Lin, t)) arguments in
   
   (* Split params into quantified vs existentials:
     - quantified: params that appear free in the main type (determine the declaration's type args)

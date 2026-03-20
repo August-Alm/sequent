@@ -76,7 +76,7 @@ let fresh_location2 (ctx: ctx) : Register.t =
     - location2 = code address
     This unifies CNewInt with CNew and CAxiom with CInvoke. *)
 let is_ext_type (ct: chiral_typ) : bool =
-  match ct with Prd (Ext _) -> true | _ -> false
+  match ct with Prd (_, Ext _) -> true | _ -> false
 
 (* ========================================================================= *)
 (* Control Flow Helpers                                                      *)
@@ -726,7 +726,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Literal: create integer value *)
   | CLit { ctx; n; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let* rest = code_command lmap switch_defs body in
       return (
         MOVI (symbol_location2 new_ctx v, n) ::
@@ -741,7 +741,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
     - symbol_location1(k_ctx, k) = block pointer (captured environment)
     - symbol_location2(k_ctx, k) = code address *)
   | CNewInt { ctx; k; param; branch_body; cont_body } ->
-      let k_ctx = (k, Cns (Ext Int)) :: ctx in
+      let k_ctx = (k, Cns (Lin, Ext Int)) :: ctx in
       let k_block_reg = symbol_location1 k_ctx k in  (* r1 = block pointer *)
       let k_code_reg = symbol_location2 k_ctx k in   (* r2 = code address *)
       (* Arg incoming at X4, matching CAxiom's convention *)
@@ -749,10 +749,10 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
       (* The arg register where method expects it.
         Method context after load = ctx @ tail_ctx = captured @ [param].
         param_ctx must match this order: ctx @ [param]. *)
-      let param_ctx = ctx @ [(param, Prd (Ext Int))] in
+      let param_ctx = ctx @ [(param, Prd (Unr, Ext Int))] in
       let arg_expected_reg = symbol_location2 param_ctx param in
       (* tail_ctx for block pointer calculation = [param] *)
-      let tail_ctx = [(param, Prd (Ext Int))] in
+      let tail_ctx = [(param, Prd (Unr, Ext Int))] in
       (* Store ctx as captured environment *)
       let* stores = store ctx ctx ctx in
       let* base_lab = fresh_label in
@@ -778,7 +778,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Add: integer addition *)
   | CAdd { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let* rest = code_command lmap switch_defs body in
       return (
         ADD (symbol_location2 new_ctx v, symbol_location2 ctx x, 
@@ -787,7 +787,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Sub: integer subtraction *)
   | CSub { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let x_reg = symbol_location2 ctx x in
       let y_reg = symbol_location2 ctx y in
       let v_reg = symbol_location2 new_ctx v in
@@ -799,7 +799,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Mul: integer multiplication *)
   | CMul { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let* rest = code_command lmap switch_defs body in
       return (
         MUL (symbol_location2 new_ctx v, symbol_location2 ctx x, 
@@ -808,7 +808,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Div: integer division *)
   | CDiv { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let* rest = code_command lmap switch_defs body in
       return (
         SDIV (symbol_location2 new_ctx v, symbol_location2 ctx x, 
@@ -817,7 +817,7 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
 
   (* Rem: integer remainder (x % y = x - (x / y) * y) *)
   | CRem { ctx; x; y; v; body } ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       let x_reg = symbol_location2 ctx x in
       let y_reg = symbol_location2 ctx y in
       let v_reg = symbol_location2 new_ctx v in

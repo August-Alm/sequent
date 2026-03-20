@@ -4,6 +4,7 @@
 *)
 
 open Common.Identifiers
+open Common.Uses
 open Types.MelcoreTypes
 
 type var = Ident.t
@@ -333,9 +334,9 @@ type typed_definitions = typed_term_def Path.tbl
 
 (* Type checking context *)
 type tc_context =
-  { tyctx: context           (* Type-level context from MelcoreTypes *)
-  ; term_vars: typ Ident.tbl (* Term variable types *)
-  ; defs: definitions        (* Top-level definitions *)
+  { tyctx: context                  (* Type-level context from MelcoreTypes *)
+  ; term_vars: chiral_typ Ident.tbl (* Term variable types with usage *)
+  ; defs: definitions               (* Top-level definitions *)
   }
 
 (* Create an initial tc_context from type declarations and term definitions *)
@@ -376,15 +377,19 @@ let ( let* ) = Result.bind
 (* Context Helpers                                                           *)
 (* ========================================================================= *)
 
-let lookup_var (ctx: tc_context) (v: var) : (typ, check_error) result =
+let lookup_var (ctx: tc_context) (v: var) : (chiral_typ, check_error) result =
   match Ident.find_opt v ctx.term_vars with
-    Some t -> Ok t | None -> Error (UnboundVariable v)
+    Some ut -> Ok ut | None -> Error (UnboundVariable v)
 
-let extend_var (ctx: tc_context) (v: var) (t: typ) : tc_context =
-  { ctx with term_vars = Ident.add v t ctx.term_vars }
+let lookup_var_typ (ctx: tc_context) (v: var) : (typ, check_error) result =
+  match Ident.find_opt v ctx.term_vars with
+    Some (_, t) -> Ok t | None -> Error (UnboundVariable v)
 
-let extend_vars (ctx: tc_context) (bindings: (var * typ) list) : tc_context =
-  List.fold_left (fun ctx (v, t) -> extend_var ctx v t) ctx bindings
+let extend_var (ctx: tc_context) (v: var) (ut: chiral_typ) : tc_context =
+  { ctx with term_vars = Ident.add v ut ctx.term_vars }
+
+let extend_vars (ctx: tc_context) (bindings: (var * chiral_typ) list) : tc_context =
+  List.fold_left (fun ctx (v, ut) -> extend_var ctx v ut) ctx bindings
 
 let extend_tyvar (ctx: tc_context) (v: var) (k: typ) : tc_context =
   { ctx with tyctx = { ctx.tyctx with typ_vars = Ident.add v k ctx.tyctx.typ_vars } }
@@ -474,7 +479,7 @@ let expect_codata (ctx: tc_context) (sbs: subst) (t: typ)
     For construction: type_args should have same length as xtor.quantified.
     For pattern matching: pass empty type_args to freshen quantified vars. *)
 let instantiate_xtor (xtor: xtor) (type_args: typ list)
-    : (Ident.t * typ) list * typ list * typ =
+    : (Ident.t * typ) list * (use * typ) list * typ =
   (* Build substitution for quantified vars *)
   let quant_subst =
     if type_args = [] && xtor.quantified <> [] then
@@ -490,7 +495,9 @@ let instantiate_xtor (xtor: xtor) (type_args: typ list)
   (* Combine substitutions *)
   let combined = Ident.join quant_subst exist_subst in
   (* Apply to argument types and main *)
-  let inst_args = List.map (apply_fresh_subst combined) xtor.argument_types in
+  let inst_args = List.map (fun (u, t) ->
+    (u, apply_fresh_subst combined t)
+  ) xtor.argument_types in
   let inst_main = apply_fresh_subst combined xtor.main in
   (fresh_exist, inst_args, inst_main)
 
@@ -498,7 +505,7 @@ let instantiate_xtor (xtor: xtor) (type_args: typ list)
     both quantified and existential type arguments.
     Returns (inst_args, inst_main) with all type params substituted. *)
 let instantiate_dtor (xtor: xtor) (type_args: typ list)
-    : typ list * typ =
+    : (use * typ) list * typ =
   let n_quant = List.length xtor.quantified in
   let n_exist = List.length xtor.existentials in
   if List.length type_args <> n_quant + n_exist then
@@ -515,7 +522,9 @@ let instantiate_dtor (xtor: xtor) (type_args: typ list)
       List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
         quant_subst xtor.existentials exist_args
     in
-    let inst_args = List.map (apply_fresh_subst exist_subst) xtor.argument_types in
+    let inst_args = List.map (fun (u, t) ->
+      (u, apply_fresh_subst exist_subst t)
+    ) xtor.argument_types in
     let inst_main = apply_fresh_subst exist_subst xtor.main in
     (inst_args, inst_main)
 
@@ -523,7 +532,7 @@ let instantiate_dtor (xtor: xtor) (type_args: typ list)
     both quantified and existential type arguments.
     Returns (inst_args, inst_main) with all type params substituted. *)
 let instantiate_ctor (xtor: xtor) (type_args: typ list)
-    : typ list * typ =
+    : (use * typ) list * typ =
   let n_quant = List.length xtor.quantified in
   let n_exist = List.length xtor.existentials in
   if List.length type_args <> n_quant + n_exist then
@@ -540,7 +549,9 @@ let instantiate_ctor (xtor: xtor) (type_args: typ list)
       List.fold_left2 (fun s (v, _) arg -> Ident.add v arg s)
         quant_subst xtor.existentials exist_args
     in
-    let inst_args = List.map (apply_fresh_subst exist_subst) xtor.argument_types in
+    let inst_args = List.map (fun (u, t) ->
+      (u, apply_fresh_subst exist_subst t)
+    ) xtor.argument_types in
     let inst_main = apply_fresh_subst exist_subst xtor.main in
     (inst_args, inst_main)
 
@@ -586,7 +597,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
       Ok (TypedIfz (cond', then', else', then_ty), then_ty, sbs)
 
   | Var x ->
-      let* ty = lookup_var ctx x in
+      let* ty = lookup_var_typ ctx x in
       Ok (TypedVar (x, ty), ty, sbs)
 
   | Sym p ->
@@ -627,7 +638,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
   | Lam (x, ann, body) ->
       let arg_ty =
         match ann with Some t -> t | None -> fresh_meta () in
-      let ctx' = extend_var ctx x arg_ty in
+      let ctx' = extend_var ctx x (Unr, arg_ty) in
       let* (body', body_ty, sbs) = infer ctx' sbs body in
       let fun_ty = Sgn (Common.Types.Prim.fun_sym, [arg_ty; body_ty]) in
       Ok (TypedLam (x, arg_ty, body', fun_ty), fun_ty, sbs)
@@ -640,7 +651,7 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
 
   | Let (x, rhs, body) ->
       let* (rhs', rhs_ty, sbs) = infer ctx sbs rhs in
-      let ctx' = extend_var ctx x rhs_ty in
+      let ctx' = extend_var ctx x (Unr, rhs_ty) in
       let* (body', body_ty, sbs) = infer ctx' sbs body in
       Ok (TypedLet (x, rhs', body', body_ty), body_ty, sbs)
 
@@ -723,9 +734,9 @@ let rec infer (ctx: tc_context) (sbs: subst) (tm: term)
             let inst_args, inst_main = instantiate_dtor xtor type_args in
             let (result_ty, regular_args) = match inst_args with
                 [] -> (inst_main, [])  (* No arguments - result is main *)
-              | arg0 :: rest -> (arg0, List.rev rest)
+              | (_, arg0) :: rest -> (arg0, List.rev (List.map snd rest))
             in
-            let expected_term_types = inst_main :: regular_args in
+            let expected_term_types = (Unr, inst_main) :: List.map (fun t -> (Unr, t)) regular_args in
             if List.length term_args <> List.length expected_term_types then
               Error (XtorArityMismatch
                 { xtor = xtor_name
@@ -742,7 +753,7 @@ and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
     Lam (x, None, body) ->
       (* Check lambda against function type *)
       let* (dom, cod) = expect_fun sbs expected in
-      let ctx' = extend_var ctx x dom in
+      let ctx' = extend_var ctx x (Unr, dom) in
       let* (body', _, sbs) = check ctx' sbs body cod in
       let fun_ty = Sgn (Common.Types.Prim.fun_sym, [dom; cod]) in
       Ok (TypedLam (x, dom, body', fun_ty), fun_ty, sbs)
@@ -784,13 +795,13 @@ and check (ctx: tc_context) (sbs: subst) (tm: term) (expected: typ)
       let* sbs = unify_or_error expected actual sbs in
       Ok (tm', expected, sbs)
 
-(** Check arguments against expected types *)
-and check_args (ctx: tc_context) (sbs: subst) (expected: typ list) (args: term list)
+(** Check arguments against expected types (with usage annotations) *)
+and check_args (ctx: tc_context) (sbs: subst) (expected: (use * typ) list) (args: term list)
     : (typed_term list * subst, check_error) result =
   let rec go sbs acc expected args =
     match expected, args with
       [], [] -> Ok (List.rev acc, sbs)
-    | exp :: exps, arg :: args ->
+    | (_, exp) :: exps, arg :: args ->
         let* (arg', _, sbs) = check ctx sbs arg exp in
         go sbs (arg' :: acc) exps args
     | _ -> failwith "check_args: arity mismatch"
@@ -844,7 +855,7 @@ and infer_match_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 produces ?k' = zero, enabling type refinement. *)
               let* branch_sbs = unify_or_error inst_main (Sgn (dec.name, meta_type_args)) sbs in
               (* Apply substitution to get instantiated argument types *)
-              let inst_args' = List.map (apply_subst branch_sbs) inst_args in
+              let inst_args' = List.map (chiral_map (apply_subst branch_sbs)) inst_args in
               
               (* Build type bindings for pattern type vars:
                 - Quantified vars: bind to the original declaration params 
@@ -925,7 +936,7 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 This determines what the quantified vars should be.
                 For foldable: fold's main is foldable(?d), unified with foldable(e) → ?d=e *)
               let* sbs = unify_or_error inst_main (Sgn (dec.name, type_args)) sbs in
-              let inst_args' = List.map (apply_subst sbs) inst_args in
+              let inst_args' = List.map (chiral_map (apply_subst sbs)) inst_args in
               
               (* For codata destructors:
                 Surface: dtor: {qi's} main -> argN -> ... -> arg0
@@ -934,7 +945,7 @@ and infer_new_branches (ctx: tc_context) (sbs: subst) (dec: dec)
                 - [arg1; ...; argN] are extra parameters the branch binds *)
               let (result_ty, param_types) = match inst_args' with
                   [] -> (apply_subst sbs inst_main, [])  (* No arguments *)
-                | arg0 :: rest -> (arg0, rest)
+                | (_, arg0) :: rest -> (arg0, rest)
               in
               if List.length tm_vars <> List.length param_types then
                 Error (XtorArityMismatch
@@ -973,8 +984,8 @@ let check_definition (ctx: tc_context) (def: term_def)
     : (typed_term_def, check_error) result =
   (* Add type parameters to context *)
   let ctx = extend_tyvars ctx def.type_params in
-  (* Add term parameters to context *)
-  let ctx = extend_vars ctx def.term_params in
+  (* Add term parameters to context with default unrestricted usage *)
+  let ctx = extend_vars ctx (List.map (fun (v, t) -> (v, (Unr, t))) def.term_params) in
   (* Check body against declared return type *)
   let* (body', _, sbs) =
     check ctx Ident.emptytbl def.body def.return_type in

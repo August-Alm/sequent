@@ -188,7 +188,7 @@ let generate_inline_for_codata
     { name = dtor_name_for_inst codata_path idx
     ; quantified = []
     ; existentials = []
-    ; argument_types = [Cns inst_typ]  (* Just the continuation *)
+    ; argument_types = [Cns (Lin, inst_typ)]  (* Just the continuation *)
     ; main = codata_typ
     ; original_index = idx
     }
@@ -284,7 +284,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                       [{ name = Prim.thunk_sym
                        ; quantified = []
                        ; existentials = []
-                       ; argument_types = [Prd for_typ]
+                       ; argument_types = [Prd (Lin, for_typ)]
                        ; main = raise_for_typ
                        ; original_index = 0
                        }]
@@ -386,7 +386,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                       [{ name = Prim.apply_sym
                        ; quantified = []
                        ; existentials = []
-                       ; argument_types = [Cns inst_typ; Prd inst_typ]
+                       ; argument_types = [Cns (Lin, inst_typ); Prd (Lin, inst_typ)]
                        ; main = fun_typ
                        ; original_index = 0
                        }]
@@ -400,7 +400,7 @@ let rec transform_term (ctx: transform_ctx) (tm: T.term): T.term mono_check =
                       [{ name = Prim.thunk_sym
                        ; quantified = []
                        ; existentials = []
-                       ; argument_types = [Prd fun_typ]
+                       ; argument_types = [Prd (Lin, fun_typ)]
                        ; main = raise_fun_typ
                        ; original_index = 0
                        }]
@@ -710,6 +710,6 @@ let transform_definition
   
   Ok { T.path = info.mono_path
      ; type_params = data_kind_params            (* Keep data-kind params *)
-     ; term_params = [(u, Cns codata_typ)]       (* Single consumer param *)
+     ; term_params = [(u, Cns (Lin, codata_typ))]       (* Single consumer param *)
      ; body = body
      }

@@ -5,6 +5,7 @@
 
 open Common.Identifiers
 open Common.External
+open Common.Uses
 open Types.CoreBase
 open Types.CoreTypes
 open Terms
@@ -92,8 +93,8 @@ let typ_to_string (t: typ) : string = pp_typ ~nested:false t
 
 let pp_chiral_typ (ct: chiral_typ) : string =
   match ct with
-    Prd t -> "prd(" ^ pp_typ t ^ ")"
-  | Cns t -> "cns(" ^ pp_typ t ^ ")"
+    Prd (u, t) -> "prd[" ^ Use.pp u ^ "]" ^ "(" ^ pp_typ t ^ ")"
+  | Cns (u, t) -> "cns[" ^ Use.pp u ^ "]" ^ "(" ^ pp_typ t ^ ")"
 
 (* ========================================================================= *)
 (* Term Printing                                                             *)

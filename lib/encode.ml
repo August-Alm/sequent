@@ -58,10 +58,10 @@ let rec encode_type (sorts: data_sort Path.tbl) (t: MTy.typ) : CTy.typ =
 
 (** Encode an xtor definition *)
 let encode_xtor (sorts: data_sort Path.tbl) (ds: data_sort) (x: MTy.xtor) : CTy.xtor =
-  let encode_xtor_arg i (ty: MTy.typ) : CTy.chiral_typ =
+  let encode_xtor_arg i ((use, ty): MTy.chiral_typ) : CTy.chiral_typ =
     (* First argument of Melcore dtor is consumer *)
-    if i = 0 && ds = Codata then CB.Cns (encode_type sorts ty) else
-      CB.Prd (encode_type sorts ty)  (* All other arguments are producers *)
+    if i = 0 && ds = Codata then CB.Cns (use, encode_type sorts ty) else
+      CB.Prd (use, encode_type sorts ty)  (* All other arguments are producers *)
   in
   (* For codata, the xtor.main is the "internal" type used in cuts after unwrapping.
      It should NOT be wrapped in raise - that wrapping happens at use sites.
@@ -745,9 +745,9 @@ let encode_def (ctx: encode_ctx) (def: MTm.typed_term_def) : CTm.definition =
         (v, encode_type ctx.data_sorts k)
       ) def.type_params
   ; term_params = List.map (fun (v, t) ->
-        (v, CB.Prd (encode_type ctx.data_sorts t))
+        (v, CB.Prd (Lin, encode_type ctx.data_sorts t))
       ) def.term_params
-      @ [(k, CB.Cns return_ty)]  (* Add return continuation *)
+      @ [(k, CB.Cns (Lin, return_ty))]  (* Add return continuation *)
   ; body = make_cut return_ty body' (CTm.Var k)
   }
 

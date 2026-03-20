@@ -51,7 +51,7 @@ let rec convert_typ (t: FTy.typ) : ATy.typ =
 
 let convert_chiral (ct: FTy.chiral_typ) : ATy.chiral_typ =
   match ct with
-    FB.Prd t -> AB.Prd (convert_typ t) | FB.Cns t -> AB.Cns (convert_typ t)
+    FB.Prd (u, t) -> AB.Prd (u, convert_typ t) | FB.Cns (u, t) -> AB.Cns (u, convert_typ t)
 
 let convert_xtor (x: FTy.xtor) : ATy.xtor =
   { ATy.name = x.FTy.name

@@ -148,13 +148,13 @@ let extend_tyvar (ctx: context) (v: var) (k: typ) : context =
 (** Check that a chiral type is Prd and extract the type *)
 let expect_prd (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Prd t -> Ok t
+    Prd (_, t) -> Ok t
   | Cns _ -> Error (ChiralityMismatch { expected_chirality = `Prd; actual = ct })
 
 (** Check that a chiral type is Cns and extract the type *)
 let expect_cns (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Cns t -> Ok t
+    Cns (_, t) -> Ok t
   | Prd _ -> Error (ChiralityMismatch { expected_chirality = `Cns; actual = ct })
 
 (* ========================================================================= *)
@@ -418,7 +418,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
     : (chiral_typ * subst) check_result =
   match tm with
     Var x -> let* ct = lookup_var ctx x in Ok (ct, subs)
-  | Lit _ -> Ok (Prd (Ext Int), subs)
+  | Lit _ -> Ok (Prd (Unr, Ext Int), subs)
   | Ctor (dec, xtor_name, term_args) ->
       (* dec is already instantiated - just find the xtor and use its types directly *)
       (match find_xtor dec xtor_name with
@@ -430,7 +430,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
           let* subs' = check_xtor_args ctx xtor_name inst_args term_args
             (fun c tm -> infer_typ c subs tm) subs in
           (* Ctor produces Prd (producer) of the result type *)
-          Ok (Prd inst_main, subs'))
+          Ok (Prd (Lin, inst_main), subs'))
   | Dtor (dec, xtor_name, exist_ty_args, term_args) ->
       (* dec is already instantiated - just find the xtor and use its types directly *)
       (match find_xtor dec xtor_name with
@@ -445,35 +445,35 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
           let* subs' = check_xtor_args ctx xtor_name inst_args term_args
             (fun c tm -> infer_typ c subs tm) subs in
           (* Dtor produces Cns (consumer) of the result type *)
-          Ok (Cns inst_main, subs'))
+          Ok (Cns (Lin, inst_main), subs'))
   | Match (dec, branches) ->
       (* dec is already instantiated with param_kinds = [] *)
       let* _ = check_branches ctx dec branches check_command subs in
       (* Match produces Cns (consumer) of the data type *)
-      Ok (Cns (Sgn (dec.name, dec.type_args)), subs)
+      Ok (Cns (Lin, Sgn (dec.name, dec.type_args)), subs)
   | Comatch (dec, branches) ->
       (* dec is already instantiated with param_kinds = [] *)
       let* _ = check_branches ctx dec branches check_command subs in
       (* Comatch produces Prd (producer) of the codata type *)
-      Ok (Prd (Sgn (dec.name, dec.type_args)), subs)
+      Ok (Prd (Lin, Sgn (dec.name, dec.type_args)), subs)
   | MuPrd (ty, x, cmd) ->
       (* μP binds x : Cns ty, produces Prd ty *)
-      let ctx' = extend ctx x (Cns ty) in
+      let ctx' = extend ctx x (Cns (Lin, ty)) in
       let* _ = check_command ctx' subs cmd in
-      Ok (Prd ty, subs)
+      Ok (Prd (Lin, ty), subs)
   | MuCns (ty, k, cmd) ->
       (* μC binds k : Prd ty, produces Cns ty *)
-      let ctx' = extend ctx k (Prd ty) in
+      let ctx' = extend ctx k (Prd (Lin, ty)) in
       let* _ = check_command ctx' subs cmd in
-      Ok (Cns ty, subs)
+      Ok (Cns (Lin, ty), subs)
   | NewForall (a, k, body_ty, cont, cmd) ->
       (* NewForall ~ comatch { instantiate[a: k](cont) => cmd }
         Binds type var a: k and term var cont: cns body_ty
         Produces Prd (Forall a k body_ty) *)
       let ctx' = extend_tyvar ctx a k in
-      let ctx'' = extend ctx' cont (Cns body_ty) in
+      let ctx'' = extend ctx' cont (Cns (Lin, body_ty)) in
       let* _ = check_command ctx'' subs cmd in
-      Ok (Prd (Forall (a, k, body_ty)), subs)
+      Ok (Prd (Lin, Forall (a, k, body_ty)), subs)
   | InstantiateDtor ty_arg ->
       (* instantiate destructor: given a type argument, consumes Forall
         We need a fresh meta for the quantified kind and body *)
@@ -482,7 +482,7 @@ let rec infer_typ (ctx: context) (subs: subst) (tm: term)
       let body = TMeta (Ident.fresh ()) in
       (* Substitute ty_arg for a in body *)
       let inst_body = apply_fresh_subst (Ident.add a ty_arg Ident.emptytbl) body in
-      Ok (Cns (Forall (a, k, inst_body)), subs)
+      Ok (Cns (Lin, Forall (a, k, inst_body)), subs)
 
 (** Check a command under context and substitution *)
 and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_result =
@@ -518,73 +518,87 @@ and check_command (ctx: context) (subs: subst) (cmd: command) : unit check_resul
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd (Ext Int) in
-      let int_cns = Cns (Ext Int) in
+      (* Expected: producers used once, consumer receives unrestricted int *)
+      let int_prd = Prd (Lin, Ext Int) in
+      let int_cns = Cns (Unr, Ext Int) in
+      let typ_eq a b = (a = b) in
       (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
           (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
-              (* t1, t2 should be Prd Int, t3 should be Cns Int *)
-              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              if chiral_sub typ_eq t1_ct int_prd &&
+                 chiral_sub typ_eq t2_ct int_prd &&
+                 chiral_sub typ_eq t3_ct int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Sub (t1, t2, t3) ->
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd (Ext Int) in
-      let int_cns = Cns (Ext Int) in
+      let int_prd = Prd (Lin, Ext Int) in
+      let int_cns = Cns (Unr, Ext Int) in
+      let typ_eq a b = (a = b) in
       (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
           (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
-              (* t1, t2 should be Prd Int, t3 should be Cns Int *)
-              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              if chiral_sub typ_eq t1_ct int_prd &&
+                 chiral_sub typ_eq t2_ct int_prd &&
+                 chiral_sub typ_eq t3_ct int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Mul (t1, t2, t3) ->
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd (Ext Int) in
-      let int_cns = Cns (Ext Int) in
+      let int_prd = Prd (Lin, Ext Int) in
+      let int_cns = Cns (Unr, Ext Int) in
+      let typ_eq a b = (a = b) in
       (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
           (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
-              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              if chiral_sub typ_eq t1_ct int_prd &&
+                 chiral_sub typ_eq t2_ct int_prd &&
+                 chiral_sub typ_eq t3_ct int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Div (t1, t2, t3) ->
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd (Ext Int) in
-      let int_cns = Cns (Ext Int) in
+      let int_prd = Prd (Lin, Ext Int) in
+      let int_cns = Cns (Unr, Ext Int) in
+      let typ_eq a b = (a = b) in
       (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
           (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
-              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              if chiral_sub typ_eq t1_ct int_prd &&
+                 chiral_sub typ_eq t2_ct int_prd &&
+                 chiral_sub typ_eq t3_ct int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Rem (t1, t2, t3) ->
       let* (t1_ct, subs') = infer_typ ctx subs t1 in
       let* (t2_ct, subs'') = infer_typ ctx subs' t2 in
       let* (t3_ct, subs''') = infer_typ ctx subs'' t3 in
-      let int_prd = Prd (Ext Int) in
-      let int_cns = Cns (Ext Int) in
+      let int_prd = Prd (Lin, Ext Int) in
+      let int_cns = Cns (Unr, Ext Int) in
+      let typ_eq a b = (a = b) in
       (match unify (strip_chirality t1_ct) (Ext Int) subs''' with
         None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
       | Some subs4 ->
           (match unify (strip_chirality t2_ct) (Ext Int) subs4 with
             None -> Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })
           | Some _ ->
-              if t1_ct = int_prd && t2_ct = int_prd && t3_ct = int_cns then Ok ()
+              if chiral_sub typ_eq t1_ct int_prd &&
+                 chiral_sub typ_eq t2_ct int_prd &&
+                 chiral_sub typ_eq t3_ct int_cns then Ok ()
               else Error (AddTypeMismatch { arg1 = t1_ct; arg2 = t2_ct; result = t3_ct })))
   | Ifz (t, cmd1, cmd2) ->
       let* (t_ct, subs') = infer_typ ctx subs t in

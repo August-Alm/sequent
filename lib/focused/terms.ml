@@ -176,13 +176,13 @@ let extend_tyvar (ctx: context) (v: var) (k: typ) : context =
 (** Check that a chiral type is Prd and extract the type *)
 let expect_prd (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Prd t -> Ok t
+    Prd (_, t) -> Ok t
   | Cns _ -> Error (ChiralityMismatch { expected_chirality = `Prd; actual = ct })
 
 (** Check that a chiral type is Cns and extract the type *)
 let expect_cns (ct: chiral_typ) : (typ, check_error) result =
   match ct with
-    Cns t -> Ok t
+    Cns (_, t) -> Ok t
   | Prd _ -> Error (ChiralityMismatch { expected_chirality = `Cns; actual = ct })
 
 (** Expect a type to be a signature *)
@@ -379,7 +379,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
             (* Check that term_vars have the expected types in context *)
             let* subs' =
               check_xtor_args ctx xtor_name inst_args term_vars subs in
-            let v_typ = Prd inst_main in
+            let v_typ = Prd (Lin, inst_main) in
             check_command (extend ctx v v_typ) subs' body)
 
   (* switch v {...} -- dec is pre-instantiated *)
@@ -408,7 +408,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
       let* _ =
         check_branches ctx dec branches check_command subs
       in
-      let v_typ = Cns (Sgn (dec.name, dec.type_args)) in
+      let v_typ = Cns (Lin, Sgn (dec.name, dec.type_args)) in
       check_command (extend ctx v v_typ) subs body
 
   (* invoke v m(xi's) -- dec is pre-instantiated *)
@@ -446,7 +446,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
 
   (* lit n { v => s } *)
   | Lit (_, v, body) ->
-      let v_typ = Prd (Ext Int) in
+      let v_typ = Prd (Unr, Ext Int) in
       check_command (extend ctx v v_typ) subs body
 
   (* add(x, y) { v => s } *)
@@ -462,7 +462,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (extend ctx v v_typ) subs'' body))
 
   (* sub(x, y) { v => s } *)
@@ -478,7 +478,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (extend ctx v v_typ) subs'' body))
 
   (* mul(x, y) { v => s } *)
@@ -494,7 +494,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (extend ctx v v_typ) subs'' body))
 
   (* div(x, y) { v => s } *)
@@ -510,7 +510,7 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (extend ctx v v_typ) subs'' body))
 
   (* rem(x, y) { v => s } *)
@@ -526,16 +526,16 @@ let rec check_command (ctx: context) (subs: subst) (cmd: command)
           (match unify y_ty int_ty subs' with
             None -> Error (UnificationFailed (y_ty, int_ty))
           | Some subs'' ->
-              let v_typ = Prd int_ty in
+              let v_typ = Prd (Unr, int_ty) in
               check_command (extend ctx v v_typ) subs'' body))
 
   (* new k = { v => s1 }; s2 - Int consumer binding, k : Cns Int *)
   | NewInt (k, v, branch_body, cont) ->
       let int_ty = Ext Int in
       (* Check branch with v : Prd Int *)
-      let* _ = check_command (extend ctx v (Prd int_ty)) subs branch_body in
+      let* _ = check_command (extend ctx v (Prd (Unr, int_ty))) subs branch_body in
       (* Check continuation with k : Cns Int *)
-      check_command (extend ctx k (Cns int_ty)) subs cont
+      check_command (extend ctx k (Cns (Lin, int_ty))) subs cont
 
   (* ifz(v) { then; else } *)
   | Ifz (v, then_cmd, else_cmd) ->

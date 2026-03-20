@@ -241,7 +241,7 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
       (* Use xtor.argument_types for consistency with Switch loading *)
       let args_bindings = List.map2 (fun v ct -> (v, ct)) args xtor.argument_types in
       let tail_ctx = drop_ctx (List.length args) ctx in
-      let v_typ = Prd (Sgn (dec.name, dec.type_args)) in
+      let v_typ = Prd (Lin, Sgn (dec.name, dec.type_args)) in
       let new_ctx = (v, v_typ) :: tail_ctx in
       CLet
         { ctx
@@ -270,7 +270,7 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
         }
 
   | New (k, dec, branches, body) ->
-      let k_typ = Cns (Sgn (dec.name, dec.type_args)) in
+      let k_typ = Cns (Lin, Sgn (dec.name, dec.type_args)) in
       let new_ctx = (k, k_typ) :: ctx in
       let checked_branches = List.map (fun (xtor_name, type_vars, term_vars, inner_body) ->
         check_method defs dec ctx xtor_name type_vars term_vars inner_body
@@ -329,13 +329,13 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
       CAxiom { ctx; typ; v; k }
 
   | Lit (n, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CLit { ctx; n; v; body = check_cmd defs new_ctx body }
 
   | NewInt (k, param, branch_body, cont_body) ->
-      let k_ctx = (k, Cns (Ext Int)) :: ctx in
+      let k_ctx = (k, Cns (Lin, Ext Int)) :: ctx in
       (* Captured at HEAD (high registers), args at TAIL (low registers). *)
-      let param_ctx = ctx @ [(param, Prd (Ext Int))] in
+      let param_ctx = ctx @ [(param, Prd (Unr, Ext Int))] in
       CNewInt
         { ctx
         ; k
@@ -345,23 +345,23 @@ let rec check_cmd (defs: definition Path.tbl) (ctx: ctx) (cmd: command)
         }
 
   | Add (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CAdd { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Sub (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CSub { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Mul (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CMul { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Div (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CDiv { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Rem (x, y, v, body) ->
-      let new_ctx = (v, Prd (Ext Int)) :: ctx in
+      let new_ctx = (v, Prd (Unr, Ext Int)) :: ctx in
       CRem { ctx; x; y; v; body = check_cmd defs new_ctx body }
 
   | Ifz (v, then_cmd, else_cmd) ->

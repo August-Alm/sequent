@@ -12,9 +12,10 @@
 *)
 
 open External
+open Uses
+open Identifiers
 
 module Prim = struct
-  open Identifiers
   let fun_sym = Path.of_primitive 1 "fun"
   let apply_sym = Path.access fun_sym "apply"
   let lower_sym = Path.of_primitive 2 "lower"
@@ -33,17 +34,23 @@ module type BASE = sig
   type 'a chiral
   val chiral_map: ('a -> 'b) -> 'a chiral -> 'b chiral
   val strip_chirality: 'a chiral -> 'a
-  val mk_producer: 'a -> 'a chiral
-  val mk_consumer: 'a -> 'a chiral
+  val chiral_use: 'a chiral -> use
+  val mk_producer: use * 'a -> 'a chiral
+  val mk_consumer: use * 'a -> 'a chiral
   val is_producer: 'a chiral -> bool
   val is_consumer: 'a chiral -> bool
+  (* chiral_sub typ_eq ct1 ct2: can ct1 be used where ct2 is expected?
+     Usage describes how the VALUE is used, not how many times it's called.
+     For producers: prd u1 T ≤ prd u2 T when Use.leq u1 u2 (covariant)
+       - prd unr T ≤ prd lin T: unrestricted value can fill linear slot
+     For consumers: cns u1 T ≤ cns u2 T when Use.leq u2 u1 (contravariant)  
+       - cns lin T ≤ cns unr T: consumer using input once can fill slot expecting multiple uses *)
+  val chiral_sub: ('a -> 'a -> bool) -> 'a chiral -> 'a chiral -> bool
 end
 
 type data_sort = Data | Codata
 
 module TypeSystem(Base: BASE) = struct
-
-  open Identifiers
 
   let ( let* ) = Result.bind
 
@@ -66,6 +73,10 @@ module TypeSystem(Base: BASE) = struct
   let strip_chirality = Base.strip_chirality
 
   let chiral_map = Base.chiral_map
+
+  let chiral_use = Base.chiral_use
+
+  let chiral_sub = Base.chiral_sub
 
   let polarity_of_data_sort = function
       Data -> Base.data_polarity | Codata -> Base.code_polarity
@@ -632,8 +643,8 @@ module TypeSystem(Base: BASE) = struct
     ; existentials = []
     ; argument_types =
         (* Order: [Cns b; Prd a] = [continuation; argument] *)
-        [ Base.mk_consumer (TVar b)
-        ; Base.mk_producer (TVar a)
+        [ Base.mk_consumer (Unr, TVar b)
+        ; Base.mk_producer (Unr, TVar a)
         ]
     ; main = Sgn (Prim.fun_sym, [TVar a; TVar b])
     ; original_index = 0
@@ -656,7 +667,7 @@ module TypeSystem(Base: BASE) = struct
     { name = Prim.thunk_sym
     ; quantified = [ (a, as_typ Base.code_polarity) ]
     ; existentials = []
-    ; argument_types = [ Base.mk_producer (TVar a) ]  (* Lhs a = producer *)
+    ; argument_types = [ Base.mk_producer (Lin, TVar a) ]  (* Lhs a = producer *)
     ; main = Sgn (Prim.raise_sym, [TVar a])
     ; original_index = 0
     }
@@ -678,7 +689,7 @@ module TypeSystem(Base: BASE) = struct
     { name = Prim.return_sym
     ; quantified = [ (a, as_typ Base.data_polarity) ]
     ; existentials = []
-    ; argument_types = [ Base.mk_consumer (TVar a) ]  (* Rhs a = consumer *)
+    ; argument_types = [ Base.mk_consumer (Lin, TVar a) ]  (* Rhs a = consumer *)
     ; main = Sgn (Prim.lower_sym, [TVar a])
     ; original_index = 0
     }
