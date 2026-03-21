@@ -39,7 +39,7 @@ let pass_count = ref 0
 
 let ( let* ) = Result.bind
 
-let run_test ?(trace=false) ~name ~expected (source: string) =
+let run_test ?(trace=false) ?(print_asm=false) ~name ~expected (source: string) =
   incr test_count;
   print_endline "════════════════════════════════════════════════════════════════";
   Printf.printf "Test %d: %s\n" !test_count name;
@@ -164,8 +164,10 @@ let run_test ?(trace=false) ~name ~expected (source: string) =
     print_endline "11. Compile to Aarch64: OK";
     
     (* Print generated Aarch64 code *)
-    print_endline "\nAarch64 code:";
-    Printf.printf "%s\n\n" (ACode.Code.emit_all asm_code);
+    if print_asm then begin
+      print_endline "\nAarch64 code:";
+      Printf.printf "%s\n\n" (ACode.Code.emit_all asm_code)
+    end;
     
     (* Stage 12: Evaluate using Aarch64 semantics *)
     let* result = Pipe.EmitStage.eval ~trace ~max_steps:50000 asm_code in
@@ -892,6 +894,111 @@ let main: int =
       }
   }
 |};
+  
+  (* Test 32: Tree lookup without DSP - passes *)
+  run_test
+    ~name: "Tree lookup no DSP"
+    ~expected: 5
+    {|
+data tree: type where
+  { leaf: int -> tree
+  ; node: tree -> tree -> tree
+  }
+
+let lookup(t: tree): int =
+  match t with
+  { leaf(v) => v
+  ; node(l)(_) => lookup(l)
+  }
+
+let main: int =
+  lookup(leaf(5))
+  |};
+
+  (* Test 33: Simple unfold at root - tests CUnfold alone *)
+  run_test
+    ~name: "Simple unfold DSP"
+    ~expected: 42
+    {|
+data pair: type where
+  { mkpair: int -> int -> pair
+  }
+
+let build_pair_dsp(x: int)(y: int)(d: dest(pair)): unit =
+  let (d1, d2) = d @ mkpair in
+  let _ = fill(d1)(x) in
+  fill(d2)(y)
+
+let make_pair(x: int)(y: int): pair =
+  let init = alloc{pair}() in
+  let r = update init with { (d) => build_pair_dsp(x)(y)(d) } in
+  finalize(r)
+
+let main: int =
+  match make_pair(42)(10) with
+  { mkpair(a)(_) => a
+  }
+  |};
+
+  (* Test 34: Unfold with two-constructor type - tests tag dispatch *)
+  run_test
+    ~name: "Unfold two-ctor DSP"
+    ~expected: 5
+    {|
+data maybe: type -> type where
+  { nothing: {a} maybe(a)
+  ; just: {a} a -> maybe(a)
+  }
+
+let make_just_dsp{a}(x: a)(d: dest(maybe(a))): unit =
+  let (d1) = d @ just{a} in
+  fill(d1)(x)
+
+let make_just{a}(x: a): maybe(a) =
+  let init = alloc{maybe(a)}() in
+  let r = update init with { (d) => make_just_dsp{a}(x)(d) } in
+  finalize(r)
+
+let main: int =
+  match make_just{int}(5) with
+  { nothing{_} => 0
+  ; just{_}(x) => x
+  }
+  |};
+
+  (* Test 35: Tree lookup with DSP *)
+  (* Test: Tree DSP with recursive create *)
+  run_test
+    ~name: "Tree DSP recursive"
+    ~expected: 5
+    {|
+data tree: type where
+  { leaf: int -> tree
+  ; node: tree -> tree -> tree
+  }
+
+let create_dsp(i: int)(n: int)(d: dest(tree)): unit =
+  ifz(i / n) then
+    let (dl, dr) = d @ node in
+    let _ = create_dsp(i + 1)(n)(dl) in
+    create_dsp(i + 1)(n)(dr)
+  else
+    fill(d)(leaf(n))
+
+let create(i: int)(n: int): tree =
+  let init = alloc{tree}() in
+  let r = update init with { (d) => create_dsp(i)(n)(d) } in
+  finalize(r)  
+
+let lookup(t: tree): int =
+  match t with
+  { leaf(v) => v
+  ; node(l)(_) => lookup(l)
+  }
+
+let main: int =
+  lookup(create(0)(5))
+  |};
 
   (* Final Summary *)
   print_endline "════════════════════════════════════════════════════════════════";

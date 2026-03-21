@@ -3,12 +3,18 @@ data tree: type where
   ; node: tree -> tree -> tree
   }
 
-let create(i: int)(n: int): tree =
+let create_dsp(i: int)(n: int)(d: dest(tree)): unit =
   ifz(i / n) then
-    let t = create(i + 1)(n) in
-    node(t)(t)
+    let (dl, dr) = d @ node in
+    let _ = create_dsp(i + 1)(n)(dl) in
+    create_dsp(i + 1)(n)(dr)
   else
-    leaf(n)
+    fill(d)(leaf(n))
+
+let create(i: int)(n: int): tree =
+  let init = alloc{tree}() in
+  let r = update init with { (d) => create_dsp(i)(n)(d) } in
+  finalize(r)  
 
 let lookup(t: tree): int =
   match t with

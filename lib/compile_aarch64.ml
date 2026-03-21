@@ -228,6 +228,7 @@ let rec store_zeroes (into: Register.t) (k: int) : code =
   else
     MOVI (Register.temp, 0L) ::
     STR (Register.temp, into, Offset.field1 (k - 1)) ::
+    STR (Register.temp, into, Offset.field2 (k - 1)) ::
     store_zeroes into (k - 1)
 
 (** Store multiple values into a block.
@@ -631,6 +632,14 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
       in
       let load_from_memory =
         LAB ("lab" ^ string_of_int load_lab) ::
+        (* Check if field1(0) is non-zero - indicates fill at slot 0, need indirection *)
+        LDR (Register.temp, block_reg, Offset.field1 0) ::
+        CMPI (Register.temp, 0) ::
+        BEQ ("lab" ^ string_of_int load_lab ^ "direct") ::
+        (* Fill case: follow pointer at field1(0) to get actual data block *)
+        MOVR (block_reg, Register.temp) ::
+        LAB ("lab" ^ string_of_int load_lab ^ "direct") ::
+        (* Load tag from the data block's data_tag *)
         LDR (tag_reg, block_reg, Offset.data_tag) ::
         []
       in
@@ -916,6 +925,8 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
       let scratch = fresh_location1 ctx in
       let is_ext = match ty with Ext _ -> true | _ -> false in
       let* rest = code_command lmap switch_defs body in
+      let* slot0_lab = fresh_label in
+      let* done_lab = fresh_label in
       if is_ext then
         (* External: store just the value (loc2) *)
         return (
@@ -927,19 +938,53 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
           STR (v_loc2, Register.temp, 0) ::
           rest)
       else
-        (* Non-external: store both block ptr and tag *)
+        (* Non-external: store both block ptr and tag
+           For slot 0 (root destination from alloc), store tag at data_tag (offset 8)
+           so that CSwitch can find it when checking ALLOC_SENTINEL.
+           For other slots (nested destinations), store at field1/field2 offsets.
+           
+           IMPORTANT: If v_loc2 is ALLOC_SENTINEL, the value was DSP-constructed
+           and already has its tag at data_tag. For slot 0, don't overwrite it.
+           For nested slots, we need to copy the actual tag from v_loc1's data_tag. *)
+        let* skip_tag_lab = fresh_label in
+        let* nested_sentinel_lab = fresh_label in
         return (
-          (* Compute base offset for this slot *)
+          (* Check if slot 0 *)
+          CMPI (d_loc2, 0) ::
+          BEQ ("lab" ^ string_of_int slot0_lab) ::
+          
+          (* Non-zero slot: store at field1/field2 offsets *)
           MOVI (Register.temp, 16L) ::
           MUL (Register.temp, d_loc2, Register.temp) ::
           (* Store loc1 (block ptr) at field1 offset *)
           ADDI (scratch, Register.temp, Offset.field1 0) ::
           ADD (scratch, d_loc1, scratch) ::
           STR (v_loc1, scratch, 0) ::
-          (* Store loc2 (tag) at field2 offset *)
+          (* Prepare to store tag at field2 offset *)
           ADDI (scratch, Register.temp, Offset.field2 0) ::
           ADD (scratch, d_loc1, scratch) ::
+          (* Check if v_loc2 is ALLOC_SENTINEL (DSP value) *)
+          CMPI (v_loc2, -1) ::
+          BEQ ("lab" ^ string_of_int nested_sentinel_lab) ::
+          (* Regular value: store v_loc2 directly *)
           STR (v_loc2, scratch, 0) ::
+          B ("lab" ^ string_of_int done_lab) ::
+          (* DSP value: load tag from v_loc1's data_tag and store it *)
+          LAB ("lab" ^ string_of_int nested_sentinel_lab) ::
+          LDR (Register.temp, v_loc1, Offset.data_tag) ::
+          STR (Register.temp, scratch, 0) ::
+          B ("lab" ^ string_of_int done_lab) ::
+          
+          (* Slot 0: store block ptr at field1(0), tag at target block's data_tag *)
+          LAB ("lab" ^ string_of_int slot0_lab) ::
+          STR (v_loc1, d_loc1, Offset.field1 0) ::   (* block ptr at offset 16 *)
+          (* Only store tag if not ALLOC_SENTINEL (DSP value already has tag set) *)
+          CMPI (v_loc2, -1) ::
+          BEQ ("lab" ^ string_of_int skip_tag_lab) ::
+          STR (v_loc2, v_loc1, Offset.data_tag) ::   (* tag in target block at offset 8 *)
+          LAB ("lab" ^ string_of_int skip_tag_lab) ::
+          
+          LAB ("lab" ^ string_of_int done_lab) ::
           rest)
 
   (* Unfold: create subdestinations for constructor arguments.
@@ -1017,11 +1062,18 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
         []
       in
       
-      (* Common code after setup: store tag and set up subdests *)
+      (* Common code after setup: store tag, zero unused slots, and set up subdests *)
+      let num_subdests = List.length xi_vars in
+      (* Subdests go to slots (fields_per_block-1) down to (fields_per_block-num_subdests)
+         So unused slots are 0 to (fields_per_block-1-num_subdests) = (fields_per_block-num_subdests-1) slots *)
+      let first_unused_slot = Offset.fields_per_block - num_subdests - 1 in
+      let num_unused_slots = first_unused_slot + 1 in
       let common_code =
         (* Store tag at this + tag_offset *)
         MOVI (Register.temp, Int64.of_int (Offset.jump_length tag)) ::
         STR (Register.temp, this, tag_offset) ::
+        (* Zero unused slots (below the subdestinations) *)
+        store_zeroes this num_unused_slots @
         setup_code @
         rest
       in
@@ -1152,7 +1204,9 @@ let compile_def (lmap: label_map) (switch_defs: switch_defs_map)
     (* Definition starts with CSwitch - emit direct-entry labels for each branch *)
     CSwitch { ctx; v; dec; tail_ctx; branches; _ } ->
       let tag_reg = symbol_location2 ctx v in
+      let block_reg = symbol_location1 ctx v in
       let* base_lab = fresh_label in
+      let* load_lab = fresh_label in
       let get_original_index xtor_path =
         match List.find_opt (fun (x: xtor) ->
           Path.equal x.name xtor_path
@@ -1181,7 +1235,33 @@ let compile_def (lmap: label_map) (switch_defs: switch_defs_map)
               return (labeled :: rest_branches)
         in compile_branches branches
       in
+      (* Sentinel check and load_from_memory for ALLOC_SENTINEL values
+         (same as in code_command's CSwitch case) *)
+      let sentinel_check =
+        CMPI (tag_reg, -1) ::
+        BEQ ("lab" ^ string_of_int load_lab) ::
+        []
+      in
+      let load_from_memory =
+        LAB ("lab" ^ string_of_int load_lab) ::
+        (* Check if field1(0) is non-zero - indicates fill at slot 0, need indirection *)
+        LDR (Register.temp, block_reg, Offset.field1 0) ::
+        CMPI (Register.temp, 0) ::
+        BEQ ("lab" ^ string_of_int load_lab ^ "direct") ::
+        (* Fill case: follow pointer at field1(0) to get actual data block *)
+        MOVR (block_reg, Register.temp) ::
+        LAB ("lab" ^ string_of_int load_lab ^ "direct") ::
+        (* Load tag from the data block's data_tag *)
+        LDR (tag_reg, block_reg, Offset.data_tag) ::
+        []
+      in
       return (
+        sentinel_check @
+        ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
+        (if max_idx = 0 then []
+         else ADD (Register.temp, Register.temp, tag_reg) :: []) @
+        BR Register.temp ::
+        load_from_memory @
         ADR (Register.temp, "lab" ^ string_of_int base_lab) ::
         (if max_idx = 0 then []
          else ADD (Register.temp, Register.temp, tag_reg) :: []) @

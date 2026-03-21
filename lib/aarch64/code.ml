@@ -59,8 +59,12 @@ module Offset = struct
   let data_tag = address 1  (* offset 8, same as code_pointer *)
   let field1 i = address (2 + 2 * i)
   let field2 i = address (2 + 2 * i + 1)
-  (* Sentinel value indicating tag should be loaded from memory (destination-passing) *)
-  let alloc_sentinel = Int64.minus_one  (* -1 / 0xFFFFFFFFFFFFFFFF *)
+  (* Sentinel value indicating tag should be loaded from memory (destination-passing).
+     Used when alloc creates a value that will be filled in later. *)
+  let alloc_sentinel = Int64.minus_one  (* -1 *)
+  (* Sentinel value indicating tag AND block_ptr should be loaded from memory.
+     Used when fill stores a compound value with its own block. *)
+  let fill_sentinel = Int64.of_int (-2)  (* -2 *)
 end
 
 type instruction =

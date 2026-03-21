@@ -77,6 +77,7 @@ let store (mem: int array ref) (addr: int) (value: int) : unit =
   end;
   (!mem).(addr) <- value
 
+
 (** Execute one instruction, return new state *)
 let step (st: state) (mem_ref: int array ref) (_step_count: int) : state =
   let instr = fetch_at_debug st.code st.counter in
@@ -115,28 +116,27 @@ let step (st: state) (mem_ref: int array ref) (_step_count: int) : state =
         failwith (Printf.sprintf "BR %s: unaligned jump to %d (from PC %d)" 
           (Register.to_string r) target st.counter);
       { st with counter = target }
-  
+
   | ADR (rd, label) ->
       set st.registers rd (get_counter st.code label);
       { st with counter = st.counter + 4 }
-  
+
   | MOVR (rd, rs) ->
       set st.registers rd (get st.registers rs);
       { st with counter = st.counter + 4 }
-  
+
   | MOVI (rd, imm) ->
       set st.registers rd (Int64.to_int imm);
       { st with counter = st.counter + 4 }
-  
+
   | LDR (rt, rn, offset) ->
       let addr = get st.registers rn + offset in
       set st.registers rt (load !mem_ref addr);
       { st with counter = st.counter + 4 }
-  
+
   | STR (rs, rn, offset) ->
       let addr = get st.registers rn + offset in
-      let value = get st.registers rs in
-      store mem_ref addr value;
+      store mem_ref addr (get st.registers rs);
       { st with counter = st.counter + 4; memory = !mem_ref }
   
   | CMPR (rs1, rs2) ->
