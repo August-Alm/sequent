@@ -866,12 +866,12 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
   (* Destination primitives *)
 
   (* Alloc: allocate uninitialized value and destination.
-     After alloc, context = (d, dest(ty))::(v, ty)::ctx
-     - v points to the allocated block (loc1=block, loc2=ALLOC_SENTINEL)
-     - d points to where v's data should be filled (loc1=block, loc2=offset)
-     
-     The ALLOC_SENTINEL (-1) marks v as a "destination-passed value" whose
-     actual tag is in memory at v.loc1 + field2(0), not in v.loc2. *)
+    After alloc, context = (d, dest(ty))::(v, ty)::ctx
+    - v points to the allocated block (loc1=block, loc2=ALLOC_SENTINEL)
+    - d points to where v's data should be filled (loc1=block, loc2=offset)
+    
+    The ALLOC_SENTINEL (-1) marks v as a "destination-passed value" whose
+    actual tag is in memory at v.loc1 + field2(0), not in v.loc2. *)
   | CAlloc { ctx; v; d; ty; body } ->
       let v_typ = Prd (Unr, ty) in
       let d_typ = Prd (Lin, Dest ty) in
@@ -905,8 +905,8 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
           rest)
 
   (* Fill: fill destination d with value v.
-     - Read destination (block, slot) from d
-     - Store v's data into block at slot *)
+    - Read destination (block, slot) from d
+    - Store v's data into block at slot *)
   | CFill { ctx; d; v; ty; body; _ } ->
       let d_loc1 = symbol_location1 ctx d in
       let d_loc2 = symbol_location2 ctx d in
@@ -943,10 +943,14 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
           rest)
 
   (* Unfold: create subdestinations for constructor arguments.
-     - d is destination for type T 
-     - xtor is constructor with argument types τi
-     - xi_vars become destinations for each argument slot
-     Also sets tag on the parent value. *)
+    - d is destination for type T 
+    - xtor is constructor with argument types τi
+    - xi_vars become destinations for each argument slot
+    Also sets tag on the parent value. 
+    
+    For nested destinations (slot != 0), this is a sum-typed field like list's tail.
+    We need to allocate a new block for the nested value and store a pointer to it
+    in the parent's slot. *)
   | CUnfold { ctx; xi_vars; d; dec; xtor; tail_ctx; body } ->
       (* d at head of context *)
       let d_loc1 = symbol_location1 ctx d in
@@ -960,32 +964,84 @@ let rec code_command (lmap: label_map) (switch_defs: switch_defs_map)
       let tag = xtor_data.original_index in
       (* Context after unfold: xi_vars @ tail_ctx *)
       let new_ctx = xi_vars @ tail_ctx in
-      (* Use scratch register *)
-      let scratch = fresh_location1 ctx in
-      (* Set up subdestinations: each xi gets (block, slot_i)
-         Use reverse slot numbering to match CCtor/load_binders convention:
-         first arg -> slot (fields_per_block - 1), second -> (fields_per_block - 2), etc. *)
+      (* 
+        For nested destinations (d_loc2 != 0), we need to:
+        1. Allocate a new block for the nested value
+        2. Store pointer to new block in parent's slot d_loc2
+        3. Use the new block (at slot 0) for sub-destinations and tag
+        
+        For root destinations (d_loc2 == 0), we use the existing block directly.
+        
+        We use 'this' register to hold the block pointer for subdestinations.
+        In root case: copy d_loc1 into this. In nested case: acquire puts block in this.
+      *)
+      (* Registers for acquire_block *)
+      let accu = fresh_location2 ctx in
+      let this = fresh_location1 ctx in
+      let* acquire = acquire_block accu this in
+      (* After acquire, 'this' has the new block pointer *)
+      
+      let tag_offset = Offset.data_tag in
+      let* rest = code_command lmap switch_defs body in
+      
+      (* Set up subdestinations using 'this' as the block pointer *)
       let setup_code = List.mapi (fun i (xi, _ct) ->
         let xi_loc1 = symbol_location1 new_ctx xi in
         let xi_loc2 = symbol_location2 new_ctx xi in
-        (* Slot number matches CCtor: start from fields_per_block - 1 *)
         let slot = Offset.fields_per_block - 1 - i in
-        [MOVR (xi_loc1, d_loc1);
+        [MOVR (xi_loc1, this);
          MOVI (xi_loc2, Int64.of_int slot)]
       ) xi_vars |> List.concat in
-      (* Set the tag in the block at data_tag offset (offset 8, not conflicting with slots) *)
-      let tag_offset = Offset.data_tag in
-      let* rest = code_command lmap switch_defs body in
-      return (
-        (* Compute tag storage address: base + parent_slot*16 + tag_offset *)
+      
+      (* Nested case: allocate, link to parent *)
+      let nested_setup =
+        acquire @
+        (* Store pointer to new block in parent's slot (field1 part) *)
         MOVI (Register.temp, 16L) ::
         MUL (Register.temp, d_loc2, Register.temp) ::
-        ADDI (Register.temp, Register.temp, tag_offset) ::
-        ADD (Register.temp, d_loc1, Register.temp) ::
-        MOVI (scratch, Int64.of_int (Offset.jump_length tag)) ::
-        STR (scratch, Register.temp, 0) ::
+        (* Store block pointer at field1 offset *)
+        ADDI (accu, Register.temp, Offset.field1 0) ::
+        ADD (accu, d_loc1, accu) ::
+        STR (this, accu, 0) :: (* parent[slot].field1 = new_block *)
+        (* Store ALLOC_SENTINEL at field2 offset so CSwitch knows tag is in memory *)
+        ADDI (accu, Register.temp, Offset.field2 0) ::
+        ADD (accu, d_loc1, accu) ::
+        MOVI (Register.temp, Offset.alloc_sentinel) ::
+        STR (Register.temp, accu, 0) :: (* parent[slot].field2 = SENTINEL *)
+        []
+      in
+      
+      (* Root case: copy d_loc1 into this *)
+      let root_setup =
+        MOVR (this, d_loc1) ::
+        []
+      in
+      
+      (* Common code after setup: store tag and set up subdests *)
+      let common_code =
+        (* Store tag at this + tag_offset *)
+        MOVI (Register.temp, Int64.of_int (Offset.jump_length tag)) ::
+        STR (Register.temp, this, tag_offset) ::
         setup_code @
-        rest)
+        rest
+      in
+      
+      (* Branch based on whether d_loc2 == 0 (root) or != 0 (nested) *)
+      let* lab_root = fresh_label in
+      let* lab_common = fresh_label in
+      return (
+        CMPI (d_loc2, 0) ::
+        BEQ ("lab" ^ string_of_int lab_root) ::
+        (* Nested case: d_loc2 != 0, falls through here *)
+        nested_setup @
+        [B ("lab" ^ string_of_int lab_common);
+         LAB ("lab" ^ string_of_int lab_root)] @
+        (* Root case: d_loc2 == 0 *)
+        root_setup @
+        [LAB ("lab" ^ string_of_int lab_common)] @
+        (* Common code for both cases *)
+        common_code
+      )
 
   (* Return: final result *)
   | CRet { ctx; v; _ } ->
@@ -1015,7 +1071,8 @@ and code_clauses (lmap: label_map) (switch_defs: switch_defs_map) (tail_ctx: ctx
     [] -> return []
   | branch :: rest ->
       let* clause = code_clause lmap switch_defs tail_ctx branch in
-      let* rest_clauses = code_clauses lmap switch_defs tail_ctx rest base_lab (branch_idx + 1) in
+      let* rest_clauses =
+        code_clauses lmap switch_defs tail_ctx rest base_lab (branch_idx + 1) in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int branch_idx) :: 
         clause in
@@ -1033,7 +1090,8 @@ and code_clauses_sparse (lmap: label_map) (switch_defs: switch_defs_map) (tail_c
   | branch :: rest ->
       let* clause = code_clause lmap switch_defs tail_ctx branch in
       let original_idx = get_original_index branch.xtor in
-      let* rest_clauses = code_clauses_sparse lmap switch_defs tail_ctx rest base_lab get_original_index in
+      let* rest_clauses =
+        code_clauses_sparse lmap switch_defs tail_ctx rest base_lab get_original_index in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) :: 
         clause in
@@ -1057,7 +1115,8 @@ and code_methods (lmap: label_map) (switch_defs: switch_defs_map) (captured_ctx:
     [] -> return []
   | branch :: rest ->
       let* method_code = code_method lmap switch_defs captured_ctx branch in
-      let* rest_methods = code_methods lmap switch_defs captured_ctx rest base_lab (branch_idx + 1) in
+      let* rest_methods =
+        code_methods lmap switch_defs captured_ctx rest base_lab (branch_idx + 1) in
       let labeled =
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int branch_idx) ::
         method_code in
@@ -1075,7 +1134,8 @@ and code_methods_sparse (lmap: label_map) (switch_defs: switch_defs_map) (captur
   | branch :: rest ->
       let* method_code = code_method lmap switch_defs captured_ctx branch in
       let original_idx = get_original_index branch.xtor in
-      let* rest_methods = code_methods_sparse lmap switch_defs captured_ctx rest base_lab get_original_index in
+      let* rest_methods =
+        code_methods_sparse lmap switch_defs captured_ctx rest base_lab get_original_index in
       let labeled = 
         LAB ("lab" ^ string_of_int base_lab ^ "b" ^ string_of_int original_idx) :: 
         method_code in
@@ -1094,7 +1154,9 @@ let compile_def (lmap: label_map) (switch_defs: switch_defs_map)
       let tag_reg = symbol_location2 ctx v in
       let* base_lab = fresh_label in
       let get_original_index xtor_path =
-        match List.find_opt (fun (x: xtor) -> Path.equal x.name xtor_path) dec.xtors with
+        match List.find_opt (fun (x: xtor) ->
+          Path.equal x.name xtor_path
+        ) dec.xtors with
           Some x -> x.original_index
         | None -> 0
       in

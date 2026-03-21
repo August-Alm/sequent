@@ -780,6 +780,47 @@ let main: int =
   (* Test 29: Destination-passing list map *)
   run_test
     ~name: "Destination-passing list map"
+    ~expected: 9
+    {|
+data list: type -> type where
+  { nil: {a} list(a)
+  ; cons: {a} a -> list(a) -> list(a)
+  }
+
+let map_dsp{a}{b}(f: a -> b)(xs: list(a))(ds: dest(list(b))): unit =
+  match xs with
+  { nil{_} => fill(ds)(nil{b})
+  ; cons{_}(x)(xs) =>
+      let (d, ds) = ds @ cons{b} in
+      let _ = fill(d)(f(x)) in
+      map_dsp{a}{b}(f)(xs)(ds)
+  }
+
+let map{a}{b}(f: a -> b)(xs: list(a)): list(b) =
+  let init = alloc{list(b)}() in
+  let r = update init with { (ds) => map_dsp{a}{b}(f)(xs)(ds) } in
+  finalize(r)
+
+let foldl{a}{b}(f: b -> a -> a)(init: a)(ys: list(b)): a =
+  match ys with
+  { nil{b} => init
+  ; cons{b}(y)(ys) => foldl{a}{b}(f)(f(y)(init))(ys)
+  }
+
+let xs(n: int): list(int) =
+  cons{int}(n)(cons{int}(n)(nil{int}))
+
+let main: int =
+  let xs = xs(2) in
+  let f = fun(x: int) => x + 1 in
+  let ys = map{int}{int}(f)(xs) in
+  let g = fun(i: int)(y: int) => i * y in
+  foldl{int}{int}(g)(1)(ys)
+|};
+
+  (* Test 30: Simple DSP test - check list structure *)
+  run_test
+    ~name: "DSP list second element"
     ~expected: 3
     {|
 data list: type -> type where
@@ -801,13 +842,54 @@ let map{a}{b}(f: a -> b)(xs: list(a)): list(b) =
   let r = update init with { (ds) => map_dsp{a}{b}(f)(xs)(ds) } in
   finalize(r)
 
+let xs(n: int): list(int) =
+  cons{int}(n)(cons{int}(n)(nil{int}))
+
 let main: int =
-  let xs = cons{int}(2)(nil{int}) in
+  let xs = xs(2) in
   let f = fun(x: int) => x + 1 in
   let ys = map{int}{int}(f)(xs) in
   match ys with
   { nil{_} => 0
-  ; cons{_}(y)(ys) => y
+  ; cons{_}(x)(xs) =>
+      match xs with
+      { nil{_} => 100
+      ; cons{_}(y)(ys) => y
+      }
+  }
+|};
+
+  (* Test 31: DSP build two-element list directly *)
+  run_test
+    ~name: "DSP direct two-element list"
+    ~expected: 2
+    {|
+data list: type -> type where
+  { nil: {a} list(a)
+  ; cons: {a} a -> list(a) -> list(a)
+  }
+
+let build_two{a}(x: a)(y: a)(ds: dest(list(a))): unit =
+  let (d1, ds1) = ds @ cons{a} in
+  let _ = fill(d1)(x) in
+  let (d2, ds2) = ds1 @ cons{a} in
+  let _ = fill(d2)(y) in
+  fill(ds2)(nil{a})
+
+let make_two{a}(x: a)(y: a): list(a) =
+  let init = alloc{list(a)}() in
+  let r = update init with { (ds) => build_two{a}(x)(y)(ds) } in
+  finalize(r)
+
+let main: int =
+  let xs = make_two{int}(1)(2) in
+  match xs with
+  { nil{_} => 0
+  ; cons{_}(x)(xs) =>
+      match xs with
+      { nil{_} => 100
+      ; cons{_}(y)(ys) => y
+      }
   }
 |};
 

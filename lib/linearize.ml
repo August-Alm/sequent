@@ -226,14 +226,17 @@ let fresh_var (st: state) (base: Common.Identifiers.Ident.t) : Common.Identifier
   fv: free variables with multiplicities (for the whole command including continuations)
   continuation_fv: free variables needed AFTER the consumed vars are used
   
-  Returns: (substitution, new_ctx after substitution but before consumption)
+  Returns: (substitution, new_ctx after substitution but before consumption, copy_map)
+  where copy_map maps original var -> copy var for vars that were contracted
 *)
 let build_reordering_with_contraction
     (st: state)
     (current_ctx: Common.Identifiers.Ident.t list)
     (consumed: Common.Identifiers.Ident.t list)
     (continuation_fv: int VarMap.t)
-    : (Common.Identifiers.Ident.t * Common.Identifiers.Ident.t) list * Common.Identifiers.Ident.t list =
+    : (Common.Identifiers.Ident.t * Common.Identifiers.Ident.t) list 
+      * Common.Identifiers.Ident.t list
+      * Common.Identifiers.Ident.t VarMap.t =
   (* Figure out which consumed vars are also needed in continuation (require contraction) *)
   let consumed_set = VarSet.of_list consumed in
   let needs_copy = VarSet.filter (fun v -> VarMap.mem v continuation_fv) consumed_set in
@@ -267,7 +270,7 @@ let build_reordering_with_contraction
   
   let subst = consumed_pairs @ (List.rev copy_pairs) @ tail_pairs in
   let new_ctx = List.map fst subst in
-  (subst, new_ctx)
+  (subst, new_ctx, !copy_names)
 
 (* Simple build_reordering without contraction - for commands where consumed vars
   don't need to survive (like Let args, Invoke args, etc.) *)
@@ -317,166 +320,225 @@ let wrap_with_reordering
   if subst = [] || is_identity_reordering current_ctx subst then cmd
   else ATm.Substitute (subst, cmd)
 
+(* Apply rename_map to a variable reference: if v is renamed, return its actual context name *)
+let apply_rename (rename_map: Common.Identifiers.Ident.t VarMap.t) (v: Common.Identifiers.Ident.t) =
+  match VarMap.find_opt v rename_map with
+  | Some actual -> actual
+  | None -> v
+
+(* Apply rename_map to a list of variables *)
+let apply_rename_list (rename_map: Common.Identifiers.Ident.t VarMap.t) (vs: Common.Identifiers.Ident.t list) =
+  List.map (apply_rename rename_map) vs
+
 (* ========================================================================= *)
 (* Command Translation                                                       *)
 (* ========================================================================= *)
 
+(* rename_map: maps FTm variable names -> actual context names (for contracted copies) *)
 let rec linearize_cmd (st: state) (ctx: Common.Identifiers.Ident.t list) 
+    (rename_map: Common.Identifiers.Ident.t VarMap.t)
     (cmd: FTm.command) : ATm.command =
-  let fv = free_vars_cmd cmd in
+  (* Compute free vars with FTm names, then map to actual ctx names *)
+  let fv_ftm = free_vars_cmd cmd in
+  let fv = VarMap.fold (fun v count acc ->
+    VarMap.add (apply_rename rename_map v) count acc
+  ) fv_ftm VarMap.empty in
   match cmd with
   (* let v = m(args); s
     Consumes: args (in order as prefix)
-    Continues with: v prepended to remaining context *)
+    Continues with: v prepended to remaining context
+    
+    Important: args may be used multiple times if they have unrestricted types.
+    If an arg is also free in body, we need contraction to make a copy.
+    The copy stays in context but body still references original name,
+    so we extend rename_map with orig -> copy for the body. *)
     FTm.Let (v, dec, xtor, args, body) ->
-      let (subst, new_ctx) = build_reordering st ctx args fv in
-      (* After consuming args, new_ctx has remaining vars; v is prepended *)
-      let body_ctx = v :: (List.filter (fun x ->
-        not (List.exists (Common.Identifiers.Ident.equal x) args)
-      ) new_ctx) in
-      let body' = linearize_cmd st body_ctx body in
-      wrap_with_reordering ctx subst (ATm.Let (v, convert_dec dec, xtor, args, body'))
+      (* Map FTm arg names to actual context names *)
+      let actual_args = apply_rename_list rename_map args in
+      let body_fv_ftm = free_vars_cmd body in
+      let continuation_fv = VarMap.fold (fun v count acc ->
+        if Common.Identifiers.Ident.equal v (fst (v, ())) then 
+          VarMap.add (apply_rename rename_map v) count acc
+        else
+          VarMap.add (apply_rename rename_map v) count acc
+      ) (VarMap.remove v body_fv_ftm) VarMap.empty in
+      (* Use contraction if any arg is also needed in continuation *)
+      let (subst, new_ctx, copy_map) = build_reordering_with_contraction st ctx actual_args continuation_fv in
+      (* Extend rename_map with copy_map for body (maps FTm orig -> actual copy) *)
+      let body_rename_map = VarMap.fold (fun orig copy acc ->
+        VarMap.add orig copy acc
+      ) copy_map rename_map in
+      (* After consuming args, filter them out *)
+      let args_set = VarSet.of_list actual_args in
+      let body_ctx = v :: (List.filter (fun x -> not (VarSet.mem x args_set)) new_ctx) in
+      let body' = linearize_cmd st body_ctx body_rename_map body in
+      wrap_with_reordering ctx subst (ATm.Let (v, convert_dec dec, xtor, actual_args, body'))
 
   (* switch v { branches }
     Consumes: v (at head)
     Each branch gets its bound vars prepended to remaining context *)
   | FTm.Switch (v, dec, branches) ->
-      let (subst, new_ctx) = build_reordering st ctx [v] fv in
+      let actual_v = apply_rename rename_map v in
+      let (subst, new_ctx) = build_reordering st ctx [actual_v] fv in
       (* After consuming v, branches get term_vars prepended to remaining *)
       let remaining_ctx = List.filter (fun x ->
-        not (Common.Identifiers.Ident.equal x v)
+        not (Common.Identifiers.Ident.equal x actual_v)
       ) new_ctx in
-      let branches' = List.map (linearize_branch st remaining_ctx) branches in
-      wrap_with_reordering ctx subst (ATm.Switch (v, convert_dec dec, branches'))
+      let branches' = List.map (linearize_branch st remaining_ctx rename_map) branches in
+      wrap_with_reordering ctx subst (ATm.Switch (actual_v, convert_dec dec, branches'))
 
   (* new v = { branches }; s
     Doesn't consume from head; v prepended for continuation 
     Methods run in captured_ctx @ args *)
   | FTm.New (v, dec, branches, body) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let branches' = List.map (linearize_method st new_ctx) branches in
-      let body' = linearize_cmd st (v :: new_ctx) body in
+      let branches' = List.map (linearize_method st new_ctx rename_map) branches in
+      let body' = linearize_cmd st (v :: new_ctx) rename_map body in
       wrap_with_reordering ctx subst (ATm.New (v, convert_dec dec, branches', body'))
 
   (* invoke v m(args)
     Consumes: v at head, then args
     args stay at tail positions and captured env is at head *)
   | FTm.Invoke (v, dec, xtor, args) ->
-      let consumed = [v] @ args in
+      let actual_v = apply_rename rename_map v in
+      let actual_args = apply_rename_list rename_map args in
+      let consumed = [actual_v] @ actual_args in
       let (subst, _) = build_reordering st ctx consumed fv in
-      wrap_with_reordering ctx subst (ATm.Invoke (v, convert_dec dec, xtor, args))
+      wrap_with_reordering ctx subst (ATm.Invoke (actual_v, convert_dec dec, xtor, actual_args))
 
   (* jump l(args) - terminal, consumes args *)
   | FTm.Jump (label, args) ->
-      let (subst, _) = build_reordering st ctx args fv in
-      wrap_with_reordering ctx subst (ATm.Jump (label, args))
+      let actual_args = apply_rename_list rename_map args in
+      let (subst, _) = build_reordering st ctx actual_args fv in
+      wrap_with_reordering ctx subst (ATm.Jump (label, actual_args))
 
   | FTm.Axiom (ty, v, k) ->
+      let actual_v = apply_rename rename_map v in
+      let actual_k = apply_rename rename_map k in
       (* Order [k; v] so that after substitute:
         - k at position 1 → r1 = X5 (this), r2 = X6 (code)  
         - v at position 0 → r2 = X4 (arg)
         This matches the calling convention for methods with 1 arg,
         so CAxiom only needs to save code ptr and branch. *)
-      let (subst, _) = build_reordering st ctx [k; v] fv in
-      wrap_with_reordering ctx subst (ATm.Axiom (ty, v, k))
+      let (subst, _) = build_reordering st ctx [actual_k; actual_v] fv in
+      wrap_with_reordering ctx subst (ATm.Axiom (ty, actual_v, actual_k))
 
   | FTm.Lit (n, v, body) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (v :: new_ctx) body in
+      let body' = linearize_cmd st (v :: new_ctx) rename_map body in
       wrap_with_reordering ctx subst (ATm.Lit (n, v, body'))
 
   | FTm.Add (x, y, r, body) ->
+      let actual_x = apply_rename rename_map x in
+      let actual_y = apply_rename rename_map y in
       (* Add does NOT consume x and y - unrestricted discipline for primitives.
         Just need x, y present in context; r is prepended for body *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (r :: new_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Add (x, y, r, body'))
+      let body' = linearize_cmd st (r :: new_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Add (actual_x, actual_y, r, body'))
 
   | FTm.Sub (x, y, r, body) ->
+      let actual_x = apply_rename rename_map x in
+      let actual_y = apply_rename rename_map y in
       (* Sub does NOT consume x and y - unrestricted discipline for primitives *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (r :: new_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Sub (x, y, r, body'))
+      let body' = linearize_cmd st (r :: new_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Sub (actual_x, actual_y, r, body'))
 
   | FTm.Mul (x, y, r, body) ->
+      let actual_x = apply_rename rename_map x in
+      let actual_y = apply_rename rename_map y in
       (* Mul does NOT consume x and y - unrestricted discipline for primitives *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (r :: new_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Mul (x, y, r, body'))
+      let body' = linearize_cmd st (r :: new_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Mul (actual_x, actual_y, r, body'))
 
   | FTm.Div (x, y, r, body) ->
+      let actual_x = apply_rename rename_map x in
+      let actual_y = apply_rename rename_map y in
       (* Div does NOT consume x and y - unrestricted discipline for primitives *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (r :: new_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Div (x, y, r, body'))
+      let body' = linearize_cmd st (r :: new_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Div (actual_x, actual_y, r, body'))
 
   | FTm.Rem (x, y, r, body) ->
+      let actual_x = apply_rename rename_map x in
+      let actual_y = apply_rename rename_map y in
       (* Rem does NOT consume x and y - unrestricted discipline for primitives *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (r :: new_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Rem (x, y, r, body'))
+      let body' = linearize_cmd st (r :: new_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Rem (actual_x, actual_y, r, body'))
 
   | FTm.NewInt (k, v, branch, cont) ->
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let branch' = linearize_cmd st (v :: new_ctx) branch in
-      let cont' = linearize_cmd st (k :: new_ctx) cont in
+      let branch' = linearize_cmd st (v :: new_ctx) rename_map branch in
+      let cont' = linearize_cmd st (k :: new_ctx) rename_map cont in
       wrap_with_reordering ctx subst (ATm.NewInt (k, v, branch', cont'))
 
   | FTm.Ifz (v, then_cmd, else_cmd) ->
+      let actual_v = apply_rename rename_map v in
       (* Ifz does NOT consume v - unrestricted discipline for primitives.
         Both branches get the same context with v still present *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let then' = linearize_cmd st new_ctx then_cmd in
-      let else' = linearize_cmd st new_ctx else_cmd in
-      wrap_with_reordering ctx subst (ATm.Ifz (v, then', else'))
+      let then' = linearize_cmd st new_ctx rename_map then_cmd in
+      let else' = linearize_cmd st new_ctx rename_map else_cmd in
+      wrap_with_reordering ctx subst (ATm.Ifz (actual_v, then', else'))
 
   (* Destination primitives *)
   | FTm.Alloc (v, d, ty, body) ->
       (* Nothing consumed; d and v are bound for body (d at head, v second) *)
       let (subst, new_ctx) = build_reordering st ctx [] fv in
-      let body' = linearize_cmd st (d :: v :: new_ctx) body in
+      let body' = linearize_cmd st (d :: v :: new_ctx) rename_map body in
       wrap_with_reordering ctx subst (ATm.Alloc (v, d, convert_typ ty, body'))
 
   | FTm.Fill (d, v, ty, body) ->
-      (* d is linear (consumed), v is unrestricted (not consumed) *)
-      let (subst, new_ctx) = build_reordering st ctx [d] fv in
+      let actual_d = apply_rename rename_map d in
+      let actual_v = apply_rename rename_map v in
+      (* d is linear (consumed), v is also consumed (value is stored) *)
+      let consumed = [actual_d; actual_v] in
+      let (subst, new_ctx) = build_reordering st ctx consumed fv in
+      let consumed_set = VarSet.of_list consumed in
       let remaining_ctx = List.filter (fun x ->
-        not (Common.Identifiers.Ident.equal x d)
+        not (VarSet.mem x consumed_set)
       ) new_ctx in
-      let body' = linearize_cmd st remaining_ctx body in
-      wrap_with_reordering ctx subst (ATm.Fill (d, v, convert_typ ty, body'))
+      let body' = linearize_cmd st remaining_ctx rename_map body in
+      wrap_with_reordering ctx subst (ATm.Fill (actual_d, actual_v, convert_typ ty, body'))
 
   | FTm.Unfold (xi_vars, d, dec, xtor, body) ->
+      let actual_d = apply_rename rename_map d in
       (* d is linear (consumed); xi_vars are bound for body *)
-      let (subst, new_ctx) = build_reordering st ctx [d] fv in
+      let (subst, new_ctx) = build_reordering st ctx [actual_d] fv in
       let remaining_ctx = List.filter (fun x ->
-        not (Common.Identifiers.Ident.equal x d)
+        not (Common.Identifiers.Ident.equal x actual_d)
       ) new_ctx in
-      let body' = linearize_cmd st (xi_vars @ remaining_ctx) body in
-      wrap_with_reordering ctx subst (ATm.Unfold (xi_vars, d, convert_dec dec, xtor, body'))
+      let body' = linearize_cmd st (xi_vars @ remaining_ctx) rename_map body in
+      wrap_with_reordering ctx subst (ATm.Unfold (xi_vars, actual_d, convert_dec dec, xtor, body'))
 
   | FTm.Ret (ty, v) ->
-      let (subst, _) = build_reordering st ctx [v] fv in
-      wrap_with_reordering ctx subst (ATm.Ret (convert_typ ty, v))
+      let actual_v = apply_rename rename_map v in
+      let (subst, _) = build_reordering st ctx [actual_v] fv in
+      wrap_with_reordering ctx subst (ATm.Ret (convert_typ ty, actual_v))
 
   | FTm.End ->
       ATm.End
 
 and linearize_branch (st: state) (ctx: Common.Identifiers.Ident.t list) 
+    (rename_map: Common.Identifiers.Ident.t VarMap.t)
     ((xtor, ty_vars, term_vars, body): FTm.branch) : ATm.branch =
   (* Branch context for clauses: term_vars prepended to ctx (args @ tail) *)
   let branch_ctx = term_vars @ ctx in
-  let body' = linearize_cmd st branch_ctx body in
+  let body' = linearize_cmd st branch_ctx rename_map body in
   (xtor, ty_vars, term_vars, body')
 
 (** Linearize a method branch for New (codata).
     Method body runs in captured @ args.
     This is ctx @ term_vars where ctx is the captured context. *)
 and linearize_method (st: state) (captured_ctx: Common.Identifiers.Ident.t list) 
+    (rename_map: Common.Identifiers.Ident.t VarMap.t)
     ((xtor, ty_vars, term_vars, body): FTm.branch) : ATm.branch =
   (* Method context: captured_ctx @ term_vars (as ++ cs) *)
   let branch_ctx = captured_ctx @ term_vars in
-  let body' = linearize_cmd st branch_ctx body in
+  let body' = linearize_cmd st branch_ctx rename_map body in
   (xtor, ty_vars, term_vars, body')
 
 (* ========================================================================= *)
@@ -489,7 +551,7 @@ let linearize_def (fdef: FTm.definition) : ATm.definition =
   ) Common.Identifiers.Ident.emptytbl fdef.term_params in
   let st = mk_state var_types in
   let ctx_vars = List.map fst fdef.term_params in
-  let body' = linearize_cmd st ctx_vars fdef.body in
+  let body' = linearize_cmd st ctx_vars VarMap.empty fdef.body in
   { ATm.path = fdef.path
   ; term_params = List.map (fun (v, ct) -> (v, convert_chiral ct)) fdef.term_params
   ; body = body'

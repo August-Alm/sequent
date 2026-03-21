@@ -24,7 +24,7 @@ let foldl{a}{b}(f: b -> a -> a)(init: a)(ys: list(b)): a =
   }
 
 let main(n: int): int =
-  let xs = cons{int}(n)(nil{int}) in
+  let xs = cons{int}(n)(cons{int}(n)(nil{int})) in
   let f = fun(x: int) => x + 1 in
   let ys = map{int}{int}(f)(xs) in
   let g = fun(y: int)(i: int) => y * i in
