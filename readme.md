@@ -12,6 +12,8 @@ A compiler for a functional ML-like language with generalized algebraic data typ
 - **Polymorphism**, including higher rank
 - **Higher-kinded types** for type-level abstraction
 - **Data kinds** similar to Haskell's DataKind extension
+- **Destinations** for functional style destination-passing
+- **Linear types**
 
 
 ### Compilation Pipeline
@@ -71,6 +73,27 @@ let length{a}{n: nat}(v: vec(a)(n)): single_nat(n) =
   ; cons{_}{m}(x)(xs) => single_succ{m}(length{a}{m}(xs))
   }
 ```
+This example shows destinations in action, defining an optimized (tail-recursive, O(1) memory) list map function. The destination types are examples of linear types.
+```
+data list: type -> type where
+  { nil: {a} list(a)
+  ; cons: {a} a -> list(a) -> list(a)
+  }
+
+let map_dsp{a}{b}(f: a -> b)(xs: list(a))(ds: dest(list(b))): unit =
+  match xs with
+  { nil{_} => fill(ds)(nil{b})
+  ; cons{_}(x)(xs) =>
+      let (d, ds) = ds @ cons{b} in
+      let _ = fill(d)(f(x)) in
+      map_dsp{a}{b}(f)(xs)(ds)
+  }
+
+let map{a}{b}(f: a -> b)(xs: list(a)): list(b) =
+  let init = alloc{list(b)}() in
+  let r = update init with { (ds) => map_dsp{a}{b}(f)(xs)(ds) } in
+  finalize(r)
+```
 
 ## Building and Running
 
@@ -113,6 +136,7 @@ This compiler is based on:
 - [Compiling with classical connectives](https://arxiv.org/pdf/1907.13227)
 - [Sequent calculus as a compiler intermediate language](https://pauldownen.com/publications/scfp_ext.pdf)
 - [The simple essence of monomorphization](https://dl.acm.org/doi/epdf/10.1145/3720472)
+- [Destination calculus: A Linear 𝜆−Calculus for Purely Functional Memory Writes](https://arxiv.org/pdf/2503.07489)
 
 ## Future Work
 
